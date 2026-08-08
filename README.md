@@ -81,6 +81,12 @@ Run `./bin/pi --help` for the complete, authoritative help text.
 # Stop the current workspace without removing its state.
 ./bin/pi stop
 
+# Open a shell in the current workspace's running or stopped container.
+./bin/pi shell
+
+# Open that shell as root.
+./bin/pi shell --root
+
 # Rebuild the image and recreate the persistent service.
 ./bin/pi update
 
@@ -88,6 +94,12 @@ Run `./bin/pi --help` for the complete, authoritative help text.
 ./bin/pi update --extensions
 ./bin/pi update --models
 ./bin/pi update --extensions --models
+
+# Install another Pi package into the current workspace's agent state.
+./bin/pi install npm:pi-web-access
+
+# Force a command named like a wrapper command through to Pi.
+./bin/pi - list
 
 # Show running and stopped Pi workspaces.
 ./bin/pi list
@@ -104,6 +116,22 @@ it uses a temporary Compose container and removes it when Pi exits.
 `--replace` force-recreates the current workspace container. If another
 workspace has the same basename, `--keep-existing` preserves the existing
 container and creates a disambiguated one instead.
+
+Arguments that are not wrapper options or commands are passed through to Pi.
+The wrapper's `stop`, `update`, `list`, `remove`, and `shell` commands take
+precedence over Pi commands with the same names. `pi shell` reuses the current
+workspace container when possible; otherwise it offers a picker for existing
+persistent Pi containers and starts a stopped selection before opening the shell.
+Use `pi shell --root` or `pi shell -r` for a root shell.
+
+When no current workspace container exists, `pi shell` offers `0) Start a new
+project`; choosing it creates the directory if needed, starts the persistent
+service, and opens the shell. The picker ends with `X) Press Esc to cancel`.
+
+Use a leading `-` to force a wrapper command name through to Pi: `pi - list`
+runs Pi's `list` command inside the container, while `pi list` runs the wrapper
+inventory command. The marker is a literal argument and does not require shell
+escaping.
 
 ## Workspace and state
 
@@ -240,13 +268,28 @@ browser execution to the upstream `agent-browser` CLI. Use
 
 ## Logs and inspection
 
-Persistent Pi output is forwarded to the Compose service log stream. Get the
-readable project name from `./bin/pi list`, then follow logs with:
+Persistent Pi session records are streamed by a service-side forwarder to the
+Compose service log stream while Pi runs. Docker stdout is pretty and colored
+by default. Get the readable project name from `./bin/pi list`, then follow it
+with:
 
 ```bash
 docker compose \
   --project-name <workspace-project> \
   logs --follow --timestamps pi
+```
+
+These logs are an inspectable live audit stream. The complete durable session
+records remain in the workspace-specific `pi-sessions` Docker volume at
+`/home/node/.pi/agent/sessions/*.jsonl` inside the container.
+
+To select another log representation, set these Compose environment variables
+before recreating the workspace container:
+
+```bash
+PI_SESSION_LOG_FORMAT=raw   # pretty or raw
+PI_SESSION_LOG_COLOR=never  # always, auto, or never
+./bin/pi update
 ```
 
 Other useful inspection commands:

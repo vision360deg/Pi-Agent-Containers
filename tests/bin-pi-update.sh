@@ -186,7 +186,22 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'(Anthropic), and 51121 (pi-antigravity) are always published.'* ]]
 [[ "$DETAILED_HELP" == *'PI_OAUTH_CALLBACK_PORTS adds ports from the'* ]]
 [[ "$DETAILED_HELP" == *'pi --oauth 7000,7001'* ]]
+[[ "$DETAILED_HELP" == *'pi install npm:pi-web-access'* ]]
+[[ "$DETAILED_HELP" == *'Wrapper commands take precedence when names collide'* ]]
+[[ "$DETAILED_HELP" == *'pi shell [--root|-r]'* ]]
+[[ "$DETAILED_HELP" == *'Open a shell in the current workspace container'* ]]
+[[ "$DETAILED_HELP" == *'--root'* ]]
+[[ "$DETAILED_HELP" == *'pi shell --root'* ]]
+[[ "$DETAILED_HELP" == *'pi - PI_ARGS...'* ]]
+[[ "$DETAILED_HELP" == *'pi - list'* ]]
+[[ "$DETAILED_HELP" == *'0) Start a new project'* ]]
+[[ "$DETAILED_HELP" == *'X) Press Esc to cancel'* ]]
 [[ "$DETAILED_HELP" == *'Existing running and stopped containers are both considered during collision'* ]]
+[[ "$DETAILED_HELP" == *'Persistent Pi session records are streamed as readable, colored events'* ]]
+[[ "$DETAILED_HELP" == *'The session volume remains the'* ]]
+[[ "$DETAILED_HELP" == *'durable JSONL source.'* ]]
+[[ "$DETAILED_HELP" == *'PI_SESSION_LOG_FORMAT=raw'* ]]
+[[ "$DETAILED_HELP" == *'PI_SESSION_LOG_COLOR=never'* ]]
 
 run_wrapper_capture -h
 assert_output "$DETAILED_HELP"
@@ -202,6 +217,8 @@ Usage:
   pi update [--extensions] [--models]
   pi list
   pi remove [--all]
+  pi shell [--root|-r]
+  pi - PI_ARGS...
 
 Options:
   -h, --help        Show detailed help when used alone.
@@ -218,12 +235,19 @@ Options:
   State volumes     Private per workspace; existing contents are preserved and
                     permissions are repaired before Pi starts.
   Browser integration Ensures pi-agent-browser-native is installed by default.
+  Logging           Streams pretty colored session events to Docker logs by
+                    default; use PI_SESSION_LOG_FORMAT=raw for JSONL.
+  Pi passthrough     Other arguments are passed to Pi in the workspace container.
+                     Example: pi install npm:pi-web-access
+                     Use `pi - PI_ARGS...` to force wrapper command names through
+                     to Pi, for example: pi - list
 
 Commands:
   stop              Stop the current workspace's persistent project.
   update            Rebuild Pi or update extensions/models.
   list              List running and stopped persistent Pi stacks (read-only).
   remove [--all]    Remove the current stack; --all also removes persisted state.
+  shell [--root|-r] Open a shell in the current or selected Pi container.
 
 Run `pi --help` for detailed usage.
 EOF
@@ -280,6 +304,10 @@ assert_output "$BRIEF_USAGE"
 assert_log ""
 
 run_wrapper_capture --help --rm
+assert_output "$BRIEF_USAGE"
+assert_log ""
+
+run_wrapper_capture shell --help
 assert_output "$BRIEF_USAGE"
 assert_log ""
 
@@ -390,6 +418,44 @@ assert_log_has_line "PI_WORKSPACE=$WORKSPACE"
 
 run_wrapper --version
 assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log --version"
+
+run_wrapper - list
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log list"
+assert_log_lacks_fragment 'exec pi pi-session-log - list'
+
+run_wrapper - stop
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log stop"
+assert_log_lacks_fragment ' stop$'
+
+run_wrapper - update
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log update"
+assert_log_lacks_fragment ' build --pull --no-cache pi'
+
+run_wrapper - remove
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log remove"
+assert_log_lacks_fragment ' down'
+
+run_wrapper - shell
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log shell"
+
+if run_wrapper -; then
+  printf 'empty passthrough marker unexpectedly succeeded\n' >&2
+  exit 1
+else
+  rc=$?
+  [[ "$rc" -eq 2 ]]
+fi
+assert_log ""
+
+run_wrapper - --help
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log --help"
+
+run_wrapper --rm - list
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi list"
+assert_log_lacks_fragment 'run --rm --service-ports pi pi - list'
+
+run_wrapper --rm - --help
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi --help"
 
 run_wrapper --new-state --version
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach --force-recreate pi"

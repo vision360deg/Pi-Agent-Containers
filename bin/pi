@@ -12,7 +12,15 @@ STACK_ROOT="$(cd -P -- "$(dirname -- "$SOURCE")/.." && pwd)"
 WORKSPACE="${PI_WORKSPACE:-$PWD}"
 ORIGINAL_ARG_COUNT=$#
 HELP_REQUESTED=false
+HELP_SCAN_PASSTHROUGH=false
 for arg in "$@"; do
+  if [[ "$HELP_SCAN_PASSTHROUGH" == true ]]; then
+    continue
+  fi
+  if [[ "$arg" == "-" ]]; then
+    HELP_SCAN_PASSTHROUGH=true
+    continue
+  fi
   if [[ "$arg" == "-h" || "$arg" == "--help" ]]; then
     HELP_REQUESTED=true
     break
@@ -27,6 +35,11 @@ SEED_STATE=false
 LATEST_STATE=false
 OAUTH_CALLBACK=false
 WORKSPACE_OPTION=false
+SHELL_COMMAND=false
+SHELL_AS_ROOT=false
+SHELL_START_NEW_PROJECT=false
+PI_PASSTHROUGH_MARKER=false
+WORKSPACE_MISSING=false
 OAUTH_CALLBACK_PORTS=(1455 53692 51121)
 OAUTH_EXTRA_PORTS=()
 OAUTH_OVERRIDE_FILE=""
@@ -208,6 +221,8 @@ Usage:
   pi update [--extensions] [--models]
   pi list
   pi remove [--all]
+  pi shell [--root|-r]
+  pi - PI_ARGS...
 
 Description:
   Runs Pi inside a persistent Docker Compose service scoped to the current
@@ -303,6 +318,32 @@ Commands:
       Docker creation/start timestamps, agent-state volume, and seed/latest markers.
       The started timestamp uses Docker State.StartedAt; zero means started: never.
 
+  shell [--root|-r]
+      Open an interactive bash shell in the current workspace's existing Pi
+      container. If no container matches the current workspace, show a picker
+      containing all existing persistent Pi containers. A stopped selection is started
+      before the shell opens. When no current workspace container exists, the picker
+      also offers `0) Start a new project` and ends with `X) Press Esc to cancel`.
+      Choosing 0 creates the workspace, starts its persistent Pi service, and opens
+      the shell there.
+
+      -r, --root
+          Open the shell as Docker user 0 (root) instead of the image's node user.
+
+Pi passthrough:
+  Arguments not recognized as wrapper options or commands are passed directly to
+  Pi inside the workspace container. For example:
+
+  pi install npm:pi-web-access
+      Install a Pi package into this workspace's persisted agent state.
+
+  Wrapper commands take precedence when names collide: stop, update, list, remove,
+  and shell are handled by this wrapper rather than passed to Pi.
+
+  A leading `-` forces the following arguments through to Pi, even when the
+  first argument is also a wrapper command. For example, `pi - list` runs Pi's
+  `list` command inside the container; `pi list` runs this wrapper's inventory.
+
 Workspace:
   PI_WORKSPACE=/path/to/project pi
       Mount /path/to/project at /workspace inside its workspace container.
@@ -337,7 +378,10 @@ Workspace:
   checks.
 
 Logging:
-  Persistent Pi output is forwarded to the Docker service log stream.
+  Persistent Pi session records are streamed as readable, colored events to
+  the Docker service log stream while Pi runs. The session volume remains the
+  durable JSONL source. Set PI_SESSION_LOG_FORMAT=raw for JSONL logs or
+  PI_SESSION_LOG_COLOR=never for plain text.
 
   Follow it with:
     docker compose --project-name <readable-workspace-project> logs --follow --timestamps pi
@@ -363,6 +407,9 @@ Examples:
   pi list                             # Inventory persistent Pi stacks without changing Docker state.
   pi remove                          # Remove the stack but preserve persisted state.
   pi remove --all                    # Also remove Pi and browser persisted state.
+  pi shell                           # Open a shell in the current workspace container.
+  pi shell --root                    # Open the current or selected container as root.
+  pi - list                          # Run Pi's list command inside the container.
 
 Help behavior:
   Exact `pi -h` and `pi --help` commands show this detailed help.
@@ -377,6 +424,9 @@ Restrictions:
   --replace and --keep-existing apply to persistent workspace containers only.
   remove accepts only the optional --all flag; --all also removes persisted state.
   list accepts no positional arguments and does not change Docker state.
+  shell accepts only -r/--root. When a current workspace container exists it
+  reuses or starts it without creating Compose resources. Otherwise it offers
+  0 to create/start the current workspace and X/Escape to cancel.
   --new-state cannot be combined with stop or remove.
   --latest-state only affects first initialization of a workspace and warns
   after that workspace already has initialized state. It selects the newest
@@ -400,6 +450,8 @@ Usage:
   pi update [--extensions] [--models]
   pi list
   pi remove [--all]
+  pi shell [--root|-r]
+  pi - PI_ARGS...
 
 Options:
   -h, --help        Show detailed help when used alone.
@@ -416,12 +468,19 @@ Options:
   State volumes     Private per workspace; existing contents are preserved and
                     permissions are repaired before Pi starts.
   Browser integration Ensures pi-agent-browser-native is installed by default.
+  Logging           Streams pretty colored session events to Docker logs by
+                    default; use PI_SESSION_LOG_FORMAT=raw for JSONL.
+  Pi passthrough     Other arguments are passed to Pi in the workspace container.
+                     Example: pi install npm:pi-web-access
+                     Use `pi - PI_ARGS...` to force wrapper command names through
+                     to Pi, for example: pi - list
 
 Commands:
   stop              Stop the current workspace's persistent project.
   update            Rebuild Pi or update extensions/models.
   list              List running and stopped persistent Pi stacks (read-only).
   remove [--all]    Remove the current stack; --all also removes persisted state.
+  shell [--root|-r] Open a shell in the current or selected Pi container.
 
 Run `pi --help` for detailed usage.
 EOF
@@ -436,13 +495,50 @@ if [[ "$HELP_REQUESTED" == true ]]; then
   exit 0
 fi
 
+if [[ "$HELP_REQUESTED" == false && "${1:-}" == "shell" ]]; then
+  SHELL_COMMAND=true
+  shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -r|--root)
+        SHELL_AS_ROOT=true
+        shift
+        ;;
+      *)
+        printf 'pi: unsupported shell option: %s\n' "$1" >&2
+        printf 'usage: pi shell [--root|-r]\n' >&2
+        exit 2
+        ;;
+    esac
+  done
+fi
+
+if [[ "$HELP_REQUESTED" == false && "${1:-}" == "-" ]]; then
+  PI_PASSTHROUGH_MARKER=true
+  shift
+  if [[ $# -eq 0 ]]; then
+    printf 'pi: - requires a Pi command\n' >&2
+    printf 'usage: pi - PI_ARGS...\n' >&2
+    exit 2
+  fi
+fi
+
+if [[ "$SHELL_COMMAND" == true &&
+  ( "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true ||
+    "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true ||
+    "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true ) ]]; then
+  printf 'pi: shell cannot be combined with lifecycle, state, or OAuth options\n' >&2
+  printf 'usage: pi shell [--root|-r]\n' >&2
+  exit 2
+fi
+
 if [[ "$OAUTH_CALLBACK" == true ]]; then
   oauth_parse_port_list "${PI_OAUTH_CALLBACK_PORTS:-}" 'PI_OAUTH_CALLBACK_PORTS' || exit $?
   create_oauth_override
 fi
 
 LIST_COMMAND=false
-if [[ "${1:-}" == "list" ]]; then
+if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "list" ]]; then
   if [[ "$#" -ne 1 || "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true || "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true || "${WORKSPACE_OPTION:-false}" == true ]]; then
     printf 'usage: pi list\n' >&2
     exit 2
@@ -465,7 +561,7 @@ if [[ "$REMOVE_AFTER_RUN" == true && ( "$SEED_STATE" == true || "$LATEST_STATE" 
   exit 2
 fi
 
-if [[ "${1:-}" == "stop" ]]; then
+if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "stop" ]]; then
   if [[ "$REMOVE_AFTER_RUN" == true ]]; then
     printf 'pi: --rm cannot be combined with stop; stop targets the persistent service\n' >&2
     exit 2
@@ -481,17 +577,48 @@ if [[ "${1:-}" == "stop" ]]; then
   fi
 fi
 
-if [[ "${1:-}" == "update" && ( "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true ) ]]; then
+if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "update" && ( "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true ) ]]; then
   printf 'pi: --replace and --keep-existing cannot be combined with update\n' >&2
   exit 2
 fi
 
+workspace_path_with_missing_components() {
+  local path="$1"
+  local suffix=""
+  local base
+  local parent
+
+  if [[ "$path" != /* ]]; then
+    path="$PWD/$path"
+  fi
+
+  while [[ ! -d "$path" ]]; do
+    base="$(basename -- "$path")"
+    [[ -n "$base" && "$base" != "/" ]] || break
+    suffix="/$base$suffix"
+    parent="$(dirname -- "$path")"
+    [[ "$parent" != "$path" ]] || break
+    path="$parent"
+  done
+
+  if [[ -d "$path" ]]; then
+    path="$(cd -P -- "$path" && pwd)"
+  fi
+  printf '%s%s\n' "$path" "$suffix"
+}
+
 if [[ "$LIST_COMMAND" != true ]]; then
   if [[ ! -d "$WORKSPACE" ]]; then
-    printf 'pi: workspace does not exist: %s\n' "$WORKSPACE" >&2
-    exit 1
+    if [[ "$SHELL_COMMAND" == true ]]; then
+      WORKSPACE_MISSING=true
+      WORKSPACE="$(workspace_path_with_missing_components "$WORKSPACE")"
+    else
+      printf 'pi: workspace does not exist: %s\n' "$WORKSPACE" >&2
+      exit 1
+    fi
+  else
+    WORKSPACE="$(cd -P -- "$WORKSPACE" && pwd)"
   fi
-  WORKSPACE="$(cd -P -- "$WORKSPACE" && pwd)"
 fi
 
 sanitize_slug() {
@@ -1125,12 +1252,146 @@ prepare_workspace_container() {
   esac
 }
 
+list_shell_containers() {
+  docker ps -a \
+    --filter 'label=com.pi-agents.workspace' \
+    --filter 'label=com.docker.compose.oneoff=False' \
+    --format '{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.State}}\t{{.Label "com.pi-agents.workspace"}}'
+}
+
+select_shell_container() {
+  local rows
+  local id
+  local name
+  local status
+  local state
+  local path
+  local choice
+  local index
+  local current_index=-1
+  local current_count=0
+  local new_project_option=false
+
+  SHELL_NAMES=()
+  SHELL_STATUSES=()
+  SHELL_STATES=()
+  SHELL_PATHS=()
+  rows="$(list_shell_containers)"
+
+  while IFS=$'\t' read -r id name status state path; do
+    [[ -n "$id" && -n "$name" && -n "$path" ]] || continue
+    SHELL_NAMES+=("$name")
+    SHELL_STATUSES+=("$status")
+    SHELL_STATES+=("$state")
+    SHELL_PATHS+=("$path")
+    if [[ "$path" == "$WORKSPACE" ]]; then
+      current_index=$((${#SHELL_NAMES[@]} - 1))
+      ((current_count += 1))
+    fi
+  done <<< "$rows"
+
+  if [[ "$WORKSPACE_MISSING" == true || "$current_count" -eq 0 ]]; then
+    new_project_option=true
+  fi
+
+  if [[ "$new_project_option" == false && "$current_count" -eq 1 ]]; then
+    SHELL_SELECTED_NAME="${SHELL_NAMES[$current_index]}"
+    SHELL_SELECTED_STATUS="${SHELL_STATUSES[$current_index]}"
+    SHELL_SELECTED_STATE="${SHELL_STATES[$current_index]}"
+    return 0
+  fi
+
+  printf 'Choose a Pi container:\n' >&2
+  if [[ "$new_project_option" == true ]]; then
+    printf '0) Start a new project\n' >&2
+  fi
+  for index in "${!SHELL_NAMES[@]}"; do
+    printf '%s) %s\n   status: %s\n   workspace: %s\n' \
+      "$((index + 1))" "${SHELL_NAMES[$index]}" \
+      "${SHELL_STATUSES[$index]}" "${SHELL_PATHS[$index]}" >&2
+  done
+  printf 'X) Press Esc to cancel\n' >&2
+  printf 'Choice: ' >&2
+  if ! IFS= read -r -n 1 choice; then
+    printf 'pi: container selection cancelled\n' >&2
+    return 2
+  fi
+  if [[ "$choice" =~ ^[0-9]$ ]]; then
+    local remaining_choice=""
+    IFS= read -r remaining_choice || true
+    choice+="$remaining_choice"
+  fi
+
+  case "$choice" in
+    $'\e'|x|X)
+      printf 'pi: container selection cancelled\n' >&2
+      return 2
+      ;;
+    0)
+      if [[ "$new_project_option" == true ]]; then
+        SHELL_START_NEW_PROJECT=true
+        return 0
+      fi
+      ;;
+  esac
+
+  local choice_offset=0
+  if [[ "$new_project_option" == true ]]; then
+    choice_offset=1
+  fi
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice - choice_offset < 1 || choice - choice_offset > ${#SHELL_NAMES[@]} )); then
+    printf 'pi: invalid container selection: %s\n' "$choice" >&2
+    return 2
+  fi
+
+  index=$((choice - choice_offset - 1))
+  SHELL_SELECTED_NAME="${SHELL_NAMES[$index]}"
+  SHELL_SELECTED_STATUS="${SHELL_STATUSES[$index]}"
+  SHELL_SELECTED_STATE="${SHELL_STATES[$index]}"
+}
+
+shell_container_is_running() {
+  [[ "$1" == running ]]
+}
+
+attach_shell() {
+  select_shell_container
+  if [[ "$SHELL_START_NEW_PROJECT" == true ]]; then
+    mkdir -p -- "$WORKSPACE"
+    WORKSPACE_MISSING=false
+    prepare_workspace_container
+    prepare_state_lineage
+    start_persistent_service
+    initialize_agent_state
+    repair_state_permissions
+    install_browser_extension
+    record_state_lineage
+    SHELL_SELECTED_NAME="$CONTAINER_NAME"
+    SHELL_SELECTED_STATE=running
+  fi
+
+  if ! shell_container_is_running "$SHELL_SELECTED_STATE"; then
+    docker start "$SHELL_SELECTED_NAME" >/dev/null
+  fi
+
+  if [[ "$SHELL_AS_ROOT" == true ]]; then
+    docker exec -it --user 0 "$SHELL_SELECTED_NAME" bash
+  else
+    docker exec -it "$SHELL_SELECTED_NAME" bash
+  fi
+}
+
 if [[ "$LIST_COMMAND" == true ]]; then
   list_pi_stacks
   exit $?
 fi
 
-if [[ "${1:-}" == "remove" ]]; then
+if [[ "$SHELL_COMMAND" == true ]]; then
+  attach_shell
+  exit $?
+fi
+
+if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "remove" ]]; then
   if [[ "$REMOVE_AFTER_RUN" == true ]]; then
     printf 'pi: --rm cannot be combined with remove; remove targets the persistent service\n' >&2
     exit 2
@@ -1177,12 +1438,12 @@ if [[ "${1:-}" == "remove" ]]; then
   exit $?
 fi
 
-if [[ "${1:-}" == "stop" ]]; then
+if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "stop" ]]; then
   run_compose stop
   exit $?
 fi
 
-if [[ "${1:-}" == "update" ]]; then
+if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "update" ]]; then
   if [[ "$REMOVE_AFTER_RUN" == true ]]; then
     printf 'pi: --rm cannot be combined with update; updates require the persistent service\n' >&2
     exit 2
@@ -1242,11 +1503,8 @@ prepare_workspace_container
 prepare_state_lineage
 
 # `docker compose logs` only captures the service's main process streams.
-# This stack keeps the service alive with `sleep infinity` and starts Pi with
-# `docker compose exec`, whose output otherwise goes only to this terminal.
-# `pi-session-log` runs Pi inside a nested PTY and duplicates its output to
-# PID 1's stdout, so Docker collects it without breaking WezTerm's interactive
-# terminal behavior.
+# The persistent service starts pi-session-forwarder alongside sleep, while
+# this helper only preserves Pi's foreground interactive PTY via compose exec.
 run_logged_pi() {
   run_compose exec pi pi-session-log "$@"
 }
