@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
+grep -Fq 'COPY bin/pi-state-copy /usr/local/bin/pi-state-copy' "$ROOT/Dockerfile"
+grep -Fq '/usr/local/bin/pi-state-copy' "$ROOT/Dockerfile"
+
 if grep -Fq '127.0.0.1:1455:1455' "$ROOT/compose.yml" ||
   grep -Fq '[::1]:1455:1455' "$ROOT/compose.yml"; then
   printf 'base Compose file must not publish the OAuth callback port\n' >&2

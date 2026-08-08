@@ -192,6 +192,11 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'Open a shell in the current workspace container'* ]]
 [[ "$DETAILED_HELP" == *'--root'* ]]
 [[ "$DETAILED_HELP" == *'pi shell --root'* ]]
+[[ "$DETAILED_HELP" == *'pi copy [--from] [--to]'* ]]
+[[ "$DETAILED_HELP" == *'--sessions, -s'* ]]
+[[ "$DETAILED_HELP" == *'--auth, -a'* ]]
+[[ "$DETAILED_HELP" == *'--extensions, -e'* ]]
+[[ "$DETAILED_HELP" == *'--override replaces duplicates automatically.'* ]]
 [[ "$DETAILED_HELP" == *'pi - PI_ARGS...'* ]]
 [[ "$DETAILED_HELP" == *'pi - list'* ]]
 [[ "$DETAILED_HELP" == *'0) Start a new project'* ]]
@@ -218,6 +223,7 @@ Usage:
   pi list
   pi remove [--all]
   pi shell [--root|-r]
+  pi copy [--from] [--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
   pi - PI_ARGS...
 
 Options:
@@ -248,6 +254,7 @@ Commands:
   list              List running and stopped persistent Pi stacks (read-only).
   remove [--all]    Remove the current stack; --all also removes persisted state.
   shell [--root|-r] Open a shell in the current or selected Pi container.
+  copy              Copy selected agent state between existing Pi containers.
 
 Run `pi --help` for detailed usage.
 EOF

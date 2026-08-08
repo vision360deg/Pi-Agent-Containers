@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE=''
+TARGET=''
+COPY_SESSIONS=false
+COPY_AUTH=false
+COPY_EXTENSIONS=false
+COPY_ALL=false
+OVERRIDE=false
+SESSION_ITEMS=()
+PROVIDER_ITEMS=()
+EXTENSION_ITEMS=()
+REPLACE_ALL=false
+exec 3<&0
+
+fail() { printf 'pi-state-copy: %s\n' "$1" >&2; exit 1; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --source) [[ $# -gt 1 ]] || fail '--source requires a path'; SOURCE="$2"; shift 2 ;;
+    --target) [[ $# -gt 1 ]] || fail '--target requires a path'; TARGET="$2"; shift 2 ;;
+    --sessions) COPY_SESSIONS=true; shift ;;
+    --auth) COPY_AUTH=true; shift ;;
+    --extensions) COPY_EXTENSIONS=true; shift ;;
+    --all) COPY_ALL=true; shift ;;
+    --override) OVERRIDE=true; shift ;;
+    --session) [[ $# -gt 1 ]] || fail '--session requires a filename'; SESSION_ITEMS+=("$2"); COPY_SESSIONS=true; shift 2 ;;
+    --provider) [[ $# -gt 1 ]] || fail '--provider requires a provider name'; PROVIDER_ITEMS+=("$2"); COPY_AUTH=true; shift 2 ;;
+    --extension) [[ $# -gt 1 ]] || fail '--extension requires a package reference'; EXTENSION_ITEMS+=("$2"); COPY_EXTENSIONS=true; shift 2 ;;
+    -h|--help) printf '%s\n' 'usage: pi-state-copy --source PATH --target PATH [--sessions|--auth|--extensions] [--all] [--override]'; exit 0 ;;
+    *) fail "unsupported option: $1" ;;
+  esac
+done
+
+[[ -n "$SOURCE" && -n "$TARGET" ]] || fail '--source and --target are required'
+[[ "$SOURCE" != "$TARGET" ]] || fail 'source and target must be different'
+[[ -d "$SOURCE" ]] || fail "source is not a directory: $SOURCE"
+[[ -d "$TARGET" ]] || fail "target is not a directory: $TARGET"
+
+if [[ "$COPY_SESSIONS" == false && "$COPY_AUTH" == false && "$COPY_EXTENSIONS" == false ]]; then
+  COPY_SESSIONS=true
+  COPY_AUTH=true
+  COPY_EXTENSIONS=true
+fi
+
+prompt_duplicate() {
+  local kind="$1" item="$2" answer
+  [[ "$OVERRIDE" == true || "$REPLACE_ALL" == true ]] && return 0
+  while :; do
+    printf 'Duplicate %s "%s": [r]eplace, [s]kip, replace [a]ll, [q]uit? ' "$kind" "$item" >&2
+    if IFS= read -r -n 1 answer <&3; then
+      # Consume an already-buffered newline from piped input without waiting
+      # for Enter when the user is typing directly into the terminal.
+      local trailing_input=''
+      IFS= read -r -t 0.05 -n 1024 trailing_input <&3 || true
+      printf '\n' >&2
+    else
+      answer=q
+    fi
+    case "${answer,,}" in
+      r) return 0 ;;
+      s) return 1 ;;
+      a) REPLACE_ALL=true; return 0 ;;
+      q) printf 'pi-state-copy: cancelled\n' >&2; exit 3 ;;
+      *) printf 'Please choose r, s, a, or q.\n' >&2 ;;
+    esac
+  done
+}
+
+parse_picker_selection() {
+  local selection="$1" count="$2" token index
+  selection="${selection//,/ }"
+  for token in $selection; do
+    [[ "$token" =~ ^[0-9]+$ ]] || fail "invalid picker selection: $token"
+    index=$((token - 1))
+    (( index >= 0 && index < count )) || fail "picker selection is out of range: $token"
+    printf '%s\n' "$index"
+  done
+}
+
+read_picker_selection() {
+  local first rest=''
+  IFS= read -r -n 1 first <&3 || return 1
+  IFS= read -r -t 0.05 -n 1024 rest <&3 || true
+  printf '%s%s\n' "$first" "$rest"
+}
+
+pick_sessions() {
+  local name selection index
+  local -a items=()
+  while IFS= read -r name; do items+=("${name#"$SOURCE/sessions/"}"); done < <(find "$SOURCE/sessions" -mindepth 1 -maxdepth 1 -type f -print 2>/dev/null | sort)
+  if ((${#items[@]} == 0)); then
+    printf 'pi-state-copy: no installed extensions were found in the source state; nothing to select\n' >&2
+    return 0
+  fi
+  printf 'Select sessions to copy (numbers separated by spaces, or all):\n' >&2
+  for index in "${!items[@]}"; do printf '%s) %s\n' "$((index + 1))" "${items[$index]}" >&2; done
+  printf 'Selection: ' >&2
+  selection="$(read_picker_selection || true)"
+  [[ -n "$selection" ]] || return 0
+  printf '\n' >&2
+  if [[ "$selection" == all || "$selection" == a ]]; then SESSION_ITEMS=("${items[@]}"); return 0; fi
+  while IFS= read -r index; do SESSION_ITEMS+=("${items[$index]}"); done < <(parse_picker_selection "$selection" "${#items[@]}")
+}
+
+pick_providers() {
+  local provider selection index
+  local -a items=()
+  while IFS= read -r provider; do items+=("$provider"); done < <(jq -r 'keys[]' "$SOURCE/auth.json" 2>/dev/null || true)
+  ((${#items[@]} > 0)) || return 0
+  printf 'Select provider auth entries to copy (numbers separated by spaces, or all):\n' >&2
+  for index in "${!items[@]}"; do printf '%s) %s\n' "$((index + 1))" "${items[$index]}" >&2; done
+  printf 'Selection: ' >&2
+  selection="$(read_picker_selection || true)"
+  [[ -n "$selection" ]] || return 0
+  printf '\n' >&2
+  if [[ "$selection" == all || "$selection" == a ]]; then PROVIDER_ITEMS=("${items[@]}"); return 0; fi
+  while IFS= read -r index; do PROVIDER_ITEMS+=("${items[$index]}"); done < <(parse_picker_selection "$selection" "${#items[@]}")
+}
+
+pick_extensions() {
+  local package selection index
+  local -a items=()
+  while IFS= read -r package; do items+=("$package"); done < <(jq -r '.packages[] | if type == "string" then . else .source // empty end' "$SOURCE/settings.json" 2>/dev/null || true)
+  ((${#items[@]} > 0)) || { printf 'pi-state-copy: no configured extensions found in source settings\n' >&2; return 0; }
+  printf 'Select extensions to copy (numbers separated by spaces, or all):\n' >&2
+  for index in "${!items[@]}"; do printf '%s) %s\n' "$((index + 1))" "${items[$index]}" >&2; done
+  printf 'Selection: ' >&2
+  selection="$(read_picker_selection || true)"
+  [[ -n "$selection" ]] || return 0
+  printf '\n' >&2
+  if [[ "$selection" == all || "$selection" == a ]]; then EXTENSION_ITEMS=("${items[@]}"); return 0; fi
+  while IFS= read -r index; do EXTENSION_ITEMS+=("${items[$index]}"); done < <(parse_picker_selection "$selection" "${#items[@]}")
+}
+
+copy_session() {
+  local name="$1"
+  local source_file="$SOURCE/sessions/$name"
+  local target_file="$TARGET/sessions/$name"
+  [[ "$name" != */* && "$name" != ..* ]] || fail "unsafe session filename: $name"
+  [[ -f "$source_file" ]] || fail "source session not found: $name"
+  mkdir -p "$TARGET/sessions"
+  if [[ -e "$target_file" ]] && ! prompt_duplicate session "$name"; then return 0; fi
+  cp -a "$source_file" "$target_file"
+}
+
+copy_sessions() {
+  local name
+  if ((${#SESSION_ITEMS[@]} > 0)); then
+    for name in "${SESSION_ITEMS[@]}"; do copy_session "$name"; done
+  else
+    while IFS= read -r name; do
+      copy_session "${name#"$SOURCE/sessions/"}"
+    done < <(find "$SOURCE/sessions" -mindepth 1 -maxdepth 1 -type f -print 2>/dev/null | sort)
+  fi
+}
+
+validate_auth() {
+  local file="$1"
+  [[ ! -e "$file" ]] && return 0
+  jq -e 'type == "object"' "$file" >/dev/null || fail "invalid auth JSON: $file"
+}
+
+copy_auth_provider() {
+  local provider="$1" merged="$2" source_auth="$3" value
+  if jq -e --arg provider "$provider" 'has($provider)' "$merged" >/dev/null && ! prompt_duplicate provider "$provider"; then
+    return 0
+  fi
+  value="$(jq -c --arg provider "$provider" '.[$provider]' "$source_auth")"
+  jq --arg provider "$provider" --argjson value "$value" '.[$provider] = $value' "$merged" > "$merged.next"
+  mv "$merged.next" "$merged"
+}
+
+copy_auth() {
+  local source_auth="$SOURCE/auth.json" target_auth="$TARGET/auth.json" merged="$TARGET/.auth.json.pi-copy.tmp"
+  local provider encoded
+  [[ -e "$source_auth" ]] || return 0
+  validate_auth "$source_auth"
+  validate_auth "$target_auth"
+  [[ -e "$target_auth" ]] || printf '{}\n' > "$target_auth"
+  cp -a "$target_auth" "$merged"
+  if ((${#PROVIDER_ITEMS[@]} > 0)); then
+    for provider in "${PROVIDER_ITEMS[@]}"; do
+      jq -e --arg provider "$provider" 'has($provider)' "$source_auth" >/dev/null || fail "source provider not found: $provider"
+      copy_auth_provider "$provider" "$merged" "$source_auth"
+    done
+  else
+    while IFS= read -r encoded; do
+      [[ -n "$encoded" ]] || continue
+      provider="$(printf '%s' "$encoded" | base64 --decode 2>/dev/null || printf '%s' "$encoded" | base64 -D)"
+      copy_auth_provider "$provider" "$merged" "$source_auth"
+    done < <(jq -r 'keys[] | @base64' "$source_auth")
+  fi
+  mv "$merged" "$target_auth"
+}
+
+extension_source_path() {
+  [[ "$1" != /* && "$1" != *'..'* ]] || fail "unsafe extension reference: $1"
+  case "$1" in
+    npm:*)
+      local package="${1#npm:}"
+      local candidate
+      for candidate in \
+        "$SOURCE/npm/node_modules/$package" \
+        "$SOURCE/node_modules/$package" \
+        "$SOURCE/npm/$package" \
+        "$SOURCE/extensions/$package"; do
+        [[ -e "$candidate" ]] && { printf '%s' "$candidate"; return 0; }
+      done
+      ;;
+    git:*) printf '%s/git/%s' "$SOURCE" "${1#git:}" ;;
+    *) printf '%s/extensions/%s' "$SOURCE" "$1" ;;
+  esac
+}
+
+extension_target_path() {
+  [[ "$1" != /* && "$1" != *'..'* ]] || fail "unsafe extension reference: $1"
+  case "$1" in
+    npm:*) printf '%s/npm/node_modules/%s' "$TARGET" "${1#npm:}" ;;
+    git:*) printf '%s/git/%s' "$TARGET" "${1#git:}" ;;
+    *) printf '%s/extensions/%s' "$TARGET" "$1" ;;
+  esac
+}
+
+copy_extension() {
+  local package="$1" source_path target_path
+  source_path="$(extension_source_path "$package")"
+  target_path="$(extension_target_path "$package")"
+  if [[ ! -e "$source_path" ]]; then
+    printf 'pi-state-copy: source extension not found; skipping: %s\n' "$package" >&2
+    return 1
+  fi
+  if [[ -e "$target_path" ]] && ! prompt_duplicate extension "$package"; then return 0; fi
+  mkdir -p "$(dirname "$target_path")"
+  rm -rf "$target_path"
+  cp -a "$source_path" "$target_path"
+}
+
+copy_one_extension() {
+  local package="$1" merged="$2"
+  copy_extension "$package" || return 0
+  if jq -e --arg package "$package" '.packages | index($package) != null' "$merged" >/dev/null; then return 0; fi
+  jq --arg package "$package" '.packages += [$package]' "$merged" > "$merged.next"
+  mv "$merged.next" "$merged"
+}
+
+copy_extensions() {
+  local settings_source="$SOURCE/settings.json" settings_target="$TARGET/settings.json" merged="$TARGET/.settings.json.pi-copy.tmp"
+  local package
+  [[ -e "$settings_source" ]] || return 0
+  jq -e 'type == "object" and ((.packages // []) | type == "array")' "$settings_source" >/dev/null || fail "invalid extension settings JSON: $settings_source"
+  if [[ -e "$settings_target" ]]; then
+    jq -e 'type == "object" and ((.packages // []) | type == "array")' "$settings_target" >/dev/null || fail "invalid extension settings JSON: $settings_target"
+  else
+    printf '{"packages":[]}\n' > "$settings_target"
+  fi
+  cp -a "$settings_target" "$merged"
+  if ((${#EXTENSION_ITEMS[@]} > 0)); then
+    for package in "${EXTENSION_ITEMS[@]}"; do copy_one_extension "$package" "$merged"; done
+  else
+    while IFS= read -r package; do copy_one_extension "$package" "$merged"; done < <(jq -r '.packages[] | if type == "string" then . else .source // empty end' "$settings_source")
+  fi
+  mv "$merged" "$settings_target"
+}
+
+if [[ "$COPY_ALL" == false ]]; then
+  [[ "$COPY_SESSIONS" == true && ${#SESSION_ITEMS[@]} -eq 0 ]] && pick_sessions
+  [[ "$COPY_AUTH" == true && ${#PROVIDER_ITEMS[@]} -eq 0 ]] && pick_providers
+  [[ "$COPY_EXTENSIONS" == true && ${#EXTENSION_ITEMS[@]} -eq 0 ]] && pick_extensions
+fi
+[[ "$COPY_SESSIONS" == true ]] && copy_sessions
+[[ "$COPY_AUTH" == true ]] && copy_auth
+[[ "$COPY_EXTENSIONS" == true ]] && copy_extensions
+printf 'pi-state-copy: copy complete\n'

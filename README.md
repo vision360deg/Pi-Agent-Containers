@@ -87,6 +87,18 @@ Run `./bin/pi --help` for the complete, authoritative help text.
 # Open that shell as root.
 ./bin/pi shell --root
 
+# Pick a source and copy all agent state into this workspace.
+./bin/pi copy
+
+# Pick a destination and copy all state from this workspace.
+./bin/pi copy --to
+
+# Copy selected categories without selecting individual items.
+./bin/pi copy --sessions --auth --extensions --all
+
+# Replace duplicate items without prompting.
+./bin/pi copy --extensions --override
+
 # Rebuild the image and recreate the persistent service.
 ./bin/pi update
 
@@ -132,6 +144,29 @@ Use a leading `-` to force a wrapper command name through to Pi: `pi - list`
 runs Pi's `list` command inside the container, while `pi list` runs the wrapper
 inventory command. The marker is a literal argument and does not require shell
 escaping.
+
+### Copying agent state
+
+`pi copy` uses a disposable Docker helper with the source state volume mounted
+read-only and the destination state volume mounted read-write. It works whether
+the selected containers are running or stopped and never shares their volumes
+afterward.
+
+By default, `pi copy` treats the current workspace as the destination and lets
+you pick the source. `pi copy --to` treats the current workspace as the source
+and lets you pick the destination. `--from` explicitly selects the source;
+using both `--from` and `--to` lets you pick both endpoints.
+
+The category flags are `--sessions`/`-s`, `--auth`/`-a`, and
+`--extensions`/`-e`. Without category flags, all categories are copied. Without
+`--all`, Pi lets you select individual sessions, providers, or extensions;
+`--all` copies every item in the selected categories. Copying is additive by
+default. Duplicate items offer `r` (replace), `s` (skip), `a` (replace all), or
+`q` (cancel). `--override` replaces duplicates automatically.
+
+When the destination container is running, copied files are immediately
+present in its mounted state volume. Pi may still need a reload or restart to
+notice cached authentication or extension metadata.
 
 ## Workspace and state
 

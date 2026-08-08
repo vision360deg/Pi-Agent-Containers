@@ -37,7 +37,8 @@ RUN mkdir -p /home/node/.pi/agent /home/node/.agent-browser \
 COPY bin/pi-session-log /usr/local/bin/pi-session-log
 COPY bin/pi-session-forwarder /usr/local/bin/pi-session-forwarder
 COPY bin/pi-session-format /usr/local/bin/pi-session-format
-RUN chmod 0755 /usr/local/bin/pi-session-log /usr/local/bin/pi-session-forwarder /usr/local/bin/pi-session-format
+COPY bin/pi-state-copy /usr/local/bin/pi-state-copy
+RUN chmod 0755 /usr/local/bin/pi-session-log /usr/local/bin/pi-session-forwarder /usr/local/bin/pi-session-format /usr/local/bin/pi-state-copy
 
 USER node
 

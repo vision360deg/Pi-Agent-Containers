@@ -38,6 +38,14 @@ WORKSPACE_OPTION=false
 SHELL_COMMAND=false
 SHELL_AS_ROOT=false
 SHELL_START_NEW_PROJECT=false
+COPY_COMMAND=false
+COPY_FROM=false
+COPY_TO=false
+COPY_SESSIONS=false
+COPY_AUTH=false
+COPY_EXTENSIONS=false
+COPY_ALL=false
+COPY_OVERRIDE=false
 PI_PASSTHROUGH_MARKER=false
 WORKSPACE_MISSING=false
 OAUTH_CALLBACK_PORTS=(1455 53692 51121)
@@ -222,6 +230,7 @@ Usage:
   pi list
   pi remove [--all]
   pi shell [--root|-r]
+  pi copy [--from] [--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
   pi - PI_ARGS...
 
 Description:
@@ -330,6 +339,16 @@ Commands:
       -r, --root
           Open the shell as Docker user 0 (root) instead of the image's node user.
 
+  copy [--from] [--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
+      Copy agent state between existing Pi workspace containers using a
+      disposable helper container. By default the current workspace is the
+      destination and a picker selects the source. --to makes the current
+      workspace the source and picks the destination; --from picks the source.
+      Without a category flag, sessions, provider auth, and extensions are
+      copied. Category flags restrict the copy. --all skips item pickers.
+      Copies are additive; duplicate items prompt with r=replace, s=skip,
+      a=replace all, q=cancel. --override replaces duplicates automatically.
+
 Pi passthrough:
   Arguments not recognized as wrapper options or commands are passed directly to
   Pi inside the workspace container. For example:
@@ -409,6 +428,10 @@ Examples:
   pi remove --all                    # Also remove Pi and browser persisted state.
   pi shell                           # Open a shell in the current workspace container.
   pi shell --root                    # Open the current or selected container as root.
+  pi copy                            # Pick a source and copy all state to this workspace.
+  pi copy --to                       # Pick a destination and copy all state from this workspace.
+  pi copy -s --all                   # Copy every session without selecting individual files.
+  pi copy --auth --override          # Copy provider auth and replace duplicates automatically.
   pi - list                          # Run Pi's list command inside the container.
 
 Help behavior:
@@ -451,6 +474,7 @@ Usage:
   pi list
   pi remove [--all]
   pi shell [--root|-r]
+  pi copy [--from] [--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
   pi - PI_ARGS...
 
 Options:
@@ -481,6 +505,7 @@ Commands:
   list              List running and stopped persistent Pi stacks (read-only).
   remove [--all]    Remove the current stack; --all also removes persisted state.
   shell [--root|-r] Open a shell in the current or selected Pi container.
+  copy              Copy selected agent state between existing Pi containers.
 
 Run `pi --help` for detailed usage.
 EOF
@@ -493,6 +518,27 @@ if [[ "$HELP_REQUESTED" == true ]]; then
     print_brief_usage
   fi
   exit 0
+fi
+
+if [[ "$HELP_REQUESTED" == false && "${1:-}" == "copy" ]]; then
+  COPY_COMMAND=true
+  shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --from) COPY_FROM=true; shift ;;
+      --to) COPY_TO=true; shift ;;
+      -s|--sessions) COPY_SESSIONS=true; shift ;;
+      -a|--auth) COPY_AUTH=true; shift ;;
+      -e|--extensions) COPY_EXTENSIONS=true; shift ;;
+      --all) COPY_ALL=true; shift ;;
+      --override) COPY_OVERRIDE=true; shift ;;
+      *)
+        printf 'pi: unsupported copy option: %s\n' "$1" >&2
+        printf 'usage: pi copy [--from] [--to] [-s|--sessions] [-a|--auth] [-e|--extensions] [--all] [--override]\n' >&2
+        exit 2
+        ;;
+    esac
+  done
 fi
 
 if [[ "$HELP_REQUESTED" == false && "${1:-}" == "shell" ]]; then
@@ -1318,7 +1364,7 @@ select_shell_container() {
   fi
   if [[ "$choice" =~ ^[0-9]$ ]]; then
     local remaining_choice=""
-    IFS= read -r remaining_choice || true
+    IFS= read -r -t 0.05 -n 1024 remaining_choice <&0 || true
     choice+="$remaining_choice"
   fi
 
@@ -1380,6 +1426,136 @@ attach_shell() {
     docker exec -it "$SHELL_SELECTED_NAME" bash
   fi
 }
+
+list_copy_containers() {
+  docker ps -a \
+    --filter 'label=com.pi-agents.workspace' \
+    --filter 'label=com.docker.compose.oneoff=False' \
+    --format '{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.State}}\t{{.Label "com.pi-agents.workspace"}}'
+}
+
+copy_container_volume() {
+  docker inspect --format '{{range .Mounts}}{{if eq .Destination "/home/node/.pi/agent"}}{{.Name}}{{end}}{{end}}' "$1"
+}
+
+select_copy_container() {
+  local role="$1" exclude_name="${2:-}" rows id name status state path choice index=0
+  local -a names=() statuses=() states=() paths=() volumes=()
+
+  while IFS=$'\t' read -r id name status state path; do
+    [[ -n "$id" && -n "$name" && -n "$path" ]] || continue
+    [[ "$name" == "$exclude_name" ]] && continue
+    volume="$(copy_container_volume "$name")"
+    [[ -n "$volume" ]] || continue
+    names+=("$name")
+    statuses+=("$status")
+    states+=("$state")
+    paths+=("$path")
+    volumes+=("$volume")
+  done < <(list_copy_containers)
+
+  ((${#names[@]} > 0)) || { printf 'pi: no usable Pi containers available for %s\n' "$role" >&2; return 2; }
+  printf 'Choose a %s Pi container:\n' "$role" >&2
+  for index in "${!names[@]}"; do
+    printf '%s) %s\n   status: %s\n   workspace: %s\n   agent-state: %s\n' \
+      "$((index + 1))" "${names[$index]}" "${statuses[$index]}" "${paths[$index]}" "${volumes[$index]}" >&2
+  done
+  printf 'X) Press Esc to cancel\nChoice: ' >&2
+  IFS= read -r -n 1 choice || return 2
+  local trailing_choice=''
+  IFS= read -r -t 0.05 -n 1024 trailing_choice <&0 || true
+  choice+="$trailing_choice"
+  printf '\n' >&2
+  case "$choice" in
+    $'\e'|x|X) printf 'pi: container selection cancelled\n' >&2; return 2 ;;
+  esac
+  [[ "$choice" =~ ^[0-9]+$ ]] || { printf 'pi: invalid container selection: %s\n' "$choice" >&2; return 2; }
+  index=$((choice - 1))
+  (( index >= 0 && index < ${#names[@]} )) || { printf 'pi: invalid container selection: %s\n' "$choice" >&2; return 2; }
+
+  COPY_SELECTED_NAME="${names[$index]}"
+  COPY_SELECTED_VOLUME="${volumes[$index]}"
+  COPY_SELECTED_STATE="${states[$index]}"
+  COPY_SELECTED_PATH="${paths[$index]}"
+}
+
+current_copy_container() {
+  local id name status state path volume
+  while IFS=$'\t' read -r id name status state path; do
+    [[ -n "$id" && "$path" == "$WORKSPACE" ]] || continue
+    volume="$(copy_container_volume "$name")"
+    [[ -n "$volume" ]] || continue
+    COPY_CURRENT_NAME="$name"
+    COPY_CURRENT_VOLUME="$volume"
+    COPY_CURRENT_STATE="$state"
+    return 0
+  done < <(list_copy_containers)
+  COPY_CURRENT_NAME=''
+  COPY_CURRENT_VOLUME="$AGENT_STATE_VOLUME_NAME"
+  COPY_CURRENT_STATE='unknown'
+  docker volume inspect "$COPY_CURRENT_VOLUME" >/dev/null 2>&1
+}
+
+copy_agent_state() {
+  local source_volume target_volume source_name target_name
+  current_copy_container || { printf 'pi: current workspace has no usable agent-state volume\n' >&2; return 2; }
+
+  if [[ "$COPY_FROM" == true && "$COPY_TO" == true ]]; then
+    select_copy_container source || return $?
+    source_volume="$COPY_SELECTED_VOLUME"
+    source_name="$COPY_SELECTED_NAME"
+    select_copy_container destination "$source_name" || return $?
+    target_volume="$COPY_SELECTED_VOLUME"
+    target_name="$COPY_SELECTED_NAME"
+    target_state="$COPY_SELECTED_STATE"
+  elif [[ "$COPY_TO" == true ]]; then
+    source_volume="$COPY_CURRENT_VOLUME"
+    source_name="$COPY_CURRENT_NAME"
+    select_copy_container destination "$source_name" || return $?
+    target_volume="$COPY_SELECTED_VOLUME"
+    target_name="$COPY_SELECTED_NAME"
+    target_state="$COPY_SELECTED_STATE"
+  else
+    target_volume="$COPY_CURRENT_VOLUME"
+    target_name="$COPY_CURRENT_NAME"
+    target_state="$COPY_CURRENT_STATE"
+    select_copy_container source "$target_name" || return $?
+    source_volume="$COPY_SELECTED_VOLUME"
+    source_name="$COPY_SELECTED_NAME"
+  fi
+
+  [[ "$source_volume" != "$target_volume" ]] || { printf 'pi: source and destination are the same state volume\n' >&2; return 2; }
+  if [[ "$target_state" == running ]]; then
+    printf 'pi: destination is running; copied auth/extensions may require a Pi reload or restart\n' >&2
+  fi
+
+  copy_args=(--source /state-source --target /state-target)
+  [[ "$COPY_SESSIONS" == true ]] && copy_args+=(--sessions)
+  [[ "$COPY_AUTH" == true ]] && copy_args+=(--auth)
+  [[ "$COPY_EXTENSIONS" == true ]] && copy_args+=(--extensions)
+  [[ "$COPY_ALL" == true ]] && copy_args+=(--all)
+  [[ "$COPY_OVERRIDE" == true ]] && copy_args+=(--override)
+
+  printf 'pi: copying agent state from %s to %s\n' "$source_name" "$target_name" >&2
+
+  copy_image="$(run_compose images -q pi 2>/dev/null | tail -n 1)"
+  [[ -n "$copy_image" ]] || copy_image="${PROJECT_NAME}-pi"
+  copy_tty_args=(-i)
+  [[ -t 0 ]] && copy_tty_args+=(-t)
+  docker run --rm "${copy_tty_args[@]}" --user 0 \
+    -v "$STACK_ROOT/bin/pi-state-copy:/usr/local/bin/pi-state-copy:ro" \
+    -v "$source_volume:/state-source:ro" \
+    -v "$target_volume:/state-target" \
+    "$copy_image" bash /usr/local/bin/pi-state-copy "${copy_args[@]}"
+  printf 'pi: agent-state copy complete\n' >&2
+  docker run --rm --user 0 -v "$target_volume:/state" alpine:latest \
+    sh -c 'set -eu; chown -R 1000:1000 /state; find /state -type d -exec chmod u+rwx {} +; find /state -type f -exec chmod u+rw {} +'
+}
+
+if [[ "$COPY_COMMAND" == true ]]; then
+  copy_agent_state
+  exit $?
+fi
 
 if [[ "$LIST_COMMAND" == true ]]; then
   list_pi_stacks
