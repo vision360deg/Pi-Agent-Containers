@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+FORMAT="${PI_SESSION_LOG_FORMAT:-pretty}"
+COLOR_MODE="${PI_SESSION_LOG_COLOR:-always}"
+
+case "$FORMAT" in
+  raw|pretty) ;;
+  *)
+    printf 'pi-session-format: unsupported format: %s\n' "$FORMAT" >&2
+    exit 2
+    ;;
+esac
+
+case "$COLOR_MODE" in
+  always) USE_COLOR=true ;;
+  never) USE_COLOR=false ;;
+  auto) [[ -t 1 ]] && USE_COLOR=true || USE_COLOR=false ;;
+  *)
+    printf 'pi-session-format: unsupported color mode: %s\n' "$COLOR_MODE" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$FORMAT" == raw ]]; then
+  exec cat
+fi
+
+if [[ "$USE_COLOR" == true ]]; then
+  RESET=$'\033[0m'
+  DIM=$'\033[2m'
+  CYAN=$'\033[36m'
+  GREEN=$'\033[32m'
+  BLUE=$'\033[34m'
+  YELLOW=$'\033[33m'
+  RED=$'\033[31m'
+  MAGENTA=$'\033[35m'
+else
+  RESET=''
+  DIM=''
+  CYAN=''
+  GREEN=''
+  BLUE=''
+  YELLOW=''
+  RED=''
+  MAGENTA=''
+fi
+
+decode_base64() {
+  local encoded="$1"
+  if printf '%s' "$encoded" | base64 --decode 2>/dev/null; then
+    return 0
+  fi
+  printf '%s' "$encoded" | base64 -D
+}
+
+timestamp_for() {
+  local record="$1"
+  local timestamp
+  timestamp="$(jq -r '.timestamp // empty' <<< "$record" 2>/dev/null || true)"
+  if [[ "$timestamp" =~ ^.{11}(.{8}) ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  else
+    printf '%s' '--:--:--'
+  fi
+}
+
+emit_text() {
+  local timestamp="$1"
+  local symbol="$2"
+  local label="$3"
+  local color="$4"
+  local text="$5"
+  local line
+
+  if [[ -z "$text" ]]; then
+    printf '%s%s %s %-10s%s\n' "$color" "$timestamp" "$symbol" "$label" "$RESET"
+    return
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '%s%s %s %-10s %s%s\n' "$color" "$timestamp" "$symbol" "$label" "$line" "$RESET"
+  done <<< "$text"
+}
+
+emit_content_block() {
+  local timestamp="$1"
+  local role="$2"
+  local block="$3"
+  local kind
+  local text
+
+  kind="$(jq -r '.kind' <<< "$block")"
+  text="$(jq -r '.text // empty' <<< "$block")"
+
+  case "$kind:$role" in
+    text:user) emit_text "$timestamp" '▶' 'USER' "$CYAN" "$text" ;;
+    text:assistant) emit_text "$timestamp" '◀' 'ASSISTANT' "$GREEN" "$text" ;;
+    text:toolResult) emit_text "$timestamp" '✓' 'RESULT' "$YELLOW" "$text" ;;
+    thinking:*) emit_text "$timestamp" '…' 'THINKING' "$DIM" "$text" ;;
+    toolCall:*) emit_text "$timestamp" '⚙' 'TOOL' "$BLUE" "$text" ;;
+    *) emit_text "$timestamp" '·' "${role^^}" "$DIM" "$text" ;;
+  esac
+}
+
+format_message() {
+  local record="$1"
+  local timestamp="$2"
+  local role
+  local content_type
+  local encoded
+  local block
+
+  role="$(jq -r '.message.role // "message"' <<< "$record")"
+  content_type="$(jq -r '.message.content | type' <<< "$record" 2>/dev/null || printf 'null')"
+
+  if [[ "$role" == bashExecution ]]; then
+    emit_text "$timestamp" '⚙' 'COMMAND' "$BLUE" "$(jq -r '.message.command // empty' <<< "$record")"
+    if [[ -n "$(jq -r '.message.output // empty' <<< "$record")" ]]; then
+      emit_text "$timestamp" '✓' 'OUTPUT' "$YELLOW" "$(jq -r '.message.output' <<< "$record")"
+    fi
+    if [[ "$(jq -r '.message.exitCode // 0' <<< "$record")" -ne 0 ||
+      "$(jq -r '.message.cancelled // false' <<< "$record")" == true ]]; then
+      emit_text "$timestamp" '✖' 'EXIT' "$RED" "$(jq -r 'if .message.cancelled then "cancelled" else ("exit " + (.message.exitCode|tostring)) end' <<< "$record")"
+    fi
+    return
+  fi
+
+  if [[ "$role" == toolResult ]]; then
+    if [[ "$(jq -r '.message.isError // false' <<< "$record")" == true ]]; then
+      role=toolError
+    fi
+  fi
+
+  if [[ "$content_type" == array ]]; then
+    while IFS= read -r encoded; do
+      [[ -n "$encoded" ]] || continue
+      block="$(decode_base64 "$encoded")"
+      emit_content_block "$timestamp" "$role" "$block"
+    done < <(jq -r '
+      .message.content[]? |
+      if .type == "text" then
+        {kind:"text", text:(.text // "")}
+      elif .type == "thinking" then
+        {kind:"thinking", text:(.thinking // "")}
+      elif .type == "toolCall" then
+        {kind:"toolCall", text:((.name // "tool") + " " + ((.arguments // {}) | tojson))}
+      else
+        {kind:(.type // "content"), text:(.text // (tojson))}
+      end | @base64' <<< "$record")
+  else
+    emit_text "$timestamp" '·' "${role^^}" "$DIM" "$(jq -r '.message.content // empty' <<< "$record")"
+  fi
+}
+
+while IFS= read -r record || [[ -n "$record" ]]; do
+  [[ -n "$record" ]] || continue
+  type="$(jq -r '.type // empty' <<< "$record" 2>/dev/null || true)"
+  timestamp="$(timestamp_for "$record")"
+
+  case "$type" in
+    message)
+      format_message "$record" "$timestamp"
+      ;;
+    model_change)
+      emit_text "$timestamp" '◆' 'MODEL' "$MAGENTA" "$(jq -r '[.provider // empty, .modelId // empty] | map(select(length > 0)) | join("/")' <<< "$record")"
+      ;;
+    thinking_level_change)
+      emit_text "$timestamp" '◇' 'THINKING' "$DIM" "$(jq -r '.thinkingLevel // empty' <<< "$record")"
+      ;;
+    session)
+      emit_text "$timestamp" '●' 'SESSION' "$DIM" "$(jq -r '[.cwd // empty, .id // empty] | map(select(length > 0)) | join(" ")' <<< "$record")"
+      ;;
+    *)
+      emit_text "$timestamp" '·' 'EVENT' "$DIM" "$type"
+      ;;
+  esac
+done

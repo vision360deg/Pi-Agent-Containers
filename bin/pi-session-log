@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run Pi inside a nested PTY so interactive terminal behavior is preserved.
-# `script` writes the same output to Docker's PID 1 stdout for collection by
-# `docker compose logs`, while its normal stdout remains attached to WezTerm.
+# Keep Pi in the foreground of the interactive exec PTY. Session JSONL is
+# streamed by pi-session-forwarder, which belongs to the persistent service.
+# Explicitly discard `script`'s terminal transcript so util-linux does not
+# create its default `typescript` file in the mounted workspace.
 printf -v PI_COMMAND '%q ' pi "$@"
 PI_COMMAND="${PI_COMMAND% }"
+
+# Exposed only for the regression test: `exec script` must retain this PID so
+# it remains the foreground process that owns interactive terminal input.
+export PI_SESSION_LOG_PID=$$
 
 exec script \
   --quiet \
   --flush \
   --return \
-  --log-out /proc/1/fd/1 \
-  --command "$PI_COMMAND"
+  --command "$PI_COMMAND" \
+  /dev/null

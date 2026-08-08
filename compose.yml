@@ -11,11 +11,12 @@ services:
         PI_PACKAGE_VERSION: ${PI_PACKAGE_VERSION:-latest}
         AGENT_BROWSER_VERSION: ${AGENT_BROWSER_VERSION:-latest}
     init: true
-    stdin_open: true
-    tty: true
+    stdin_open: false
+    tty: false
     working_dir: /workspace
-    # Keep the service container alive; bin/pi starts Pi through compose exec.
-    command: ["sleep", "infinity"]
+    # Keep the service alive while a separate process streams session JSONL to
+    # Docker stdout. bin/pi starts interactive Pi through compose exec.
+    command: ["bash", "-lc", "pi-session-forwarder & exec sleep infinity"]
     environment:
       # Add whichever provider credentials you use to .env.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -26,6 +27,10 @@ services:
       # base stack does not publish them so multiple workspace stacks can
       # coexist. Use `pi --oauth` when browser login needs host callbacks.
       PI_OAUTH_CALLBACK_HOST: ${PI_OAUTH_CALLBACK_HOST:-0.0.0.0}
+      # Docker stdout uses readable colored events by default. Set format=raw
+      # for machine-readable JSONL or color=never for plain text.
+      PI_SESSION_LOG_FORMAT: ${PI_SESSION_LOG_FORMAT:-pretty}
+      PI_SESSION_LOG_COLOR: ${PI_SESSION_LOG_COLOR:-always}
       # Optional: point agent-browser at an existing CDP endpoint instead of
       # launching its own Chromium in this container.
       AGENT_BROWSER_CDP:

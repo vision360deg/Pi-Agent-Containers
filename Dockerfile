@@ -35,7 +35,9 @@ RUN mkdir -p /home/node/.pi/agent /home/node/.agent-browser \
     && chown -R node:node /home/node/.pi /home/node/.agent-browser
 
 COPY bin/pi-session-log /usr/local/bin/pi-session-log
-RUN chmod 0755 /usr/local/bin/pi-session-log
+COPY bin/pi-session-forwarder /usr/local/bin/pi-session-forwarder
+COPY bin/pi-session-format /usr/local/bin/pi-session-format
+RUN chmod 0755 /usr/local/bin/pi-session-log /usr/local/bin/pi-session-forwarder /usr/local/bin/pi-session-format
 
 USER node
 

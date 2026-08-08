@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# This process belongs to the persistent Compose service, not to the
+# interactive `docker compose exec` process. Keeping the watcher here means
+# Pi retains foreground ownership of its PTY while Docker receives session
+# records through the service's normal stdout stream.
+SESSION_DIR="${PI_CODING_AGENT_SESSION_DIR:-/home/node/.pi/agent/sessions}"
+POLL_INTERVAL="${PI_SESSION_LOG_POLL_INTERVAL:-0.05}"
+
+declare -A SESSION_SIZES=()
+declare -A SESSION_TAIL_PIDS=()
+shopt -s nullglob
+
+for session_file in "$SESSION_DIR"/*.jsonl; do
+  SESSION_SIZES["$session_file"]="$(wc -c < "$session_file")"
+done
+
+stop_tails() {
+  local session_file
+  local tail_pid
+  for session_file in "${!SESSION_TAIL_PIDS[@]}"; do
+    tail_pid="${SESSION_TAIL_PIDS[$session_file]}"
+    kill "$tail_pid" 2>/dev/null || true
+  done
+}
+
+trap stop_tails EXIT
+trap 'exit 143' HUP INT TERM
+
+start_tail() {
+  local session_file="$1"
+  local start_offset="$2"
+
+  if (( start_offset > 0 )); then
+    tail -c +$((start_offset + 1)) -F "$session_file" | pi-session-format &
+  else
+    tail -c +1 -F "$session_file" | pi-session-format &
+  fi
+  SESSION_TAIL_PIDS["$session_file"]=$!
+}
+
+while :; do
+  for session_file in "$SESSION_DIR"/*.jsonl; do
+    [[ -f "$session_file" ]] || continue
+
+    if [[ ! -v "SESSION_SIZES[$session_file]" ]]; then
+      SESSION_SIZES["$session_file"]=0
+      start_tail "$session_file" 0
+      continue
+    fi
+
+    if [[ -v "SESSION_TAIL_PIDS[$session_file]" ]]; then
+      tail_pid="${SESSION_TAIL_PIDS[$session_file]}"
+      if kill -0 "$tail_pid" 2>/dev/null; then
+        continue
+      fi
+      unset "SESSION_TAIL_PIDS[$session_file]"
+    fi
+
+    current_size="$(wc -c < "$session_file")"
+    original_size="${SESSION_SIZES[$session_file]}"
+    if (( current_size > original_size )); then
+      start_tail "$session_file" "$original_size"
+      SESSION_SIZES["$session_file"]="$current_size"
+    fi
+  done
+  sleep "$POLL_INTERVAL"
+done
