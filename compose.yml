@@ -1,0 +1,67 @@
+services:
+  pi:
+    container_name: "${PI_CONTAINER_NAME:-pi-agents-pi}"
+    labels:
+      com.pi-agents.workspace: "${PI_WORKSPACE:-}"
+      com.pi-agents.workspace-basename: "${PI_WORKSPACE_BASENAME:-}"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PI_PACKAGE_VERSION: ${PI_PACKAGE_VERSION:-latest}
+        AGENT_BROWSER_VERSION: ${AGENT_BROWSER_VERSION:-latest}
+    init: true
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+    # Keep the service container alive; bin/pi starts Pi through compose exec.
+    command: ["sleep", "infinity"]
+    environment:
+      # Add whichever provider credentials you use to .env.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Pi's OAuth callbacks use fixed provider-specific localhost ports. The
+      # base stack does not publish them so multiple workspace stacks can
+      # coexist. Use `pi --oauth` when browser login needs host callbacks.
+      PI_OAUTH_CALLBACK_HOST: ${PI_OAUTH_CALLBACK_HOST:-0.0.0.0}
+      # Optional: point agent-browser at an existing CDP endpoint instead of
+      # launching its own Chromium in this container.
+      AGENT_BROWSER_CDP:
+    volumes:
+      - ${PI_WORKSPACE:-.}:/workspace
+      # The wrapper assigns one per-workspace volume and seeds it from an
+      # existing state volume on first use. It is never shared between stacks.
+      - pi-agent-state:/home/node/.pi/agent
+      # Nested mount keeps sessions isolated per workspace.
+      - pi-session-state:/home/node/.pi/agent/sessions
+      - agent-browser-state:/home/node/.agent-browser
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - pi
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+networks:
+  pi:
+    # The wrapper passes the resolved workspace project name so each stack
+    # receives its own isolated network.
+    name: ${PI_WORKSPACE_PROJECT:-pi-agents-pi}
+
+volumes:
+  pi-agent-state:
+    name: ${PI_AGENT_STATE_VOLUME_NAME:-pi-agents-default_pi-agent-state}
+    # bin/pi creates this volume and applies its Docker metadata before
+    # Compose starts. External keeps Compose from trying to reconcile labels
+    # on an existing state volume or deleting it during a normal `down`.
+    external: true
+  pi-session-state:
+    name: ${PI_SESSION_STATE_VOLUME_NAME:-pi-agents_pi-sessions}
+    external: true
+  agent-browser-state:
+    name: ${PI_BROWSER_STATE_VOLUME_NAME:-pi-agents_agent-browser-state}
+    external: true

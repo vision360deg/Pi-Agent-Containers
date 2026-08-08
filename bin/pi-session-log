@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run Pi inside a nested PTY so interactive terminal behavior is preserved.
+# `script` writes the same output to Docker's PID 1 stdout for collection by
+# `docker compose logs`, while its normal stdout remains attached to WezTerm.
+printf -v PI_COMMAND '%q ' pi "$@"
+PI_COMMAND="${PI_COMMAND% }"
+
+exec script \
+  --quiet \
+  --flush \
+  --return \
+  --log-out /proc/1/fd/1 \
+  --command "$PI_COMMAND"

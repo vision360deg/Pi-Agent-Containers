@@ -1,0 +1,13 @@
+services:
+  pi:
+    # Pi's OpenAI Codex browser OAuth flow uses localhost:1455, Anthropic uses
+    # localhost:53692, and the pi-antigravity extension uses localhost:51121.
+    # This override publishes the known fixed callbacks only for an explicitly
+    # selected workspace.
+    ports:
+      - "127.0.0.1:1455:1455"
+      - "[::1]:1455:1455"
+      - "127.0.0.1:53692:53692"
+      - "[::1]:53692:53692"
+      - "127.0.0.1:51121:51121"
+      - "[::1]:51121:51121"

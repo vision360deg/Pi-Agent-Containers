@@ -1,0 +1,1259 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  SOURCE_DIR="$(cd -P -- "$(dirname -- "$SOURCE")" && pwd)"
+  SOURCE="$(readlink -- "$SOURCE")"
+  [[ "$SOURCE" = /* ]] || SOURCE="$SOURCE_DIR/$SOURCE"
+done
+
+STACK_ROOT="$(cd -P -- "$(dirname -- "$SOURCE")/.." && pwd)"
+WORKSPACE="${PI_WORKSPACE:-$PWD}"
+ORIGINAL_ARG_COUNT=$#
+HELP_REQUESTED=false
+for arg in "$@"; do
+  if [[ "$arg" == "-h" || "$arg" == "--help" ]]; then
+    HELP_REQUESTED=true
+    break
+  fi
+done
+
+REMOVE_AFTER_RUN=false
+REPLACE_CONTAINER=false
+KEEP_EXISTING=false
+NEW_STATE=false
+SEED_STATE=false
+LATEST_STATE=false
+OAUTH_CALLBACK=false
+WORKSPACE_OPTION=false
+OAUTH_CALLBACK_PORTS=(1455 53692 51121)
+OAUTH_EXTRA_PORTS=()
+OAUTH_OVERRIDE_FILE=""
+PI_BROWSER_EXTENSION_SOURCE="npm:pi-agent-browser-native"
+
+oauth_port_is_known() {
+  [[ "$1" == 1455 || "$1" == 53692 || "$1" == 51121 ]]
+}
+
+oauth_append_port() {
+  local raw_port="$1"
+  local source="$2"
+  local port
+  local existing
+
+  if ! [[ "$raw_port" =~ ^[0-9]+$ ]]; then
+    printf 'pi: invalid OAuth callback port in %s: %s\n' "$source" "$raw_port" >&2
+    return 2
+  fi
+
+  port=$((10#$raw_port))
+  if (( port < 1 || port > 65535 )); then
+    printf 'pi: OAuth callback port must be between 1 and 65535 in %s: %s\n' "$source" "$raw_port" >&2
+    return 2
+  fi
+
+  for existing in "${OAUTH_CALLBACK_PORTS[@]}"; do
+    if [[ "$existing" == "$port" ]]; then
+      return 0
+    fi
+  done
+
+  OAUTH_CALLBACK_PORTS+=("$port")
+  if ! oauth_port_is_known "$port"; then
+    OAUTH_EXTRA_PORTS+=("$port")
+  fi
+}
+
+oauth_parse_port_list() {
+  local list="$1"
+  local source="$2"
+  local normalized
+  local token
+  local -a tokens=()
+
+  normalized="${list//$'\n'/ }"
+  normalized="${normalized//,/ }"
+  if [[ -z "${normalized//[[:space:]]/}" ]]; then
+    return 0
+  fi
+
+  read -r -a tokens <<< "$normalized"
+  for token in "${tokens[@]}"; do
+    oauth_append_port "$token" "$source" || return $?
+  done
+}
+
+oauth_cli_token_is_port_list() {
+  [[ "$1" =~ ^[0-9]+(,[0-9]+)*,?$ ]]
+}
+
+create_oauth_override() {
+  local port
+
+  [[ "${#OAUTH_EXTRA_PORTS[@]}" -gt 0 ]] || return 0
+  OAUTH_OVERRIDE_FILE="$(mktemp "${TMPDIR:-/tmp}/pi-oauth.XXXXXX")"
+  {
+    printf 'services:\n'
+    printf '  pi:\n'
+    printf '    ports:\n'
+    for port in "${OAUTH_EXTRA_PORTS[@]}"; do
+      printf '      - "127.0.0.1:%s:%s"\n' "$port" "$port"
+      printf '      - "[::1]:%s:%s"\n' "$port" "$port"
+    done
+  } > "$OAUTH_OVERRIDE_FILE"
+  trap '[[ -z "${OAUTH_OVERRIDE_FILE:-}" || ! -e "$OAUTH_OVERRIDE_FILE" ]] || rm -f -- "$OAUTH_OVERRIDE_FILE"' EXIT
+}
+
+# These are wrapper options, so consume them before passing the remaining
+# arguments to Pi. Keeping them here also lets `pi --replace --help` take the
+# local brief-help path without starting Docker. Help invocations skip parsing
+# entirely so even `pi --workspace --help` remains a local brief-help request.
+if [[ "$HELP_REQUESTED" == false ]]; then
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --rm)
+        REMOVE_AFTER_RUN=true
+        shift
+        ;;
+      --replace)
+        REPLACE_CONTAINER=true
+        shift
+        ;;
+      --keep-existing)
+        KEEP_EXISTING=true
+        shift
+        ;;
+      --new-state)
+        NEW_STATE=true
+        shift
+        ;;
+      --seed)
+        SEED_STATE=true
+        shift
+        ;;
+      --latest-state)
+        LATEST_STATE=true
+        shift
+        ;;
+      --oauth)
+        OAUTH_CALLBACK=true
+        shift
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --*)
+              break
+              ;;
+            *,*|[0-9]*)
+              if ! oauth_cli_token_is_port_list "$1"; then
+                printf 'pi: invalid OAuth callback port list: %s\n' "$1" >&2
+                exit 2
+              fi
+              oauth_parse_port_list "$1" '--oauth' || exit $?
+              shift
+              ;;
+            *)
+              break
+              ;;
+          esac
+        done
+        ;;
+      --oauth=*)
+        OAUTH_CALLBACK=true
+        oauth_value="${1#--oauth=}"
+        if [[ -n "$oauth_value" ]]; then
+          oauth_cli_token_is_port_list "$oauth_value" || {
+            printf 'pi: invalid OAuth callback port list: %s\n' "$oauth_value" >&2
+            exit 2
+          }
+          oauth_parse_port_list "$oauth_value" '--oauth' || exit $?
+        fi
+        shift
+        ;;
+      --workspace)
+        if [[ "$#" -lt 2 ]]; then
+          printf 'pi: --workspace requires a path\n' >&2
+          printf 'usage: pi [--workspace PATH] [PI_ARGS...]\n' >&2
+          exit 2
+        fi
+        WORKSPACE="$2"
+        WORKSPACE_OPTION=true
+        shift 2
+        ;;
+      --workspace=*)
+        WORKSPACE="${1#--workspace=}"
+        if [[ -z "$WORKSPACE" ]]; then
+          printf 'pi: --workspace requires a path\n' >&2
+          printf 'usage: pi [--workspace PATH] [PI_ARGS...]\n' >&2
+          exit 2
+        fi
+        WORKSPACE_OPTION=true
+        shift
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+fi
+
+print_detailed_help() {
+  cat <<'EOF'
+Containerized Pi wrapper
+
+Usage:
+  pi [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
+  pi --oauth [PORTS...] --rm [PI_ARGS...]
+  pi stop
+  pi update [--extensions] [--models]
+  pi list
+  pi remove [--all]
+
+Description:
+  Runs Pi inside a persistent Docker Compose service scoped to the current
+  workspace while keeping the terminal attached to the Pi process.
+
+  With no command, the workspace's persistent Pi service is started or reused
+  and Pi is executed inside it. The current host directory is mounted at
+  /workspace. Each workspace has its own Compose project and Pi/browser state.
+
+  Before Compose starts, the wrapper provisions the workspace's named volumes
+  and treats them as external so existing state is never recreated because of
+  a metadata change. It also repairs ownership and write permissions for the
+  agent, session, and browser volumes before launching Pi.
+
+  Before each Pi run, the wrapper ensures the pi-agent-browser-native package is
+  installed in the mounted workspace agent state. The package exposes Pi's
+  native agent_browser tool while using the container's upstream agent-browser
+  CLI and Chromium.
+
+Options:
+  -h, --help
+      Show this detailed help. Help is handled locally and does not start
+      Docker.
+
+  --rm
+      Run Pi in a disposable one-off container. The container is removed after
+      Pi exits. This mode does not use the persistent service.
+
+  --replace
+      Force-recreate the persistent container for the current workspace.
+
+  --keep-existing
+      When another workspace has the same basename, preserve its container
+      unchanged and create the current workspace with a disambiguated name.
+
+  --workspace PATH, --workspace=PATH
+      Use PATH as the workspace instead of the current invocation directory.
+      Takes precedence over PI_WORKSPACE.
+      Relative paths resolve from the directory where pi is invoked.
+
+  --new-state
+      Use an empty workspace-specific Pi agent-state volume for this run instead
+      of copying agent-state files from the workspace currently designated as the
+      seed. Workspace sessions remain isolated.
+
+  --seed
+      Promote this workspace's agent state to the default seed used by future
+      workspaces. On the first-ever stack, it is also the newest managed state.
+
+  --latest-state
+      When initializing a new workspace, copy from the newest Docker-managed
+      state volume instead of the seed. Once this workspace already has
+      initialized state, this option has no effect and prints a warning.
+
+  --oauth [PORTS...]
+      Add the Compose override that publishes host loopback ports for browser
+      OAuth callbacks. Known fixed callbacks 1455 (OpenAI Codex), 53692
+      (Anthropic), and 51121 (pi-antigravity) are always published. Add custom
+      fixed ports as a
+      comma- or space-separated list, for example --oauth 7000,7001 or
+      --oauth 7000 7001. PI_OAUTH_CALLBACK_PORTS adds ports from the
+      environment. Without this option, stacks do not publish host ports.
+
+Commands:
+  stop
+      Stop only the persistent Compose project for the current workspace.
+      Containers, networks, and named volumes are not removed.
+
+  remove
+      Remove the current workspace's Compose project. Pi and browser state
+      volumes are preserved.
+
+  remove --all
+      Remove the current workspace's Compose project and its persisted Pi and
+      browser state volumes. Other workspace state volumes are unaffected. The
+      host workspace files are never removed.
+
+  update
+      Rebuild the Pi image without using the Docker build cache, then
+      force-recreate the persistent service for the current workspace.
+
+  update --extensions
+      Start the persistent service and run Pi's extension update command.
+
+  update --models
+      Start the persistent service and update Pi's model catalogs.
+
+  update --extensions --models
+      Update both Pi-managed extensions and model catalogs.
+
+  list
+      List running and stopped persistent Pi stacks with workspace, project,
+      Docker creation/start timestamps, agent-state volume, and seed/latest markers.
+      The started timestamp uses Docker State.StartedAt; zero means started: never.
+
+Workspace:
+  PI_WORKSPACE=/path/to/project pi
+      Mount /path/to/project at /workspace inside its workspace container.
+
+  Without PI_WORKSPACE, the directory from which pi is invoked is used.
+
+  Workspace selection precedence is: --workspace PATH, then PI_WORKSPACE, then
+  the directory from which pi is invoked.
+
+  Persistent containers are named pi-agents-pi-<workspace-basename>. If two
+  different workspaces have the same basename, pi prompts before expanding
+  the names with the first differing path component.
+
+  Compose projects are named pi-agents-pi-<workspace-basename>. If another
+  workspace has the same basename, the first differing path component is
+  added to the project name. Pi, session, and browser volumes retain stable
+  internal namespaces so renaming the project does not create fresh state.
+
+  Each workspace gets its own agent-state volume. On first creation, its agent
+  files are copied from an existing normal workspace state volume; the sessions
+  directory is intentionally excluded. Later changes stay isolated to that
+  workspace. Use --new-state to start empty instead of copying agent-state files
+  from the workspace currently designated as the seed.
+
+  The first stack becomes the seed. Later stacks copy the seed by default.
+  Docker volume creation metadata identifies the latest-created state for
+  --latest-state. Use --seed to promote a workspace to the seed. If the seed
+  pointer is missing while managed state volumes exist, pi warns, proposes the
+  oldest managed state volume as the seed, and asks for confirmation before continuing.
+
+  Existing running and stopped containers are both considered during collision
+  checks.
+
+Logging:
+  Persistent Pi output is forwarded to the Docker service log stream.
+
+  Follow it with:
+    docker compose --project-name <readable-workspace-project> logs --follow --timestamps pi
+
+Examples:
+  pi                                 # Start or reuse the current workspace container.
+  pi "Inspect this project"          # Start Pi and send it an initial prompt.
+  pi --oauth                         # Publish known browser OAuth callback ports.
+  pi --oauth 7000,7001               # Also publish two custom callback ports.
+  pi --oauth 7000 7001               # Space-separated form of the same list.
+  pi --rm                            # Run Pi in a disposable one-off container.
+  pi --replace                       # Force-recreate the current workspace container.
+  pi --keep-existing                 # Preserve a colliding existing container.
+  pi --new-state                     # Start empty; skip copying from the seed workspace.
+  pi --seed                          # Promote this workspace's state to the seed.
+  pi --latest-state                  # Copy latest state when initializing this workspace.
+  pi --workspace ~/src/project       # Use an explicit workspace path.
+  PI_WORKSPACE="$PWD" pi             # Use an explicit host directory as the workspace.
+  pi stop                            # Stop only the current workspace project.
+  pi update                          # Rebuild the image and recreate the service.
+  pi update --extensions             # Update Pi-managed extensions.
+  pi update --models                 # Update Pi's model catalogs.
+  pi list                             # Inventory persistent Pi stacks without changing Docker state.
+  pi remove                          # Remove the stack but preserve persisted state.
+  pi remove --all                    # Also remove Pi and browser persisted state.
+
+Help behavior:
+  Exact `pi -h` and `pi --help` commands show this detailed help.
+
+  When a help flag is combined with another argument, pi prints only the brief
+  usage summary instead.
+
+Restrictions:
+  --rm cannot be combined with stop, update, remove, --replace, or --keep-existing.
+  --oauth is optional; only one simultaneous stack can publish any selected host
+  callback port. PI_OAUTH_CALLBACK_PORTS accepts comma- or space-separated ports.
+  --replace and --keep-existing apply to persistent workspace containers only.
+  remove accepts only the optional --all flag; --all also removes persisted state.
+  list accepts no positional arguments and does not change Docker state.
+  --new-state cannot be combined with stop or remove.
+  --latest-state only affects first initialization of a workspace and warns
+  after that workspace already has initialized state. It selects the newest
+  managed Docker state volume rather than a second pointer file.
+  --seed promotes the current state to the seed. The seed pointer is stored in
+  ~/.config/pi-agent-containers/seed by default.
+  PI_AGENT_CONTAINERS_CONFIG_PATH overrides the seed-pointer directory when needed.
+  If remove --all deletes the seed state, pi repoints the seed to the oldest
+  remaining managed state volume, or clears it when none remain.
+  A basename collision prompts for action and defaults to cancel.
+EOF
+}
+
+print_brief_usage() {
+  cat <<'EOF'
+Usage:
+  pi [-h|--help]
+  pi [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
+  pi --oauth [PORTS...] --rm [PI_ARGS...]
+  pi stop
+  pi update [--extensions] [--models]
+  pi list
+  pi remove [--all]
+
+Options:
+  -h, --help        Show detailed help when used alone.
+  --rm              Run Pi in a disposable one-off container.
+  --replace         Force-recreate the current workspace container.
+  --keep-existing   Preserve an existing colliding workspace container.
+  --workspace PATH  Use PATH as the workspace; it overrides PI_WORKSPACE.
+  --new-state       Start empty; skip copying agent-state files from the seed workspace.
+  --seed            Promote this workspace's state to the default seed state.
+  --latest-state    Copy the newest Docker-managed state when initializing.
+  --oauth [PORTS...] Publish known callback ports 1455/53692/51121; add comma- or
+                     space-separated custom ports.
+
+  State volumes     Private per workspace; existing contents are preserved and
+                    permissions are repaired before Pi starts.
+  Browser integration Ensures pi-agent-browser-native is installed by default.
+
+Commands:
+  stop              Stop the current workspace's persistent project.
+  update            Rebuild Pi or update extensions/models.
+  list              List running and stopped persistent Pi stacks (read-only).
+  remove [--all]    Remove the current stack; --all also removes persisted state.
+
+Run `pi --help` for detailed usage.
+EOF
+}
+
+if [[ "$HELP_REQUESTED" == true ]]; then
+  if [[ "$ORIGINAL_ARG_COUNT" -eq 1 ]]; then
+    print_detailed_help
+  else
+    print_brief_usage
+  fi
+  exit 0
+fi
+
+if [[ "$OAUTH_CALLBACK" == true ]]; then
+  oauth_parse_port_list "${PI_OAUTH_CALLBACK_PORTS:-}" 'PI_OAUTH_CALLBACK_PORTS' || exit $?
+  create_oauth_override
+fi
+
+LIST_COMMAND=false
+if [[ "${1:-}" == "list" ]]; then
+  if [[ "$#" -ne 1 || "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true || "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true || "${WORKSPACE_OPTION:-false}" == true ]]; then
+    printf 'usage: pi list\n' >&2
+    exit 2
+  fi
+  LIST_COMMAND=true
+fi
+
+if [[ "$REMOVE_AFTER_RUN" == true && "$REPLACE_CONTAINER" == true ]]; then
+  printf 'pi: --rm cannot be combined with --replace\n' >&2
+  exit 2
+fi
+
+if [[ "$REMOVE_AFTER_RUN" == true && "$KEEP_EXISTING" == true ]]; then
+  printf 'pi: --rm cannot be combined with --keep-existing\n' >&2
+  exit 2
+fi
+
+if [[ "$REMOVE_AFTER_RUN" == true && ( "$SEED_STATE" == true || "$LATEST_STATE" == true ) ]]; then
+  printf 'pi: --seed and --latest-state require a persistent workspace stack\n' >&2
+  exit 2
+fi
+
+if [[ "${1:-}" == "stop" ]]; then
+  if [[ "$REMOVE_AFTER_RUN" == true ]]; then
+    printf 'pi: --rm cannot be combined with stop; stop targets the persistent service\n' >&2
+    exit 2
+  fi
+  if [[ "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true || "$LATEST_STATE" == true ]]; then
+    printf 'pi: --replace, --keep-existing, --new-state, --seed, and --latest-state cannot be combined with stop\n' >&2
+    exit 2
+  fi
+
+  if [[ "$#" -ne 1 ]]; then
+    printf 'usage: pi stop\n' >&2
+    exit 2
+  fi
+fi
+
+if [[ "${1:-}" == "update" && ( "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true ) ]]; then
+  printf 'pi: --replace and --keep-existing cannot be combined with update\n' >&2
+  exit 2
+fi
+
+if [[ "$LIST_COMMAND" != true ]]; then
+  if [[ ! -d "$WORKSPACE" ]]; then
+    printf 'pi: workspace does not exist: %s\n' "$WORKSPACE" >&2
+    exit 1
+  fi
+  WORKSPACE="$(cd -P -- "$WORKSPACE" && pwd)"
+fi
+
+sanitize_slug() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9_.-]/-/g' -e 's/^[^a-z0-9]*//' -e 's/[^a-z0-9]*$//' -e 's/-\{2,\}/-/g')"
+  if [[ -z "$value" ]]; then
+    value="workspace"
+  fi
+  printf '%s' "$value"
+}
+
+workspace_basename="$(basename -- "$WORKSPACE")"
+if [[ "$workspace_basename" == "/" || -z "$workspace_basename" ]]; then
+  workspace_basename="root"
+fi
+WORKSPACE_BASENAME="$(sanitize_slug "$workspace_basename")"
+
+workspace_hash() {
+  local digest
+  if command -v shasum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$1" | shasum -a 256 | awk '{print substr($1, 1, 12)}')"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    digest="$(printf '%s' "$1" | sha256sum | awk '{print substr($1, 1, 12)}')"
+  else
+    digest="$(printf '%s' "$1" | cksum | awk '{print $1}')"
+  fi
+  printf '%s' "$digest"
+}
+
+PROJECT_NAME="pi-agents-pi-$WORKSPACE_BASENAME"
+VOLUME_NAMESPACE="pi-agents-ws-$(workspace_hash "$WORKSPACE")"
+AGENT_STATE_NAMESPACE="$VOLUME_NAMESPACE"
+if [[ "$NEW_STATE" == true ]]; then
+  AGENT_STATE_NAMESPACE="pi-agents-new-ws-$(workspace_hash "$WORKSPACE")"
+fi
+AGENT_STATE_VOLUME_NAME="${AGENT_STATE_NAMESPACE}_pi-agent-state"
+SESSION_STATE_VOLUME_NAME="${VOLUME_NAMESPACE}_pi-sessions"
+BROWSER_STATE_VOLUME_NAME="${VOLUME_NAMESPACE}_agent-browser-state"
+CONTAINER_NAME="pi-agents-pi-$WORKSPACE_BASENAME"
+CONFIG_PATH="${PI_AGENT_CONTAINERS_CONFIG_PATH:-$HOME/.config/pi-agent-containers}"
+STATE_SEED_FILE="$CONFIG_PATH/seed"
+STATE_TARGET_WAS_NEW=false
+FORCE_RECREATE=false
+if [[ "$REPLACE_CONTAINER" == true || "$NEW_STATE" == true ]]; then
+  FORCE_RECREATE=true
+fi
+build_compose() {
+  COMPOSE=(
+    docker compose
+    --project-name "$PROJECT_NAME"
+    --project-directory "$STACK_ROOT"
+    --file "$STACK_ROOT/compose.yml"
+  )
+  if [[ "$OAUTH_CALLBACK" == true ]]; then
+    COMPOSE+=(--file "$STACK_ROOT/compose.oauth.yml")
+    if [[ -n "$OAUTH_OVERRIDE_FILE" ]]; then
+      COMPOSE+=(--file "$OAUTH_OVERRIDE_FILE")
+    fi
+  fi
+}
+
+build_compose
+
+run_compose() {
+  env \
+    PI_WORKSPACE="$WORKSPACE" \
+    PI_WORKSPACE_BASENAME="$WORKSPACE_BASENAME" \
+    PI_CONTAINER_NAME="$CONTAINER_NAME" \
+    PI_WORKSPACE_PROJECT="$PROJECT_NAME" \
+    PI_AGENT_STATE_VOLUME_NAME="$AGENT_STATE_VOLUME_NAME" \
+    PI_SESSION_STATE_VOLUME_NAME="$SESSION_STATE_VOLUME_NAME" \
+    PI_BROWSER_STATE_VOLUME_NAME="$BROWSER_STATE_VOLUME_NAME" \
+    "${COMPOSE[@]}" "$@"
+}
+
+read_state_pointer() {
+  local file="$1"
+  local value=""
+  if [[ -s "$file" ]]; then
+    IFS= read -r value < "$file"
+  fi
+  printf '%s' "$value"
+}
+
+write_state_pointer() {
+  local file="$1"
+  local value="$2"
+  local temporary_file
+  mkdir -p "$CONFIG_PATH"
+  temporary_file="${file}.$$"
+  printf '%s\n' "$value" > "$temporary_file"
+  mv -f -- "$temporary_file" "$file"
+}
+
+clear_state_pointer() {
+  local file="$1"
+  if [[ -e "$file" ]]; then
+    : > "$file"
+  fi
+}
+
+state_volume_exists() {
+  [[ -n "$1" ]] && docker volume inspect "$1" >/dev/null 2>&1
+}
+
+ensure_workspace_volumes() {
+  # Compose cannot safely add or reconcile labels on an already-existing
+  # named volume: it prompts to recreate the volume, which could destroy Pi
+  # state. Create the volumes first and let Compose consume them as external.
+  # Existing volumes are deliberately left untouched.
+  if ! state_volume_exists "$AGENT_STATE_VOLUME_NAME"; then
+    docker volume create \
+      --label com.pi-agents.managed=true \
+      --label com.pi-agents.state-kind=agent \
+      --label "com.pi-agents.workspace=$WORKSPACE" \
+      --label "com.pi-agents.project=$PROJECT_NAME" \
+      "$AGENT_STATE_VOLUME_NAME" >/dev/null
+  fi
+
+  if ! state_volume_exists "$SESSION_STATE_VOLUME_NAME"; then
+    docker volume create "$SESSION_STATE_VOLUME_NAME" >/dev/null
+  fi
+
+  if ! state_volume_exists "$BROWSER_STATE_VOLUME_NAME"; then
+    docker volume create "$BROWSER_STATE_VOLUME_NAME" >/dev/null
+  fi
+}
+
+state_volume_created_at() {
+  local volume="$1"
+  docker volume inspect --format '{{.CreatedAt}}' "$volume" 2>/dev/null
+}
+
+list_managed_state_volumes() {
+  docker volume ls \
+    --filter 'label=com.pi-agents.managed=true' \
+    --filter 'label=com.pi-agents.state-kind=agent' \
+    --format '{{.Name}}'
+}
+
+find_managed_state_volume_by_age() {
+  local direction="$1"
+  local excluded="${2:-}"
+  local candidate
+  local created_at
+  local selected=""
+  local selected_created_at=""
+
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    [[ -n "$excluded" && "$candidate" == "$excluded" ]] && continue
+    created_at="$(state_volume_created_at "$candidate" || true)"
+    [[ -n "$created_at" ]] || continue
+    if [[ -z "$selected" || \
+      ( "$direction" == oldest && ( "$created_at" < "$selected_created_at" || \
+        ( "$created_at" == "$selected_created_at" && "$candidate" < "$selected" ) ) ) || \
+      ( "$direction" == newest && ( "$created_at" > "$selected_created_at" || \
+        ( "$created_at" == "$selected_created_at" && "$candidate" > "$selected" ) ) ) ]]; then
+      selected="$candidate"
+      selected_created_at="$created_at"
+    fi
+  done < <(list_managed_state_volumes)
+
+  printf '%s' "$selected"
+}
+
+find_oldest_managed_state_volume() {
+  find_managed_state_volume_by_age oldest "$AGENT_STATE_VOLUME_NAME"
+}
+
+find_newest_managed_state_volume() {
+  find_managed_state_volume_by_age newest "$AGENT_STATE_VOLUME_NAME"
+}
+
+find_newest_managed_state_volume_for_listing() {
+  find_managed_state_volume_by_age newest
+}
+
+bootstrap_seed_pointer() {
+  local seed
+
+  seed="$(read_state_pointer "$STATE_SEED_FILE")"
+  if [[ -n "$seed" ]] && ! state_volume_exists "$seed"; then
+    clear_state_pointer "$STATE_SEED_FILE"
+  fi
+}
+
+confirm_missing_seed_pointer() {
+  local candidate="$1"
+  local answer="n"
+
+  printf 'pi: warning: the seed pointer was not found.\n' >&2
+  printf 'pi: the oldest managed agent-state volume is:\n  %s\n' "$candidate" >&2
+  printf 'pi: use it as the seed for this new workspace? [y/N] ' >&2
+  if IFS= read -r answer; then
+    case "$answer" in
+      y|Y)
+        write_state_pointer "$STATE_SEED_FILE" "$candidate"
+        return 0
+        ;;
+    esac
+  fi
+
+  printf 'pi: seed selection cancelled; workspace was not started\n' >&2
+  return 2
+}
+
+prepare_state_lineage() {
+  local seed
+  local candidate
+
+  STATE_TARGET_WAS_NEW=false
+  if state_volume_exists "$AGENT_STATE_VOLUME_NAME"; then
+    return 0
+  fi
+
+  STATE_TARGET_WAS_NEW=true
+  bootstrap_seed_pointer
+  seed="$(read_state_pointer "$STATE_SEED_FILE")"
+  if [[ -n "$seed" ]]; then
+    return 0
+  fi
+
+  candidate="$(find_oldest_managed_state_volume)"
+  if [[ -n "$candidate" ]]; then
+    confirm_missing_seed_pointer "$candidate"
+  fi
+}
+
+select_state_source() {
+  local source=""
+  bootstrap_seed_pointer
+  if [[ "$LATEST_STATE" == true ]]; then
+    source="$(find_newest_managed_state_volume)"
+  else
+    source="$(read_state_pointer "$STATE_SEED_FILE")"
+  fi
+
+  if [[ -n "$source" && "$source" != "$AGENT_STATE_VOLUME_NAME" ]] && state_volume_exists "$source"; then
+    printf '%s' "$source"
+  fi
+}
+
+state_volume_has_useful_state() {
+  docker run --rm \
+    -v "$AGENT_STATE_VOLUME_NAME:/state:ro" \
+    alpine:latest \
+    sh -c 'set -eu; auth="$(tr -d "[:space:]" < /state/auth.json 2>/dev/null || printf "{}")"; if [ "$auth" != "{}" ]; then exit 0; fi; grep -Eq "\\\"defaultProvider\\\"|\\\"defaultModel\\\"" /state/settings.json 2>/dev/null'
+}
+
+initialize_agent_state() {
+  local source_volume
+  local target_volume_exists=false
+
+  # A per-workspace volume is seeded once from an existing state volume. The
+  # source is mounted read-only and sessions are excluded so each workspace
+  # starts with common login/configuration files but not another agent's
+  # conversation history.
+  if state_volume_exists "$AGENT_STATE_VOLUME_NAME"; then
+    target_volume_exists=true
+  fi
+
+  if [[ "$NEW_STATE" == true && "$LATEST_STATE" == false ]]; then
+    return 0
+  fi
+
+  if [[ "$target_volume_exists" == true ]] && state_volume_has_useful_state; then
+    bootstrap_seed_pointer
+    if [[ "$LATEST_STATE" == true ]]; then
+      printf 'pi: warning: --latest-state has no effect; this workspace already has initialized agent state\n' >&2
+    fi
+    return 0
+  fi
+
+  source_volume="$(select_state_source)"
+
+  if [[ -z "$source_volume" ]]; then
+    return 0
+  fi
+  if ! docker volume inspect "$source_volume" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # A previous Pi launch may have created the target volume and written only
+  # fresh defaults before this wrapper had a chance to seed it. Treat that
+  # specific state as uninitialized so the current workspace can recover from
+  # an earlier failed copy. Never replace a target containing real auth or
+  # provider/model preferences; Pi may populate models-store.json by itself
+  # during startup, so that file alone is not evidence of a logged-in state.
+  if [[ "$target_volume_exists" == true ]] && docker run --rm \
+      -v "$AGENT_STATE_VOLUME_NAME:/state:ro" \
+      alpine:latest \
+      sh -c 'set -eu; auth="$(tr -d "[:space:]" < /state/auth.json 2>/dev/null || printf "{}")"; if [ "$auth" != "{}" ]; then exit 0; fi; grep -Eq "\\\"defaultProvider\\\"|\\\"defaultModel\\\"" /state/settings.json 2>/dev/null'; then
+    return 0
+  fi
+
+  docker run --rm \
+    -v "$source_volume:/state-source:ro" \
+    -v "$AGENT_STATE_VOLUME_NAME:/state-target" \
+    alpine:latest \
+    sh -c 'set -eu; find /state-source -mindepth 1 -maxdepth 1 ! -name sessions -exec cp -a {} /state-target/ \; ; chown -R 1000:1000 /state-target'
+}
+
+repair_state_permissions() {
+  # State volumes can predate the current image or have been written by a
+  # root sidecar. Repair them before Pi starts so its node user can write
+  # auth, settings, models, sessions, and browser state without data loss.
+  docker run --rm --user 0:0 \
+    -v "$AGENT_STATE_VOLUME_NAME:/state" \
+    -v "$SESSION_STATE_VOLUME_NAME:/sessions" \
+    -v "$BROWSER_STATE_VOLUME_NAME:/browser" \
+    alpine:latest \
+    sh -c 'set -eu; for path in /state /sessions /browser; do chown -R 1000:1000 "$path"; find "$path" -type d -exec chmod u+rwx {} +; find "$path" -type f -exec chmod u+rw {} +; done'
+}
+
+remove_workspace_volumes() {
+  local volume
+  local status=0
+
+  for volume in \
+    "$AGENT_STATE_VOLUME_NAME" \
+    "$SESSION_STATE_VOLUME_NAME" \
+    "$BROWSER_STATE_VOLUME_NAME"; do
+    if state_volume_exists "$volume"; then
+      if ! docker volume rm "$volume"; then
+        status=1
+      fi
+    fi
+  done
+
+  return "$status"
+}
+
+record_state_lineage() {
+  local seed
+
+  bootstrap_seed_pointer
+  seed="$(read_state_pointer "$STATE_SEED_FILE")"
+
+  if [[ -z "$seed" ]]; then
+    write_state_pointer "$STATE_SEED_FILE" "$AGENT_STATE_VOLUME_NAME"
+    return 0
+  fi
+
+  if [[ "$SEED_STATE" == true ]]; then
+    write_state_pointer "$STATE_SEED_FILE" "$AGENT_STATE_VOLUME_NAME"
+  fi
+}
+
+repoint_seed_after_removal() {
+  local seed
+  local candidate
+
+  bootstrap_seed_pointer
+  seed="$(read_state_pointer "$STATE_SEED_FILE")"
+  if [[ -n "$seed" ]] && state_volume_exists "$seed"; then
+    return 0
+  fi
+
+  candidate="$(find_oldest_managed_state_volume)"
+  if [[ -n "$candidate" ]]; then
+    write_state_pointer "$STATE_SEED_FILE" "$candidate"
+    printf 'pi: the previous seed was removed; seed reassigned to oldest state %s\n' "$candidate" >&2
+  else
+    clear_state_pointer "$STATE_SEED_FILE"
+  fi
+}
+
+list_pi_stacks() (
+  local temp_dir
+  local ids
+  local id
+  local record
+  local name
+  local status
+  local created
+  local started
+  local workspace
+  local project
+  local agent_state
+  local seed
+  local latest
+  local marker
+  local marker_text
+  local inspect_format
+  local delimiter=$'\037'
+  local -a markers
+
+  temp_dir="$(mktemp -d)"
+  trap 'rm -rf "$temp_dir"' EXIT
+  inspect_format="{{.Name}}${delimiter}{{.State.Status}}${delimiter}{{.Created}}${delimiter}{{.State.StartedAt}}${delimiter}{{index .Config.Labels \"com.pi-agents.workspace\"}}${delimiter}{{index .Config.Labels \"com.docker.compose.project\"}}${delimiter}{{range .Mounts}}{{if and (eq .Type \"volume\") (eq .Destination \"/home/node/.pi/agent\")}}{{.Name}}{{end}}{{end}}"
+
+  ids="$(docker ps -a --filter 'label=com.pi-agents.workspace' --format '{{.ID}}')"
+  if [[ -z "$ids" ]]; then
+    printf 'No Pi stacks found.\n'
+    return 0
+  fi
+
+  seed="$(read_state_pointer "$STATE_SEED_FILE")"
+  latest="$(find_newest_managed_state_volume_for_listing)"
+
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    record="$(docker inspect --format "$inspect_format" -- "$id")"
+    IFS="$delimiter" read -r name status created started workspace project agent_state <<< "$record"
+    name="${name#/}"
+    [[ "$started" == 0001-* ]] && started="never"
+    if [[ -n "$agent_state" ]] && ! state_volume_exists "$agent_state"; then
+      agent_state=""
+    fi
+    printf '%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
+      "$name" "$delimiter" "$status" "$delimiter" "$created" "$delimiter" "$started" \
+      "$delimiter" "$workspace" "$delimiter" "$project" "$delimiter" "$agent_state" >> "$temp_dir/records"
+  done <<< "$ids"
+
+  while IFS="$delimiter" read -r name status created started workspace project agent_state; do
+    markers=()
+    [[ -n "$agent_state" && "$agent_state" == "$seed" ]] && markers+=(seed)
+    [[ -n "$agent_state" && "$agent_state" == "$latest" ]] && markers+=(latest)
+    marker_text=""
+    for marker in "${markers[@]}"; do
+      [[ -n "$marker_text" ]] && marker_text+=", "
+      marker_text+="$marker"
+    done
+    [[ -n "$marker_text" ]] || marker_text="-"
+    [[ -n "$agent_state" ]] || agent_state="none"
+
+    printf 'STACK: %s\n  status: %s\n  workspace: %s\n  project: %s\n  created: %s\n  started: %s\n  agent-state: %s\n  markers: %s\n' \
+      "$name" "$status" "$workspace" "$project" "$created" "$started" "$agent_state" "$marker_text"
+  done < <(sort -t "$delimiter" -k1,1 "$temp_dir/records")
+)
+
+start_persistent_service() {
+  ensure_workspace_volumes
+  if [[ "$FORCE_RECREATE" == true ]]; then
+    run_compose up --detach --force-recreate pi
+  else
+    run_compose up --detach pi
+  fi
+}
+
+install_browser_extension() {
+  # The extension must be registered in the mounted Pi agent state, not only
+  # installed in the image: /home/node/.pi/agent is a per-workspace volume.
+  run_compose exec pi pi install "$PI_BROWSER_EXTENSION_SOURCE"
+}
+
+path_component() {
+  printf '%s\n' "$1" | awk -F/ -v index="$2" '{print $index}'
+}
+
+path_slug_from_index() {
+  printf '%s\n' "$1" | awk -F/ -v start="$2" '{
+    value = ""
+    for (i = start; i <= NF; i++) {
+      if ($i == "") continue
+      if (value != "") value = value "-"
+      value = value $i
+    }
+    print value
+  }'
+}
+
+find_first_path_difference() {
+  local index=2
+  local reference
+  local path
+  local same
+
+  while [[ "$index" -le 1024 ]]; do
+    reference="$(path_component "$WORKSPACE" "$index")"
+    if [[ -z "$reference" ]]; then
+      printf '2'
+      return
+    fi
+
+    same=true
+    for path in "${COLLISION_PATHS[@]}"; do
+      if [[ "$(path_component "$path" "$index")" != "$reference" ]]; then
+        same=false
+        break
+      fi
+    done
+    if [[ "$same" == false ]]; then
+      printf '%s' "$index"
+      return
+    fi
+    ((index += 1))
+  done
+
+  printf '2'
+}
+
+is_running_status() {
+  case "$1" in
+    Up*|Restarting*|Paused*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prompt_collision() {
+  local index
+  local status
+  local has_running=false
+
+  printf '\nWorkspace container collision detected.\n\n' >&2
+  printf 'Requested workspace:\n  %s\n\n' "$WORKSPACE" >&2
+  for index in "${!COLLISION_NAMES[@]}"; do
+    status="${COLLISION_STATUSES[$index]}"
+    printf 'Existing container:\n  %s\n  workspace: %s\n  status: %s\n\n' \
+      "${COLLISION_NAMES[$index]}" "${COLLISION_PATHS[$((index + 1))]}" "$status" >&2
+    if is_running_status "$status"; then
+      has_running=true
+    fi
+  done
+
+  if [[ "$has_running" == true ]]; then
+    printf '¡¡¡ WARNING !!! Renaming/recreating the existing container may interrupt processes currently running inside it.\n\n' >&2
+  fi
+
+  printf 'Choose:\n  [r] Rename/recreate the existing container\n  [k] Keep the existing container unchanged\n  [c] Cancel\n\nChoice [c]: ' >&2
+  local choice
+  if ! IFS= read -r choice; then
+    choice="c"
+  fi
+  case "$choice" in
+    r|R) printf 'r' ;;
+    k|K) printf 'k' ;;
+    *) printf 'c' ;;
+  esac
+}
+
+prepare_workspace_container() {
+  local rows
+  local id
+  local name
+  local status
+  local path
+  local index
+  local first_difference
+  local slug
+  local target
+  local choice
+  local same_workspace_name=""
+  local same_workspace_project=""
+  local has_collision=false
+
+  COLLISION_IDS=()
+  COLLISION_NAMES=()
+  COLLISION_STATUSES=()
+  COLLISION_PATHS=("$WORKSPACE")
+
+  rows="$(docker ps -a \
+    --filter "label=com.pi-agents.workspace-basename=$WORKSPACE_BASENAME" \
+    --format '{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Label "com.pi-agents.workspace"}}')"
+
+  while IFS=$'\t' read -r id name status path; do
+    [[ -n "$id" ]] || continue
+    [[ -n "$path" ]] || continue
+    if [[ "$path" == "$WORKSPACE" ]]; then
+      if [[ -z "$same_workspace_name" ]]; then
+        same_workspace_name="$name"
+        same_workspace_project="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$name")"
+      fi
+      continue
+    fi
+    COLLISION_IDS+=("$id")
+    COLLISION_NAMES+=("$name")
+    COLLISION_STATUSES+=("$status")
+    COLLISION_PATHS+=("$path")
+    has_collision=true
+  done <<< "$rows"
+
+  if [[ "$has_collision" == false ]]; then
+    if [[ -n "$same_workspace_name" ]]; then
+      CONTAINER_NAME="$same_workspace_name"
+      if [[ -n "$same_workspace_project" && "$same_workspace_project" != "$PROJECT_NAME" ]]; then
+        PROJECT_NAME="$same_workspace_project"
+        build_compose
+      fi
+    fi
+    return 0
+  fi
+
+  first_difference="$(find_first_path_difference)"
+  COLLISION_TARGET_NAMES=()
+  for path in "${COLLISION_PATHS[@]}"; do
+    slug="$(sanitize_slug "$(path_slug_from_index "$path" "$first_difference")")"
+    target="pi-agents-pi-$slug"
+    COLLISION_TARGET_NAMES+=("$target")
+  done
+
+  if [[ "$KEEP_EXISTING" == true ]]; then
+    choice="k"
+  else
+    choice="$(prompt_collision)"
+  fi
+
+  case "$choice" in
+    r)
+      for index in "${!COLLISION_NAMES[@]}"; do
+        target="${COLLISION_TARGET_NAMES[$((index + 1))]}"
+        if [[ "${COLLISION_NAMES[$index]}" != "$target" ]]; then
+          docker rename "${COLLISION_NAMES[$index]}" "$target"
+        fi
+      done
+      CONTAINER_NAME="${COLLISION_TARGET_NAMES[0]}"
+      PROJECT_NAME="$CONTAINER_NAME"
+      build_compose
+      FORCE_RECREATE=true
+      ;;
+    k)
+      if [[ -n "$same_workspace_name" ]]; then
+        CONTAINER_NAME="$same_workspace_name"
+        if [[ -n "$same_workspace_project" ]]; then
+          PROJECT_NAME="$same_workspace_project"
+        else
+          PROJECT_NAME="${COLLISION_TARGET_NAMES[0]}"
+        fi
+        build_compose
+      else
+        CONTAINER_NAME="${COLLISION_TARGET_NAMES[0]}"
+        PROJECT_NAME="$CONTAINER_NAME"
+        build_compose
+      fi
+      ;;
+    *)
+      printf 'pi: workspace container collision cancelled\n' >&2
+      return 2
+      ;;
+  esac
+}
+
+if [[ "$LIST_COMMAND" == true ]]; then
+  list_pi_stacks
+  exit $?
+fi
+
+if [[ "${1:-}" == "remove" ]]; then
+  if [[ "$REMOVE_AFTER_RUN" == true ]]; then
+    printf 'pi: --rm cannot be combined with remove; remove targets the persistent service\n' >&2
+    exit 2
+  fi
+  if [[ "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true || "$LATEST_STATE" == true ]]; then
+    printf 'pi: --replace, --keep-existing, --new-state, --seed, and --latest-state cannot be combined with remove\n' >&2
+    exit 2
+  fi
+
+  shift
+  REMOVE_VOLUMES=false
+  for arg in "$@"; do
+    case "$arg" in
+      --all)
+        REMOVE_VOLUMES=true
+        ;;
+      *)
+        printf 'pi: unsupported remove option: %s\n' "$arg" >&2
+        printf 'usage: pi remove [--all]\n' >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  # Reuse the workspace collision resolver without prompting or renaming.
+  ORIGINAL_KEEP_EXISTING="$KEEP_EXISTING"
+  KEEP_EXISTING=true
+  prepare_workspace_container
+  KEEP_EXISTING="$ORIGINAL_KEEP_EXISTING"
+
+  if [[ "$REMOVE_VOLUMES" == true ]]; then
+    run_compose down
+    removal_status=0
+    if ! remove_workspace_volumes; then
+      removal_status=1
+    fi
+    repoint_seed_after_removal
+    if [[ "$removal_status" -ne 0 ]]; then
+      exit "$removal_status"
+    fi
+  else
+    run_compose down
+  fi
+  exit $?
+fi
+
+if [[ "${1:-}" == "stop" ]]; then
+  run_compose stop
+  exit $?
+fi
+
+if [[ "${1:-}" == "update" ]]; then
+  if [[ "$REMOVE_AFTER_RUN" == true ]]; then
+    printf 'pi: --rm cannot be combined with update; updates require the persistent service\n' >&2
+    exit 2
+  fi
+
+  shift
+  UPDATE_ARGS=()
+  for arg in "$@"; do
+    case "$arg" in
+      --extensions|--models)
+        UPDATE_ARGS+=("$arg")
+        ;;
+      *)
+        printf 'pi: unsupported update option: %s\n' "$arg" >&2
+        printf 'usage: pi update [--extensions] [--models]\n' >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  prepare_workspace_container
+  prepare_state_lineage
+  if [[ "${#UPDATE_ARGS[@]}" -eq 0 ]]; then
+    run_compose build --pull --no-cache pi
+    FORCE_RECREATE=true
+    start_persistent_service
+    initialize_agent_state
+    repair_state_permissions
+    install_browser_extension
+    record_state_lineage
+    exit $?
+  fi
+
+  start_persistent_service
+  initialize_agent_state
+  repair_state_permissions
+  install_browser_extension
+  record_state_lineage
+  run_logged_pi() {
+    run_compose exec pi pi-session-log "$@"
+  }
+  run_logged_pi update "${UPDATE_ARGS[@]}"
+  exit $?
+fi
+
+if [[ "$REMOVE_AFTER_RUN" == true ]]; then
+  prepare_state_lineage
+  ensure_workspace_volumes
+  initialize_agent_state
+  repair_state_permissions
+  run_compose run --rm pi pi install "$PI_BROWSER_EXTENSION_SOURCE"
+  run_compose run --rm --service-ports pi pi "$@"
+  exit $?
+fi
+
+prepare_workspace_container
+prepare_state_lineage
+
+# `docker compose logs` only captures the service's main process streams.
+# This stack keeps the service alive with `sleep infinity` and starts Pi with
+# `docker compose exec`, whose output otherwise goes only to this terminal.
+# `pi-session-log` runs Pi inside a nested PTY and duplicates its output to
+# PID 1's stdout, so Docker collects it without breaking WezTerm's interactive
+# terminal behavior.
+run_logged_pi() {
+  run_compose exec pi pi-session-log "$@"
+}
+
+start_persistent_service
+initialize_agent_state
+repair_state_permissions
+install_browser_extension
+record_state_lineage
+run_logged_pi "$@"
