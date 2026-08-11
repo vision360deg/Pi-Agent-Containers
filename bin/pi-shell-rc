@@ -19,14 +19,17 @@ while (($#)); do
 done
 
 [[ -n $shell && -n $home && -n $output ]] || usage
+[[ $home = /* ]] || { printf 'pi-shell-rc: home must be absolute: %s\n' "$home" >&2; exit 2; }
+[[ $output = /* ]] || { printf 'pi-shell-rc: output must be absolute: %s\n' "$output" >&2; exit 2; }
+home=$(cd -P -- "$home" 2>/dev/null && pwd -P) || {
+  printf 'pi-shell-rc: home must be a readable directory: %s\n' "$home" >&2
+  exit 2
+}
 case $shell in
   bash) roots=("$home/.bash_profile" "$home/.bashrc") ;;
   zsh) roots=("$home/.zshenv" "$home/.zprofile" "$home/.zshrc" "$home/.zlogin") ;;
   *) printf 'pi-shell-rc: unsupported shell: %s\n' "$shell" >&2; exit 2 ;;
 esac
-
-[[ $home = /* ]] || { printf 'pi-shell-rc: home must be absolute: %s\n' "$home" >&2; exit 2; }
-[[ $output = /* ]] || { printf 'pi-shell-rc: output must be absolute: %s\n' "$output" >&2; exit 2; }
 
 declare -A visited=()
 declare -A active=()
@@ -34,9 +37,9 @@ declare -A active=()
 warn() { printf 'pi-shell-rc: %s\n' "$*" >&2; }
 
 strip_target() {
-  local rest=$1 target suffix
-  local double_quoted='^"([^"]*)"([[:space:]]*(;[[:space:]]*(then|fi))?[[:space:]]*)$'
-  local single_quoted="^'([^']*)'([[:space:]]*(;[[:space:]]*(then|fi))?[[:space:]]*)$"
+  local rest=$1 target
+  local double_quoted='^"([^"]*)"[[:space:]]*$'
+  local single_quoted="^'([^']*)'[[:space:]]*$"
   if [[ $rest =~ $double_quoted ]]; then
     target=${BASH_REMATCH[1]}
   elif [[ $rest =~ $single_quoted ]]; then
@@ -49,8 +52,25 @@ strip_target() {
   printf '%s' "$target"
 }
 
+canonical_file() {
+  local path=$1 link directory base
+  while [[ -L $path ]]; do
+    link=$(readlink "$path") || return 1
+    if [[ $link = /* ]]; then
+      path=$link
+    else
+      path=$(dirname "$path")/$link
+    fi
+  done
+  directory=$(cd -P -- "$(dirname "$path")" 2>/dev/null && pwd -P) || return 1
+  base=$(basename "$path")
+  [[ -f $directory/$base && -r $directory/$base ]] || return 1
+  printf '%s/%s' "$directory" "$base"
+}
+
 resolve_target() {
-  local target=$1 path
+  local target=$1 path canonical
+  [[ $target != *'$('* && $target != *'`'* && $target != *'${'* && $target != *'['* && $target != *']'* && $target != *'?'* && $target != *'*'* ]] || return 1
   case $target in
     '~') path=$home ;;
     '~/'*) path=$home/${target#'~'/} ;;
@@ -61,30 +81,41 @@ resolve_target() {
     /*) path=$target ;;
     *) return 1 ;;
   esac
-  case $path in
+  canonical=$(canonical_file "$path") || return 1
+  case $canonical in
     "$home"|"$home"/*) ;;
     *) return 1 ;;
   esac
-  [[ -f $path && -r $path ]] || return 1
-  printf '%s' "$path"
+  printf '%s' "$canonical"
 }
 
 extract_source() {
   local line=$1 rest
-  local conditional='^[[:space:]]*if[[:space:]].*[[:space:];]then[[:space:]]+(source|\.)[[:space:]]+(.+)$'
-  # Directives and the common `then source ...` conditional form are accepted.
   if [[ $line =~ ^[[:space:]]*(source|\.)[[:space:]]+(.+)$ ]]; then
     rest=${BASH_REMATCH[2]}
-  elif [[ $line =~ $conditional ]]; then
-    rest=${BASH_REMATCH[2]}
   else
+    if [[ $line =~ ^[[:space:]]*(if|while|until|for|case)[[:space:]] && $line =~ (^|[[:space:];])(source|\.)[[:space:]] ]]; then
+      return 2
+    fi
     return 1
   fi
-  strip_target "$rest"
+  strip_target "$rest" || return 2
+}
+
+is_control_start() {
+  local line=$1
+  [[ $line =~ ^[[:space:]]*(if|for|while|until|case|select)[[:space:]] ]] ||
+    [[ $line =~ ^[[:space:]]*function[[:space:]]+[[:alnum:]_]+ ]] ||
+    [[ $line =~ ^[[:space:]]*[[:alpha:]_][[:alnum:]_]*\(\)[[:space:]]*\{ ]]
+}
+
+is_control_end() {
+  local line=$1
+  [[ $line =~ ^[[:space:]]*(fi|done|esac|\})($|[[:space:];]) ]]
 }
 
 resolve_file() {
-  local file=$1 line target path
+  local file=$1 line target path status conditional_depth=0
   if [[ ${active[$file]+yes} ]]; then
     warn "cyclic source omitted: $file"
     return
@@ -95,7 +126,10 @@ resolve_file() {
   visited[$file]=1
   active[$file]=1
   while IFS= read -r line || [[ -n $line ]]; do
-    if target=$(extract_source "$line"); then
+    if (( conditional_depth > 0 )) && [[ $line =~ ^[[:space:]]*(source|\.)($|[[:space:]]) ]]; then
+      printf '%s\n' "$line"
+      warn "unresolved source in $file: $line"
+    elif target=$(extract_source "$line"); then
       if path=$(resolve_target "$target"); then
         resolve_file "$path"
       else
@@ -103,7 +137,17 @@ resolve_file() {
         warn "unresolved source in $file: $line"
       fi
     else
+      status=$?
       printf '%s\n' "$line"
+      if (( status == 2 )); then
+        warn "unresolved source in $file: $line"
+      fi
+    fi
+    if is_control_start "$line"; then
+      conditional_depth=$((conditional_depth + 1))
+    fi
+    if is_control_end "$line" && (( conditional_depth > 0 )); then
+      conditional_depth=$((conditional_depth - 1))
     fi
   done < "$file"
   unset 'active[$file]'
@@ -111,7 +155,7 @@ resolve_file() {
 
 umask 077
 mkdir -p "$(dirname "$output")"
-temporary=$output.$$
+temporary=$(mktemp "${output}.XXXXXX")
 trap 'rm -f "$temporary"' EXIT
 : > "$temporary"
 for root in "${roots[@]}"; do

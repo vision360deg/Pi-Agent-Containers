@@ -108,6 +108,75 @@ bash "$RESOLVER" --shell bash --home "$DYNAMIC_HOME" --output "$DYNAMIC_OUTPUT" 
 assert_contains "$DYNAMIC_OUTPUT" '. "$HOME/${RC_NAME}"'
 assert_contains "$TMP/dynamic.err" "unresolved source"
 
+TRAVERSAL_HOME=$TMP/traversal-home
+mkdir -p "$TRAVERSAL_HOME"
+cat > "$TMP/outside-traversal" <<'EOF'
+TRAVERSAL_ESCAPE=1
+EOF
+cat > "$TRAVERSAL_HOME/.bashrc" <<'EOF'
+source "$HOME/../outside-traversal"
+EOF
+TRAVERSAL_OUTPUT=$TMP/traversal.rc
+bash "$RESOLVER" --shell bash --home "$TRAVERSAL_HOME" --output "$TRAVERSAL_OUTPUT" 2>"$TMP/traversal.err"
+assert_contains "$TRAVERSAL_OUTPUT" 'source "$HOME/../outside-traversal"'
+if grep -Fq 'TRAVERSAL_ESCAPE=1' "$TRAVERSAL_OUTPUT"; then
+  fail "traversal source must not be inlined"
+fi
+assert_contains "$TMP/traversal.err" "unresolved source"
+
+SYMLINK_HOME=$TMP/symlink-home
+mkdir -p "$SYMLINK_HOME"
+cat > "$TMP/outside-symlink" <<'EOF'
+SYMLINK_ESCAPE=1
+EOF
+ln -s "$TMP/outside-symlink" "$SYMLINK_HOME/.outside-link"
+cat > "$SYMLINK_HOME/.bashrc" <<'EOF'
+source ~/.outside-link
+EOF
+SYMLINK_OUTPUT=$TMP/symlink.rc
+bash "$RESOLVER" --shell bash --home "$SYMLINK_HOME" --output "$SYMLINK_OUTPUT" 2>"$TMP/symlink.err"
+assert_contains "$SYMLINK_OUTPUT" 'source ~/.outside-link'
+if grep -Fq 'SYMLINK_ESCAPE=1' "$SYMLINK_OUTPUT"; then
+  fail "symlink escape must not be inlined"
+fi
+assert_contains "$TMP/symlink.err" "unresolved source"
+
+EXTRA_ARGS_HOME=$TMP/extra-args-home
+mkdir -p "$EXTRA_ARGS_HOME"
+cat > "$EXTRA_ARGS_HOME/.extra" <<'EOF'
+EXTRA_ARGS_TARGET=1
+EOF
+cat > "$EXTRA_ARGS_HOME/.bashrc" <<'EOF'
+source ~/.extra unexpected
+EOF
+EXTRA_ARGS_OUTPUT=$TMP/extra-args.rc
+bash "$RESOLVER" --shell bash --home "$EXTRA_ARGS_HOME" --output "$EXTRA_ARGS_OUTPUT" 2>"$TMP/extra-args.err"
+assert_contains "$EXTRA_ARGS_OUTPUT" 'source ~/.extra unexpected'
+if grep -Fq 'EXTRA_ARGS_TARGET=1' "$EXTRA_ARGS_OUTPUT"; then
+  fail "source with extra arguments must not be inlined"
+fi
+assert_contains "$TMP/extra-args.err" "unresolved source"
+
+CONDITIONAL_HOME=$TMP/conditional-home
+mkdir -p "$CONDITIONAL_HOME"
+cat > "$CONDITIONAL_HOME/.conditional" <<'EOF'
+CONDITIONAL_TARGET=1
+EOF
+cat > "$CONDITIONAL_HOME/.bashrc" <<'EOF'
+if false; then source ~/.conditional; fi
+if false; then
+  source ~/.conditional
+fi
+EOF
+CONDITIONAL_OUTPUT=$TMP/conditional.rc
+bash "$RESOLVER" --shell bash --home "$CONDITIONAL_HOME" --output "$CONDITIONAL_OUTPUT" 2>"$TMP/conditional.err"
+assert_contains "$CONDITIONAL_OUTPUT" 'if false; then source ~/.conditional; fi'
+assert_contains "$CONDITIONAL_OUTPUT" '  source ~/.conditional'
+if grep -Fq 'CONDITIONAL_TARGET=1' "$CONDITIONAL_OUTPUT"; then
+  fail "conditional source must not be inlined"
+fi
+assert_contains "$TMP/conditional.err" "unresolved source"
+
 if bash "$RESOLVER" --shell fish --home "$HOME_ROOT" --output "$TMP/invalid.rc"; then
   fail "unsupported shell should return status 2"
 elif [[ $? -ne 2 ]]; then
