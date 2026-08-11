@@ -4,3 +4,4 @@
 # Local agent/browser state if a user chooses bind mounts instead of volumes.
 .agent-browser/
 .pi/agent/
+.worktrees/
