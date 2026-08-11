@@ -94,7 +94,8 @@ extract_source() {
   if [[ $line =~ ^[[:space:]]*(source|\.)[[:space:]]+(.+)$ ]]; then
     rest=${BASH_REMATCH[2]}
   else
-    if [[ $line =~ ^[[:space:]]*(if|while|until|for|case)[[:space:]] && $line =~ (^|[[:space:];])(source|\.)[[:space:]] ]]; then
+    if [[ $line =~ ^[[:space:]]*(if|elif|else|then|while|until|for|case)[[:space:]] && $line =~ (^|[[:space:];])(source|\.)[[:space:]] ]] ||
+      [[ $line =~ (\&\&|\|\|)[[:space:]]*(source|\.)[[:space:]] ]]; then
       return 2
     fi
     return 1

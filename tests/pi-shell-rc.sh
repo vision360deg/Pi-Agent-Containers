@@ -9,6 +9,7 @@ trap 'rm -rf "$TMP"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert_contains() { grep -Fq -- "$2" "$1" || fail "$1 does not contain $2"; }
 assert_once() { [[ $(grep -Fc -- "$2" "$1") -eq 1 ]] || fail "$2 is not included once"; }
+assert_count() { [[ $(grep -Fc -- "$2" "$1") -eq "$3" ]] || fail "$2 does not occur $3 times"; }
 assert_order() {
   local file=$1 previous=0 marker line
   for marker in "${@:2}"; do
@@ -176,6 +177,30 @@ if grep -Fq 'CONDITIONAL_TARGET=1' "$CONDITIONAL_OUTPUT"; then
   fail "conditional source must not be inlined"
 fi
 assert_contains "$TMP/conditional.err" "unresolved source"
+
+CONDITIONAL_FORMS_HOME=$TMP/conditional-forms-home
+mkdir -p "$CONDITIONAL_FORMS_HOME"
+cat > "$CONDITIONAL_FORMS_HOME/.conditional" <<'EOF'
+CONDITIONAL_FORMS_TARGET=1
+EOF
+cat > "$CONDITIONAL_FORMS_HOME/.bashrc" <<'EOF'
+elif source ~/.conditional; then
+else source ~/.conditional
+then source ~/.conditional
+true && source ~/.conditional
+false || source ~/.conditional
+EOF
+CONDITIONAL_FORMS_OUTPUT=$TMP/conditional-forms.rc
+bash "$RESOLVER" --shell bash --home "$CONDITIONAL_FORMS_HOME" --output "$CONDITIONAL_FORMS_OUTPUT" 2>"$TMP/conditional-forms.err"
+assert_contains "$CONDITIONAL_FORMS_OUTPUT" 'elif source ~/.conditional; then'
+assert_contains "$CONDITIONAL_FORMS_OUTPUT" 'else source ~/.conditional'
+assert_contains "$CONDITIONAL_FORMS_OUTPUT" 'then source ~/.conditional'
+assert_contains "$CONDITIONAL_FORMS_OUTPUT" 'true && source ~/.conditional'
+assert_contains "$CONDITIONAL_FORMS_OUTPUT" 'false || source ~/.conditional'
+if grep -Fq 'CONDITIONAL_FORMS_TARGET=1' "$CONDITIONAL_FORMS_OUTPUT"; then
+  fail "conditional source forms must not be inlined"
+fi
+assert_count "$TMP/conditional-forms.err" "unresolved source" 5
 
 if bash "$RESOLVER" --shell fish --home "$HOME_ROOT" --output "$TMP/invalid.rc"; then
   fail "unsupported shell should return status 2"
