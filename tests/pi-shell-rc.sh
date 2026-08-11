@@ -35,6 +35,47 @@ EOF
 OUTPUT=$TMP/bash.rc
 bash "$RESOLVER" --shell bash --home "$HOME_ROOT" --output "$OUTPUT"
 assert_order "$OUTPUT" FROM_PROFILE FROM_BASHRC "alias ll='ls -la'"
+[[ $(stat -f '%Lp' "$OUTPUT") == 644 ]] || fail "generated rc must be mode 0644"
+
+QUOTE_HOME=$TMP/quote-home
+mkdir -p "$QUOTE_HOME"
+cat > "$QUOTE_HOME/file" <<'EOF'
+QUOTED_TARGET=1
+EOF
+cat > "$QUOTE_HOME/.bashrc" <<'EOF'
+source '$HOME/file'
+source '~/.file'
+source "$HOME/file"
+EOF
+QUOTE_OUTPUT=$TMP/quote.rc
+bash "$RESOLVER" --shell bash --home "$QUOTE_HOME" --output "$QUOTE_OUTPUT" 2>"$TMP/quote.err"
+assert_contains "$QUOTE_OUTPUT" "source '\$HOME/file'"
+assert_contains "$QUOTE_OUTPUT" "source '~/.file'"
+assert_once "$QUOTE_OUTPUT" QUOTED_TARGET=1
+assert_count "$TMP/quote.err" "unresolved source" 2
+
+MALFORMED_HOME=$TMP/malformed-home
+mkdir -p "$MALFORMED_HOME"
+cat > "$MALFORMED_HOME/.bashrc" <<'EOF'
+source
+.
+EOF
+MALFORMED_OUTPUT=$TMP/malformed.rc
+bash "$RESOLVER" --shell bash --home "$MALFORMED_HOME" --output "$MALFORMED_OUTPUT" 2>"$TMP/malformed.err"
+assert_contains "$MALFORMED_OUTPUT" source
+assert_contains "$MALFORMED_OUTPUT" .
+assert_count "$TMP/malformed.err" "unresolved source" 2
+
+ROOT_SYMLINK_HOME=$TMP/root-symlink-home
+mkdir -p "$ROOT_SYMLINK_HOME"
+cat > "$TMP/outside-root-symlink" <<'EOF'
+ROOT_SYMLINK_ESCAPE=1
+EOF
+ln -s "$TMP/outside-root-symlink" "$ROOT_SYMLINK_HOME/.bashrc"
+ROOT_SYMLINK_OUTPUT=$TMP/root-symlink.rc
+bash "$RESOLVER" --shell bash --home "$ROOT_SYMLINK_HOME" --output "$ROOT_SYMLINK_OUTPUT" 2>"$TMP/root-symlink.err"
+[[ ! -s "$ROOT_SYMLINK_OUTPUT" ]] || fail "startup-root symlink escape must not be read"
+assert_contains "$TMP/root-symlink.err" "unresolved startup rc"
 
 ZSH_HOME=$TMP/zsh-home
 mkdir -p "$ZSH_HOME"
