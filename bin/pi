@@ -768,7 +768,7 @@ esac
 SHELL_RC_DIRECTORY="$CONFIG_PATH/shell-rc"
 HOST_SHELL_RC_FILE=""
 if [[ "$NO_RC_CONFIG" -eq 0 ]]; then
-  HOST_SHELL_RC_FILE="$SHELL_RC_DIRECTORY/${VOLUME_NAMESPACE}-${HOST_SHELL_NAME}.rc"
+  HOST_SHELL_RC_FILE="$SHELL_RC_DIRECTORY/${VOLUME_NAMESPACE}.rc"
 fi
 STATE_TARGET_WAS_NEW=false
 FORCE_RECREATE=false
@@ -1499,9 +1499,17 @@ attach_shell() {
   fi
 
   if [[ "$SHELL_AS_ROOT" == true ]]; then
-    docker exec -it --user 0 "$SHELL_SELECTED_NAME" pi-shell-launch
+    docker exec -it --user 0 \
+      --env "PI_HOST_SHELL=$HOST_SHELL_NAME" \
+      --env 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc' \
+      --env "PI_NO_RC_CONFIG=$NO_RC_CONFIG" \
+      "$SHELL_SELECTED_NAME" pi-shell-launch
   else
-    docker exec -it "$SHELL_SELECTED_NAME" pi-shell-launch
+    docker exec -it \
+      --env "PI_HOST_SHELL=$HOST_SHELL_NAME" \
+      --env 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc' \
+      --env "PI_NO_RC_CONFIG=$NO_RC_CONFIG" \
+      "$SHELL_SELECTED_NAME" pi-shell-launch
   fi
 }
 

@@ -10,6 +10,7 @@ grep -Fq '/usr/local/bin/pi-shell-launch' "$ROOT/Dockerfile" || fail 'Dockerfile
 
 grep -Fqx '      PI_HOST_SHELL: ${PI_HOST_SHELL:-bash}' "$ROOT/compose.yml" || fail 'Compose must expose PI_HOST_SHELL'
 grep -Fqx '      PI_HOST_RC_FILE: ${PI_HOST_RC_FILE:-/tmp/pi-host-shellrc}' "$ROOT/compose.yml" || fail 'Compose must expose PI_HOST_RC_FILE'
+grep -Fqx '      PI_NO_RC_CONFIG: ${PI_NO_RC_CONFIG:-0}' "$ROOT/compose.yml" || fail 'Compose must expose PI_NO_RC_CONFIG'
 grep -Fqx '      - ${PI_HOST_RC_SOURCE:-/dev/null}:/tmp/pi-host-shellrc:ro' "$ROOT/compose.yml" || fail 'Compose must mount the generated rc read-only'
 grep -Fqx '    command: ["bash", "-lc", "pi-session-forwarder & exec sleep infinity"]' "$ROOT/compose.yml" || fail 'persistent service command changed'
 
