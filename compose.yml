@@ -31,6 +31,8 @@ services:
       # for machine-readable JSONL or color=never for plain text.
       PI_SESSION_LOG_FORMAT: ${PI_SESSION_LOG_FORMAT:-pretty}
       PI_SESSION_LOG_COLOR: ${PI_SESSION_LOG_COLOR:-always}
+      PI_HOST_SHELL: ${PI_HOST_SHELL:-bash}
+      PI_HOST_RC_FILE: ${PI_HOST_RC_FILE:-/tmp/pi-host-shellrc}
       # Optional: point agent-browser at an existing CDP endpoint instead of
       # launching its own Chromium in this container.
       AGENT_BROWSER_CDP:
@@ -42,6 +44,7 @@ services:
       # Nested mount keeps sessions isolated per workspace.
       - pi-session-state:/home/node/.pi/agent/sessions
       - agent-browser-state:/home/node/.agent-browser
+      - ${PI_HOST_RC_SOURCE:-/dev/null}:/tmp/pi-host-shellrc:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

@@ -16,6 +16,7 @@ RUN apt-get update \
         ripgrep \
         util-linux \
         xdg-utils \
+        zsh \
     && rm -rf /var/lib/apt/lists/*
 
 # Pi's documentation recommends disabling npm lifecycle scripts for its install.
@@ -38,7 +39,8 @@ COPY bin/pi-session-log /usr/local/bin/pi-session-log
 COPY bin/pi-session-forwarder /usr/local/bin/pi-session-forwarder
 COPY bin/pi-session-format /usr/local/bin/pi-session-format
 COPY bin/pi-state-copy /usr/local/bin/pi-state-copy
-RUN chmod 0755 /usr/local/bin/pi-session-log /usr/local/bin/pi-session-forwarder /usr/local/bin/pi-session-format /usr/local/bin/pi-state-copy
+COPY bin/pi-shell-launch /usr/local/bin/pi-shell-launch
+RUN chmod 0755 /usr/local/bin/pi-session-log /usr/local/bin/pi-session-forwarder /usr/local/bin/pi-session-format /usr/local/bin/pi-state-copy /usr/local/bin/pi-shell-launch
 
 USER node
 

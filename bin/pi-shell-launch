@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+shell=${PI_HOST_SHELL:-bash}
+rc_file=${PI_HOST_RC_FILE:-/tmp/pi-host-shellrc}
+no_rc_config=${PI_NO_RC_CONFIG:-0}
+
+case $shell in
+  bash)
+    if [[ $no_rc_config == 1 ]]; then
+      if (($#)); then
+        exec bash --noprofile --norc -i -c 'exec "$@"' pi-shell-launch "$@"
+      fi
+      exec bash --noprofile --norc -i
+    fi
+    if (($#)); then
+      exec bash --rcfile "$rc_file" -i -c 'exec "$@"' pi-shell-launch "$@"
+    fi
+    exec bash --rcfile "$rc_file" -i
+    ;;
+  zsh)
+    if [[ $no_rc_config == 1 ]]; then
+      if (($#)); then
+        exec zsh -f -i -c 'exec "$@"' pi-shell-launch "$@"
+      fi
+      exec zsh -f -i
+    fi
+    zdotdir=$(mktemp -d /tmp/pi-shell-launch.XXXXXX)
+    ln -s "$rc_file" "$zdotdir/.zshrc"
+    if (($#)); then
+      ZDOTDIR=$zdotdir exec zsh -i -c 'exec "$@"' pi-shell-launch "$@"
+    fi
+    ZDOTDIR=$zdotdir exec zsh -i
+    ;;
+  *)
+    printf 'pi-shell-launch: unsupported shell: %s\n' "$shell" >&2
+    exit 2
+    ;;
+esac
