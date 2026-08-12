@@ -7,7 +7,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 FAKE_BIN="$TMP_DIR/bin"
 WORKSPACE="$TMP_DIR/workspace"
-mkdir -p "$FAKE_BIN" "$WORKSPACE"
+mkdir -p "$FAKE_BIN" "$TMP_DIR/home" "$WORKSPACE"
 DOCKER_LOG="$TMP_DIR/docker.log"
 export DOCKER_LOG
 
