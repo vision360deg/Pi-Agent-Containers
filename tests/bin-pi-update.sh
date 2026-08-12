@@ -6,7 +6,13 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 FAKE_BIN="$TMP_DIR/bin"
-mkdir -p "$FAKE_BIN" "$TMP_DIR/workspace" "$TMP_DIR/cli-workspace"
+mkdir -p "$FAKE_BIN" "$TMP_DIR/workspace" "$TMP_DIR/cli-workspace" "$TMP_DIR/home"
+: > "$TMP_DIR/home/.bash_profile"
+: > "$TMP_DIR/home/.bashrc"
+: > "$TMP_DIR/home/.zshenv"
+: > "$TMP_DIR/home/.zprofile"
+: > "$TMP_DIR/home/.zshrc"
+: > "$TMP_DIR/home/.zlogin"
 WORKSPACE="$(cd -P -- "$TMP_DIR/workspace" && pwd)"
 CLI_WORKSPACE="$(cd -P -- "$TMP_DIR/cli-workspace" && pwd)"
 DOCKER_LOG="$TMP_DIR/docker.log"
@@ -137,7 +143,7 @@ assert_persistent_logged_exec() {
   expected_exec="$1"
   assert_log_line_count 7
   assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach pi"
-  assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi install npm:pi-agent-browser-native"
+  assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi install npm:pi-agent-browser-native"
   assert_log_has_fragment "$expected_exec"
 
   workspace_line="PI_WORKSPACE=$WORKSPACE"
@@ -207,6 +213,17 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'durable JSONL source.'* ]]
 [[ "$DETAILED_HELP" == *'PI_SESSION_LOG_FORMAT=raw'* ]]
 [[ "$DETAILED_HELP" == *'PI_SESSION_LOG_COLOR=never'* ]]
+[[ "$DETAILED_HELP" == *'--bash'* ]]
+[[ "$DETAILED_HELP" == *'--zsh'* ]]
+[[ "$DETAILED_HELP" == *'--no-rc-config'* ]]
+[[ "$DETAILED_HELP" == *'.bash_profile'* ]]
+[[ "$DETAILED_HELP" == *'.bashrc'* ]]
+[[ "$DETAILED_HELP" == *'.zshenv'* ]]
+[[ "$DETAILED_HELP" == *'.zprofile'* ]]
+[[ "$DETAILED_HELP" == *'.zshrc'* ]]
+[[ "$DETAILED_HELP" == *'.zlogin'* ]]
+[[ "$DETAILED_HELP" == *'recursively'* ]]
+[[ "$DETAILED_HELP" == *'service bootstrap remains Bash'* ]]
 
 run_wrapper_capture -h
 assert_output "$DETAILED_HELP"
@@ -216,8 +233,8 @@ run_wrapper_capture --rm --help
 assert_output "$(cat <<'EOF'
 Usage:
   pi [-h|--help]
-  pi [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
-  pi --oauth [PORTS...] --rm [PI_ARGS...]
+  pi [--bash|--zsh] [--no-rc-config] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
+  pi [--bash|--zsh] [--no-rc-config] --oauth [PORTS...] --rm [PI_ARGS...]
   pi stop
   pi update [--extensions] [--models]
   pi list
@@ -237,12 +254,16 @@ Options:
   --latest-state    Copy the newest Docker-managed state when initializing.
   --oauth [PORTS...] Publish known callback ports 1455/53692/51121; add comma- or
                      space-separated custom ports.
+  --bash, --zsh      Force Bash or zsh instead of detecting SHELL.
+  --no-rc-config     Start the selected shell without host startup files.
 
   State volumes     Private per workspace; existing contents are preserved and
                     permissions are repaired before Pi starts.
   Browser integration Ensures pi-agent-browser-native is installed by default.
   Logging           Streams pretty colored session events to Docker logs by
                     default; use PI_SESSION_LOG_FORMAT=raw for JSONL.
+  Shell             Detects Bash/zsh from SHELL and recursively resolves the
+                    matching host startup files into a read-only generated rc.
   Pi passthrough     Other arguments are passed to Pi in the workspace container.
                      Example: pi install npm:pi-web-access
                      Use `pi - PI_ARGS...` to force wrapper command names through
@@ -261,6 +282,15 @@ EOF
 )"
 assert_log ""
 BRIEF_USAGE="$(cat "$OUTPUT_LOG")"
+[[ "$BRIEF_USAGE" == *'--bash, --zsh'* ]]
+[[ "$BRIEF_USAGE" == *'--no-rc-config'* ]]
+[[ "$BRIEF_USAGE" == *'Shell'* ]]
+[[ "$BRIEF_USAGE" == *'--workspace PATH'* ]]
+[[ "$BRIEF_USAGE" == *'--replace'* ]]
+[[ "$BRIEF_USAGE" == *'--keep-existing'* ]]
+[[ "$BRIEF_USAGE" == *'--new-state'* ]]
+[[ "$BRIEF_USAGE" == *'--seed'* ]]
+[[ "$BRIEF_USAGE" == *'--latest-state'* ]]
 
 run_wrapper_capture --replace --help
 assert_output "$BRIEF_USAGE"
@@ -310,6 +340,18 @@ run_wrapper_capture --oauth --help
 assert_output "$BRIEF_USAGE"
 assert_log ""
 
+run_wrapper_capture --bash --help
+assert_output "$BRIEF_USAGE"
+assert_log ""
+
+run_wrapper_capture --zsh --help
+assert_output "$BRIEF_USAGE"
+assert_log ""
+
+run_wrapper_capture --no-rc-config --help
+assert_output "$BRIEF_USAGE"
+assert_log ""
+
 run_wrapper_capture --help --rm
 assert_output "$BRIEF_USAGE"
 assert_log ""
@@ -322,17 +364,17 @@ run_wrapper update
 assert_log_line_count 7
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml build --pull --no-cache pi"
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach --force-recreate pi"
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi install npm:pi-agent-browser-native"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi install npm:pi-agent-browser-native"
 assert_log_has_line "PI_WORKSPACE=$WORKSPACE"
 
 run_wrapper update --extensions
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log update --extensions"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log update --extensions"
 
 run_wrapper update --models
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log update --models"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log update --models"
 
 run_wrapper update --extensions --models
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log update --extensions --models"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log update --extensions --models"
 
 if run_wrapper update --unknown; then
   printf 'unsupported update argument unexpectedly succeeded\n' >&2
@@ -419,31 +461,31 @@ assert_log ""
 
 run_wrapper --rm --version
 assert_log_line_count 5
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm pi pi install npm:pi-agent-browser-native"
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi --version"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm pi pi-shell-launch pi install npm:pi-agent-browser-native"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi-shell-launch pi --version"
 assert_log_has_line "PI_WORKSPACE=$WORKSPACE"
 
 run_wrapper --version
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log --version"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --version"
 
 run_wrapper - list
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log list"
-assert_log_lacks_fragment 'exec pi pi-session-log - list'
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log list"
+assert_log_lacks_fragment 'exec pi pi-shell-launch pi-session-log - list'
 
 run_wrapper - stop
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log stop"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log stop"
 assert_log_lacks_fragment ' stop$'
 
 run_wrapper - update
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log update"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log update"
 assert_log_lacks_fragment ' build --pull --no-cache pi'
 
 run_wrapper - remove
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log remove"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log remove"
 assert_log_lacks_fragment ' down'
 
 run_wrapper - shell
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log shell"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log shell"
 
 if run_wrapper -; then
   printf 'empty passthrough marker unexpectedly succeeded\n' >&2
@@ -455,20 +497,20 @@ fi
 assert_log ""
 
 run_wrapper - --help
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-session-log --help"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --help"
 
 run_wrapper --rm - list
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi list"
-assert_log_lacks_fragment 'run --rm --service-ports pi pi - list'
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi-shell-launch pi list"
+assert_log_lacks_fragment 'run --rm --service-ports pi pi-shell-launch pi - list'
 
 run_wrapper --rm - --help
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi --help"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi-shell-launch pi --help"
 
 run_wrapper --new-state --version
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach --force-recreate pi"
 
 run_wrapper --oauth --version
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml --file $ROOT/compose.oauth.yml exec pi pi-session-log --version"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml --file $ROOT/compose.oauth.yml exec pi pi-shell-launch pi-session-log --version"
 
 PI_OAUTH_CALLBACK_PORTS='7000,7001' run_wrapper --oauth --version
 assert_log_has_fragment 'OAUTH_OVERRIDE_CONTENT'

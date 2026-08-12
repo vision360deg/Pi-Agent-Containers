@@ -94,31 +94,31 @@ STOPPED_PATH="$(cd -P -- "$STOPPED_WORKSPACE" && pwd)"
 # A current running workspace container is selected without a picker or Compose.
 FAKE_CONTAINERS=$'current-id\tpi-agents-pi-current\tUp 4 minutes\trunning\t'"$CURRENT_PATH"
 run_wrapper shell
-assert_log_has 'docker exec -it pi-agents-pi-current bash'
+assert_log_has 'docker exec -it pi-agents-pi-current pi-shell-launch'
 assert_log_lacks 'docker start'
 assert_log_lacks 'docker compose'
 
 run_wrapper shell -r
-assert_log_has 'docker exec -it --user 0 pi-agents-pi-current bash'
+assert_log_has 'docker exec -it --user 0 pi-agents-pi-current pi-shell-launch'
 
 # Multiple containers for the current workspace require an explicit choice.
 FAKE_CONTAINERS=$'first-id\tpi-agents-pi-first\tUp 5 minutes\trunning\t'"$CURRENT_PATH"$'\nsecond-id\tpi-agents-pi-second\tUp 2 minutes\trunning\t'"$CURRENT_PATH"
 printf '2\n' | run_wrapper shell
-assert_log_has 'docker exec -it pi-agents-pi-second bash'
+assert_log_has 'docker exec -it pi-agents-pi-second pi-shell-launch'
 grep -Fq 'Choose a Pi container:' "$OUTPUT_LOG"
 
 # A current stopped workspace container is started before a normal-user shell.
 FAKE_CONTAINERS=$'stopped-id\tpi-agents-pi-stopped\tExited (0) 2 hours ago\texited\t'"$CURRENT_PATH"
 run_wrapper shell
 assert_log_has 'docker start pi-agents-pi-stopped'
-assert_log_has 'docker exec -it pi-agents-pi-stopped bash'
+assert_log_has 'docker exec -it pi-agents-pi-stopped pi-shell-launch'
 
 # Without a current match, the picker can select another stopped container and
 # root mode adds Docker's user override.
 FAKE_CONTAINERS=$'other-id\tpi-agents-pi-other\tExited (0) 1 hour ago\texited\t'"$OTHER_PATH"$'\nsecond-id\tpi-agents-pi-second\tUp 1 minute\trunning\t'"$STOPPED_PATH"
 printf '2\n' | run_wrapper shell --root
 assert_log_has 'docker start pi-agents-pi-other'
-assert_log_has 'docker exec -it --user 0 pi-agents-pi-other bash'
+assert_log_has 'docker exec -it --user 0 pi-agents-pi-other pi-shell-launch'
 grep -Fq 'Choose a Pi container:' "$OUTPUT_LOG"
 grep -Fq '1) pi-agents-pi-other' "$OUTPUT_LOG"
 
@@ -133,8 +133,8 @@ assert_log_has 'docker compose'
 assert_log_has 'up --detach pi'
 assert_log_has 'docker volume create'
 assert_log_has 'docker run'
-assert_log_has 'exec pi pi install npm:pi-agent-browser-native'
-assert_log_has 'docker exec -it pi-agents-pi-new-project bash'
+assert_log_has 'exec pi pi-shell-launch pi install npm:pi-agent-browser-native'
+assert_log_has 'docker exec -it pi-agents-pi-new-project pi-shell-launch'
 
 if printf '\033' | run_wrapper --workspace "$CANCEL_WORKSPACE" shell; then
   printf 'Escape cancellation unexpectedly succeeded\n' >&2

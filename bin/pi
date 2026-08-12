@@ -35,6 +35,9 @@ SEED_STATE=false
 LATEST_STATE=false
 OAUTH_CALLBACK=false
 WORKSPACE_OPTION=false
+FORCE_BASH=false
+FORCE_ZSH=false
+NO_RC_CONFIG=0
 SHELL_COMMAND=false
 SHELL_AS_ROOT=false
 SHELL_START_NEW_PROJECT=false
@@ -157,6 +160,18 @@ if [[ "$HELP_REQUESTED" == false ]]; then
         LATEST_STATE=true
         shift
         ;;
+      --bash)
+        FORCE_BASH=true
+        shift
+        ;;
+      --zsh)
+        FORCE_ZSH=true
+        shift
+        ;;
+      --no-rc-config)
+        NO_RC_CONFIG=1
+        shift
+        ;;
       --oauth)
         OAUTH_CALLBACK=true
         shift
@@ -223,8 +238,8 @@ print_detailed_help() {
 Containerized Pi wrapper
 
 Usage:
-  pi [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
-  pi --oauth [PORTS...] --rm [PI_ARGS...]
+  pi [--bash|--zsh] [--no-rc-config] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
+  pi [--bash|--zsh] [--no-rc-config] --oauth [PORTS...] --rm [PI_ARGS...]
   pi stop
   pi update [--extensions] [--models]
   pi list
@@ -286,6 +301,14 @@ Options:
       state volume instead of the seed. Once this workspace already has
       initialized state, this option has no effect and prints a warning.
 
+  --bash, --zsh
+      Force Bash or zsh for foreground Pi and shell processes instead of using
+      the basename of the host SHELL value. These options are mutually exclusive.
+
+  --no-rc-config
+      Start the selected Bash or zsh without loading host startup configuration.
+      This can be combined with either shell override.
+
   --oauth [PORTS...]
       Add the Compose override that publishes host loopback ports for browser
       OAuth callbacks. Known fixed callbacks 1455 (OpenAI Codex), 53692
@@ -328,7 +351,7 @@ Commands:
       The started timestamp uses Docker State.StartedAt; zero means started: never.
 
   shell [--root|-r]
-      Open an interactive bash shell in the current workspace's existing Pi
+      Open the selected interactive Bash or zsh in the current workspace's Pi
       container. If no container matches the current workspace, show a picker
       containing all existing persistent Pi containers. A stopped selection is started
       before the shell opens. When no current workspace container exists, the picker
@@ -395,6 +418,19 @@ Workspace:
 
   Existing running and stopped containers are both considered during collision
   checks.
+
+Host shell:
+  Foreground Pi commands and `pi shell` use Bash or zsh based on the basename
+  of the host SHELL value. Use --bash or --zsh to override that choice.
+
+  For Bash, .bash_profile and .bashrc are startup roots. For zsh, .zshenv,
+  .zprofile, .zshrc, and .zlogin are startup roots. Statically identifiable
+  source and dot references are recursively resolved on the host into one
+  generated rc file, which is mounted read-only without mounting the host home.
+  Use --no-rc-config to disable both generation and startup-file loading.
+
+  The persistent container service bootstrap remains Bash; host-shell selection
+  applies only to foreground Pi commands and interactive shell attachment.
 
 Logging:
   Persistent Pi session records are streamed as readable, colored events to
@@ -467,8 +503,8 @@ print_brief_usage() {
   cat <<'EOF'
 Usage:
   pi [-h|--help]
-  pi [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
-  pi --oauth [PORTS...] --rm [PI_ARGS...]
+  pi [--bash|--zsh] [--no-rc-config] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
+  pi [--bash|--zsh] [--no-rc-config] --oauth [PORTS...] --rm [PI_ARGS...]
   pi stop
   pi update [--extensions] [--models]
   pi list
@@ -488,12 +524,16 @@ Options:
   --latest-state    Copy the newest Docker-managed state when initializing.
   --oauth [PORTS...] Publish known callback ports 1455/53692/51121; add comma- or
                      space-separated custom ports.
+  --bash, --zsh      Force Bash or zsh instead of detecting SHELL.
+  --no-rc-config     Start the selected shell without host startup files.
 
   State volumes     Private per workspace; existing contents are preserved and
                     permissions are repaired before Pi starts.
   Browser integration Ensures pi-agent-browser-native is installed by default.
   Logging           Streams pretty colored session events to Docker logs by
                     default; use PI_SESSION_LOG_FORMAT=raw for JSONL.
+  Shell             Detects Bash/zsh from SHELL and recursively resolves the
+                    matching host startup files into a read-only generated rc.
   Pi passthrough     Other arguments are passed to Pi in the workspace container.
                      Example: pi install npm:pi-web-access
                      Use `pi - PI_ARGS...` to force wrapper command names through
@@ -706,6 +746,30 @@ BROWSER_STATE_VOLUME_NAME="${VOLUME_NAMESPACE}_agent-browser-state"
 CONTAINER_NAME="pi-agents-pi-$WORKSPACE_BASENAME"
 CONFIG_PATH="${PI_AGENT_CONTAINERS_CONFIG_PATH:-$HOME/.config/pi-agent-containers}"
 STATE_SEED_FILE="$CONFIG_PATH/seed"
+if [[ "$FORCE_BASH" == true && "$FORCE_ZSH" == true ]]; then
+  printf 'pi: --bash and --zsh are mutually exclusive\n' >&2
+  exit 2
+fi
+if [[ "$FORCE_BASH" == true ]]; then
+  HOST_SHELL_NAME=bash
+elif [[ "$FORCE_ZSH" == true ]]; then
+  HOST_SHELL_NAME=zsh
+else
+  HOST_SHELL_NAME="${SHELL:-/bin/bash}"
+  HOST_SHELL_NAME="${HOST_SHELL_NAME##*/}"
+fi
+case "$HOST_SHELL_NAME" in
+  bash|zsh) ;;
+  *)
+    printf 'pi: unsupported host shell: %s (supported: bash, zsh)\n' "$HOST_SHELL_NAME" >&2
+    exit 2
+    ;;
+esac
+SHELL_RC_DIRECTORY="$CONFIG_PATH/shell-rc"
+HOST_SHELL_RC_FILE=""
+if [[ "$NO_RC_CONFIG" -eq 0 ]]; then
+  HOST_SHELL_RC_FILE="$SHELL_RC_DIRECTORY/${VOLUME_NAMESPACE}-${HOST_SHELL_NAME}.rc"
+fi
 STATE_TARGET_WAS_NEW=false
 FORCE_RECREATE=false
 if [[ "$REPLACE_CONTAINER" == true || "$NEW_STATE" == true ]]; then
@@ -737,7 +801,20 @@ run_compose() {
     PI_AGENT_STATE_VOLUME_NAME="$AGENT_STATE_VOLUME_NAME" \
     PI_SESSION_STATE_VOLUME_NAME="$SESSION_STATE_VOLUME_NAME" \
     PI_BROWSER_STATE_VOLUME_NAME="$BROWSER_STATE_VOLUME_NAME" \
+    PI_HOST_SHELL="$HOST_SHELL_NAME" \
+    PI_HOST_RC_SOURCE="$HOST_SHELL_RC_FILE" \
+    PI_HOST_RC_FILE="/tmp/pi-host-shellrc" \
+    PI_NO_RC_CONFIG="$NO_RC_CONFIG" \
     "${COMPOSE[@]}" "$@"
+}
+
+prepare_host_shell_rc() {
+  [[ "$NO_RC_CONFIG" -eq 0 ]] || return 0
+  mkdir -p -- "$SHELL_RC_DIRECTORY"
+  "$STACK_ROOT/bin/pi-shell-rc" \
+    --shell "$HOST_SHELL_NAME" \
+    --home "$HOME" \
+    --output "$HOST_SHELL_RC_FILE"
 }
 
 read_state_pointer() {
@@ -1109,7 +1186,7 @@ start_persistent_service() {
 install_browser_extension() {
   # The extension must be registered in the mounted Pi agent state, not only
   # installed in the image: /home/node/.pi/agent is a per-workspace volume.
-  run_compose exec pi pi install "$PI_BROWSER_EXTENSION_SOURCE"
+  run_compose exec pi pi-shell-launch pi install "$PI_BROWSER_EXTENSION_SOURCE"
 }
 
 path_component() {
@@ -1401,6 +1478,7 @@ shell_container_is_running() {
 }
 
 attach_shell() {
+  prepare_host_shell_rc
   select_shell_container
   if [[ "$SHELL_START_NEW_PROJECT" == true ]]; then
     mkdir -p -- "$WORKSPACE"
@@ -1421,9 +1499,9 @@ attach_shell() {
   fi
 
   if [[ "$SHELL_AS_ROOT" == true ]]; then
-    docker exec -it --user 0 "$SHELL_SELECTED_NAME" bash
+    docker exec -it --user 0 "$SHELL_SELECTED_NAME" pi-shell-launch
   else
-    docker exec -it "$SHELL_SELECTED_NAME" bash
+    docker exec -it "$SHELL_SELECTED_NAME" pi-shell-launch
   fi
 }
 
@@ -1640,6 +1718,7 @@ if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "update" ]]; then
     esac
   done
 
+  prepare_host_shell_rc
   prepare_workspace_container
   prepare_state_lineage
   if [[ "${#UPDATE_ARGS[@]}" -eq 0 ]]; then
@@ -1659,22 +1738,24 @@ if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "update" ]]; then
   install_browser_extension
   record_state_lineage
   run_logged_pi() {
-    run_compose exec pi pi-session-log "$@"
+    run_compose exec pi pi-shell-launch pi-session-log "$@"
   }
   run_logged_pi update "${UPDATE_ARGS[@]}"
   exit $?
 fi
 
 if [[ "$REMOVE_AFTER_RUN" == true ]]; then
+  prepare_host_shell_rc
   prepare_state_lineage
   ensure_workspace_volumes
   initialize_agent_state
   repair_state_permissions
-  run_compose run --rm pi pi install "$PI_BROWSER_EXTENSION_SOURCE"
-  run_compose run --rm --service-ports pi pi "$@"
+  run_compose run --rm pi pi-shell-launch pi install "$PI_BROWSER_EXTENSION_SOURCE"
+  run_compose run --rm --service-ports pi pi-shell-launch pi "$@"
   exit $?
 fi
 
+prepare_host_shell_rc
 prepare_workspace_container
 prepare_state_lineage
 
@@ -1682,7 +1763,7 @@ prepare_state_lineage
 # The persistent service starts pi-session-forwarder alongside sleep, while
 # this helper only preserves Pi's foreground interactive PTY via compose exec.
 run_logged_pi() {
-  run_compose exec pi pi-session-log "$@"
+  run_compose exec pi pi-shell-launch pi-session-log "$@"
 }
 
 start_persistent_service
