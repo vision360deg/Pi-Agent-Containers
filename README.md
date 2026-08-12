@@ -150,9 +150,10 @@ configuration.
 For Bash, the host `.bash_profile` and `.bashrc` are startup roots. For zsh,
 the roots are `.zshenv`, `.zprofile`, `.zshrc`, and `.zlogin`. Every statically
 identifiable `source` or dot-file reference in those roots is recursively
-flattened on the host into one generated rc file, which is mounted read-only
-in the Pi container. Dynamic source expressions are left unresolved and produce
-warnings.
+flattened on the host into one generated rc file. Its per-workspace directory
+is mounted read-only in the Pi container so refreshed rc contents are visible
+to an already-running container. Dynamic source expressions are left unresolved
+and produce warnings.
 
 The host home directory is not mounted into the container. The persistent
 container service remains Bash-based; host-shell selection applies only to

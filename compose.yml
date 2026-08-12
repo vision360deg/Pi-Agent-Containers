@@ -45,6 +45,8 @@ services:
       # Nested mount keeps sessions isolated per workspace.
       - pi-session-state:/home/node/.pi/agent/sessions
       - agent-browser-state:/home/node/.agent-browser
+      # Mount the per-workspace directory so atomic rc refreshes are visible to
+      # containers that were created by an earlier launch.
       - ${PI_HOST_RC_SOURCE:-/dev/null}:/tmp/pi-host-shellrc:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"

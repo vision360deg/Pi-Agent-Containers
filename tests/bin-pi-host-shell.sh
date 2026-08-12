@@ -113,13 +113,15 @@ printf 'export FROM_BASHRC=yes\n' > "$HOST_HOME/.bashrc"
 # per-workspace rc file.
 DEFAULT_STATE="$TMP_DIR/default-state"
 run_wrapper /usr/local/bin/zsh "$DEFAULT_STATE" --version
-zsh_rc_files=("$DEFAULT_STATE"/shell-rc/*.rc)
-[[ "${#zsh_rc_files[@]}" -eq 1 && -f "${zsh_rc_files[0]}" ]]
-grep -Fq 'export FROM_PROFILE=yes' "${zsh_rc_files[0]}"
-grep -Fq 'export FROM_ZSHRC=yes' "${zsh_rc_files[0]}"
+zsh_rc_dirs=("$DEFAULT_STATE"/shell-rc/*)
+[[ "${#zsh_rc_dirs[@]}" -eq 1 && -d "${zsh_rc_dirs[0]}" ]]
+zsh_rc_file="${zsh_rc_dirs[0]}/rc"
+[[ -f "$zsh_rc_file" ]]
+grep -Fq 'export FROM_PROFILE=yes' "$zsh_rc_file"
+grep -Fq 'export FROM_ZSHRC=yes' "$zsh_rc_file"
 assert_log_has_line 'PI_HOST_SHELL=zsh'
-assert_log_has_line "PI_HOST_RC_SOURCE=${zsh_rc_files[0]}"
-assert_log_has_line 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc'
+assert_log_has_line "PI_HOST_RC_SOURCE=${zsh_rc_dirs[0]}"
+assert_log_has_line 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc'
 assert_log_has_line 'PI_NO_RC_CONFIG=0'
 assert_log_has 'exec pi pi-shell-launch pi install npm:pi-agent-browser-native'
 assert_log_has 'exec pi pi-shell-launch pi-session-log --version'
@@ -127,12 +129,12 @@ assert_log_has 'exec pi pi-shell-launch pi-session-log --version'
 # Explicit overrides win over SHELL and rewrite the same rc source file, so an
 # already-running container's read-only mount sees the selected shell's config.
 run_wrapper /bin/zsh "$DEFAULT_STATE" --bash --version
-bash_rc_files=("$DEFAULT_STATE"/shell-rc/*.rc)
-[[ "${#bash_rc_files[@]}" -eq 1 && "${bash_rc_files[0]}" == "${zsh_rc_files[0]}" ]]
-grep -Fq 'export FROM_BASH_PROFILE=yes' "${bash_rc_files[0]}"
-grep -Fq 'export FROM_BASHRC=yes' "${bash_rc_files[0]}"
+bash_rc_dirs=("$DEFAULT_STATE"/shell-rc/*)
+[[ "${#bash_rc_dirs[@]}" -eq 1 && "${bash_rc_dirs[0]}" == "${zsh_rc_dirs[0]}" ]]
+grep -Fq 'export FROM_BASH_PROFILE=yes' "$zsh_rc_file"
+grep -Fq 'export FROM_BASHRC=yes' "$zsh_rc_file"
 assert_log_has_line 'PI_HOST_SHELL=bash'
-assert_log_has_line "PI_HOST_RC_SOURCE=${zsh_rc_files[0]}"
+assert_log_has_line "PI_HOST_RC_SOURCE=${zsh_rc_dirs[0]}"
 
 ZSH_STATE="$TMP_DIR/zsh-state"
 run_wrapper /bin/bash "$ZSH_STATE" --zsh --version
@@ -158,13 +160,13 @@ WORKSPACE_PATH="$(cd -P -- "$WORKSPACE" && pwd)"
 FAKE_CONTAINERS=$'current-id\tpi-agents-pi-workspace\tUp 1 minute\trunning\t'"$WORKSPACE_PATH"
 SHELL_STATE="$TMP_DIR/shell-state"
 run_wrapper /bin/zsh "$SHELL_STATE" shell
-assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
+assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
 
 run_wrapper /bin/zsh "$SHELL_STATE" shell --root
-assert_log_has 'docker exec -it --user 0 --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
+assert_log_has 'docker exec -it --user 0 --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
 
 run_wrapper /bin/bash "$SHELL_STATE" --no-rc-config shell
-assert_log_has 'docker exec -it --env PI_HOST_SHELL=bash --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc --env PI_NO_RC_CONFIG=1 pi-agents-pi-workspace pi-shell-launch'
+assert_log_has 'docker exec -it --env PI_HOST_SHELL=bash --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=1 pi-agents-pi-workspace pi-shell-launch'
 
 # Invalid selection fails before any Docker command.
 INVALID_STATE="$TMP_DIR/invalid-state"

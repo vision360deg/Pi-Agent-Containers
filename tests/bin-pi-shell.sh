@@ -91,7 +91,7 @@ assert_log_lacks() {
 CURRENT_PATH="$(cd -P -- "$CURRENT_WORKSPACE" && pwd)"
 OTHER_PATH="$(cd -P -- "$OTHER_WORKSPACE" && pwd)"
 STOPPED_PATH="$(cd -P -- "$STOPPED_WORKSPACE" && pwd)"
-SHELL_LAUNCH_ENV='--env PI_HOST_SHELL=bash --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc --env PI_NO_RC_CONFIG=0'
+SHELL_LAUNCH_ENV='--env PI_HOST_SHELL=bash --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0'
 
 # A current running workspace container is selected without a picker or Compose.
 FAKE_CONTAINERS=$'current-id\tpi-agents-pi-current\tUp 4 minutes\trunning\t'"$CURRENT_PATH"

@@ -18,7 +18,7 @@
 - Resolve source files statically; never evaluate host startup-file code.
 - Follow only literal home-relative source targets (~, $HOME, \${HOME}, or literal paths under the selected host home); preserve unsupported/dynamic source lines and warn.
 - Keep compose.yml's bash -lc 'pi-session-forwarder & exec sleep infinity' service command unchanged.
-- Mount only the generated rc file read-only; do not mount the host home directory.
+- Mount only a per-workspace directory containing the generated rc file read-only; do not mount the host home directory. The directory mount keeps atomic rc refreshes visible to existing containers.
 - Update both detailed help and combined-argument brief help when changing bin/pi.
 - Preserve existing workspace/container lifecycle and agent-state lineage behavior and tests.
 

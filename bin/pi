@@ -767,8 +767,10 @@ case "$HOST_SHELL_NAME" in
 esac
 SHELL_RC_DIRECTORY="$CONFIG_PATH/shell-rc"
 HOST_SHELL_RC_FILE=""
+HOST_SHELL_RC_SOURCE=""
 if [[ "$NO_RC_CONFIG" -eq 0 ]]; then
-  HOST_SHELL_RC_FILE="$SHELL_RC_DIRECTORY/${VOLUME_NAMESPACE}.rc"
+  HOST_SHELL_RC_SOURCE="$SHELL_RC_DIRECTORY/$VOLUME_NAMESPACE"
+  HOST_SHELL_RC_FILE="$HOST_SHELL_RC_SOURCE/rc"
 fi
 STATE_TARGET_WAS_NEW=false
 FORCE_RECREATE=false
@@ -802,15 +804,15 @@ run_compose() {
     PI_SESSION_STATE_VOLUME_NAME="$SESSION_STATE_VOLUME_NAME" \
     PI_BROWSER_STATE_VOLUME_NAME="$BROWSER_STATE_VOLUME_NAME" \
     PI_HOST_SHELL="$HOST_SHELL_NAME" \
-    PI_HOST_RC_SOURCE="$HOST_SHELL_RC_FILE" \
-    PI_HOST_RC_FILE="/tmp/pi-host-shellrc" \
+    PI_HOST_RC_SOURCE="$HOST_SHELL_RC_SOURCE" \
+    PI_HOST_RC_FILE="/tmp/pi-host-shellrc/rc" \
     PI_NO_RC_CONFIG="$NO_RC_CONFIG" \
     "${COMPOSE[@]}" "$@"
 }
 
 prepare_host_shell_rc() {
   [[ "$NO_RC_CONFIG" -eq 0 ]] || return 0
-  mkdir -p -- "$SHELL_RC_DIRECTORY"
+  mkdir -p -- "$HOST_SHELL_RC_SOURCE"
   "$STACK_ROOT/bin/pi-shell-rc" \
     --shell "$HOST_SHELL_NAME" \
     --home "$HOME" \
@@ -1501,13 +1503,13 @@ attach_shell() {
   if [[ "$SHELL_AS_ROOT" == true ]]; then
     docker exec -it --user 0 \
       --env "PI_HOST_SHELL=$HOST_SHELL_NAME" \
-      --env 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc' \
+      --env 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc' \
       --env "PI_NO_RC_CONFIG=$NO_RC_CONFIG" \
       "$SHELL_SELECTED_NAME" pi-shell-launch
   else
     docker exec -it \
       --env "PI_HOST_SHELL=$HOST_SHELL_NAME" \
-      --env 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc' \
+      --env 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc' \
       --env "PI_NO_RC_CONFIG=$NO_RC_CONFIG" \
       "$SHELL_SELECTED_NAME" pi-shell-launch
   fi
