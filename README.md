@@ -140,6 +140,24 @@ When no current workspace container exists, `pi shell` offers `0) Start a new
 project`; choosing it creates the directory if needed, starts the persistent
 service, and opens the shell. The picker ends with `X) Press Esc to cancel`.
 
+### Host shell configuration
+
+Foreground `pi` commands and `pi shell` use Bash or zsh selected from the
+basename of the host's `$SHELL`. Use `--bash` or `--zsh` to force the choice.
+Use `--no-rc-config` to start the selected shell without loading host startup
+configuration.
+
+For Bash, the host `.bash_profile` and `.bashrc` are startup roots. For zsh,
+the roots are `.zshenv`, `.zprofile`, `.zshrc`, and `.zlogin`. Every statically
+identifiable `source` or dot-file reference in those roots is recursively
+flattened on the host into one generated rc file, which is mounted read-only
+in the Pi container. Dynamic source expressions are left unresolved and produce
+warnings.
+
+The host home directory is not mounted into the container. The persistent
+container service remains Bash-based; host-shell selection applies only to
+foreground Pi commands and interactive shell attachment.
+
 Use a leading `-` to force a wrapper command name through to Pi: `pi - list`
 runs Pi's `list` command inside the container, while `pi list` runs the wrapper
 inventory command. The marker is a literal argument and does not require shell
