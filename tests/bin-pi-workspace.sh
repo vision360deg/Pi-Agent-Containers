@@ -121,7 +121,7 @@ assert_log_has "PI_WORKSPACE=$PATH_1"
 run_wrapper "$PATH_1" --new-state
 grep -Eq '^PI_AGENT_STATE_VOLUME_NAME=pi-agents-new-ws-[a-z0-9]+_pi-agent-state$' "$DOCKER_LOG"
 assert_log_has 'PI_SESSION_STATE_VOLUME_NAME=pi-agents-ws-'
-assert_log_has 'up --detach --force-recreate pi'
+assert_log_has 'up --build --detach --force-recreate pi'
 
 export FAKE_CONTAINERS=$'id-1\tpi-agents-pi-workspace\tUp 2 minutes\t'$PATH_1
 if printf 'c\n' | run_wrapper "$PATH_2"; then
@@ -135,7 +135,7 @@ printf 'r\n' | run_wrapper "$PATH_2"
 assert_log_has 'rename pi-agents-pi-workspace -> pi-agents-pi-path-1-workspace'
 assert_log_has 'PI_CONTAINER_NAME=pi-agents-pi-path-2-workspace'
 assert_log_has 'compose --project-name pi-agents-pi-path-2-workspace'
-assert_log_has 'up --detach --force-recreate pi'
+assert_log_has 'up --build --detach --force-recreate pi'
 
 export FAKE_CONTAINERS=$'id-1\tpi-agents-pi-workspace\tExited (0) 3 hours ago\t'$PATH_1
 if printf 'c\n' | run_wrapper "$PATH_2"; then
@@ -156,7 +156,7 @@ assert_log_has 'compose --project-name pi-agents-pi-path-2-workspace'
 
 unset FAKE_CONTAINERS
 run_wrapper "$PATH_1" --replace
-assert_log_has 'up --detach --force-recreate pi'
+assert_log_has 'up --build --detach --force-recreate pi'
 
 run_wrapper "$PATH_1" stop
 assert_log_has ' stop'

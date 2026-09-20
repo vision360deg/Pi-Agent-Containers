@@ -44,7 +44,8 @@ resolution, generated-file lifecycle, and propagation of the selected
 shell/rc mode into Compose. A small container-side helper owns shell
 invocation, `--no-rc-config`, and argument-safe `exec` behavior. The Docker
 image installs zsh and copies the helper; Compose receives one read-only bind
-mount for the per-workspace generated-rc directory when rc loading is enabled.
+mount override for the per-workspace generated-rc directory when rc loading is
+enabled. No rc mount is declared in `--no-rc-config` mode.
 
 The generated file is stored at a stable per-workspace path under the wrapper's
 configuration directory so a persistent container does not depend on a deleted

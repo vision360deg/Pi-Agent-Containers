@@ -33,6 +33,11 @@ if [[ "${1:-}" == "ps" ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == "inspect" ]]; then
+  printf 'mounted\n'
+  exit 0
+fi
+
 if [[ "${1:-}" == "start" || "${1:-}" == "exec" ]]; then
   exit 0
 fi
@@ -132,10 +137,10 @@ grep -Fq '0) Start a new project' "$OUTPUT_LOG"
 grep -Fq '1) pi-agents-pi-existing' "$OUTPUT_LOG"
 grep -Fq 'X) Press Esc to cancel' "$OUTPUT_LOG"
 assert_log_has 'docker compose'
-assert_log_has 'up --detach pi'
+assert_log_has 'up --build --detach pi'
 assert_log_has 'docker volume create'
 assert_log_has 'docker run'
-assert_log_has 'exec pi pi-shell-launch pi install npm:pi-agent-browser-native'
+assert_log_has 'exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native'
 assert_log_has "docker exec -it $SHELL_LAUNCH_ENV pi-agents-pi-new-project pi-shell-launch"
 
 if printf '\033' | run_wrapper --workspace "$CANCEL_WORKSPACE" shell; then

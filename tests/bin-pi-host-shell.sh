@@ -32,6 +32,19 @@ if [[ "${1:-}" == ps ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == inspect ]]; then
+  if [[ "${FAKE_NO_RC_MOUNT-}" == 1 ]]; then
+    exit 0
+  fi
+  printf 'mounted\n'
+  exit 0
+fi
+
+if [[ "${1:-}" == exec && "$*" == *'test -x /usr/local/bin/pi-shell-launch'* ]]; then
+  [[ "${FAKE_NO_LAUNCHER-}" != 1 ]]
+  exit $?
+fi
+
 if [[ "${1:-}" == volume ]]; then
   case "${2:-}" in
     inspect) exit 1 ;;
@@ -61,6 +74,8 @@ run_wrapper() {
       PI_AGENT_CONTAINERS_CONFIG_PATH="$state_path" \
       HOME="$HOST_HOME" \
       FAKE_CONTAINERS="${FAKE_CONTAINERS-}" \
+      FAKE_NO_RC_MOUNT="${FAKE_NO_RC_MOUNT-}" \
+      FAKE_NO_LAUNCHER="${FAKE_NO_LAUNCHER-}" \
       PATH="$FAKE_BIN:$PATH" \
       "$ROOT/bin/pi" "$@"
   ) >"$OUTPUT_LOG" 2>&1
@@ -123,7 +138,9 @@ assert_log_has_line 'PI_HOST_SHELL=zsh'
 assert_log_has_line "PI_HOST_RC_SOURCE=${zsh_rc_dirs[0]}"
 assert_log_has_line 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc'
 assert_log_has_line 'PI_NO_RC_CONFIG=0'
-assert_log_has 'exec pi pi-shell-launch pi install npm:pi-agent-browser-native'
+assert_log_has 'compose.shell-rc.yml'
+assert_log_has 'up --build --detach pi'
+assert_log_has 'exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native'
 assert_log_has 'exec pi pi-shell-launch pi-session-log --version'
 
 # Explicit overrides win over SHELL and rewrite the same rc source file, so an
@@ -147,19 +164,36 @@ run_wrapper /bin/zsh "$NO_RC_STATE" --no-rc-config --version
 assert_log_has_line 'PI_HOST_SHELL=zsh'
 assert_log_has_line 'PI_HOST_RC_SOURCE='
 assert_log_has_line 'PI_NO_RC_CONFIG=1'
+if grep -Fq 'compose.shell-rc.yml' "$DOCKER_LOG"; then
+  printf 'no-rc mode unexpectedly enabled the rc Compose override\n' >&2
+  exit 1
+fi
 assert_log_has 'exec pi pi-shell-launch pi-session-log --version'
 
 # Disposable Pi and extension installation both use the shell launcher.
 RM_STATE="$TMP_DIR/rm-state"
 run_wrapper /bin/bash "$RM_STATE" --rm --version
-assert_log_has 'run --rm pi pi-shell-launch pi install npm:pi-agent-browser-native'
-assert_log_has 'run --rm --service-ports pi pi-shell-launch pi --version'
+assert_log_has 'run --build --rm pi pi-shell-launch pi install npm:pi-agent-browser-native'
+assert_log_has 'run --build --rm --service-ports pi pi-shell-launch pi --version'
 
 # Existing-container shell attachment uses the helper and preserves root ordering.
 WORKSPACE_PATH="$(cd -P -- "$WORKSPACE" && pwd)"
 FAKE_CONTAINERS=$'current-id\tpi-agents-pi-workspace\tUp 1 minute\trunning\t'"$WORKSPACE_PATH"
 SHELL_STATE="$TMP_DIR/shell-state"
 run_wrapper /bin/zsh "$SHELL_STATE" shell
+assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
+
+# Normal shell attachment reconciles a current container previously created
+# with --no-rc-config before trying to source the generated rc.
+FAKE_NO_RC_MOUNT=1 run_wrapper /bin/zsh "$SHELL_STATE" shell
+assert_log_has 'compose.shell-rc.yml'
+assert_log_has 'up --build --detach pi'
+assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
+
+# If an older image is already mounted/configured but lacks the new helper,
+# rebuild and recreate the current workspace container before attaching.
+FAKE_NO_LAUNCHER=1 run_wrapper /bin/zsh "$SHELL_STATE" shell
+assert_log_has 'up --build --detach --force-recreate pi'
 assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
 
 run_wrapper /bin/zsh "$SHELL_STATE" shell --root

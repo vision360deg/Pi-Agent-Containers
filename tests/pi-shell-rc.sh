@@ -219,6 +219,27 @@ if grep -Fq 'CONDITIONAL_TARGET=1' "$CONDITIONAL_OUTPUT"; then
 fi
 assert_contains "$TMP/conditional.err" "unresolved source"
 
+ONE_LINE_HOME=$TMP/one-line-home
+mkdir -p "$ONE_LINE_HOME"
+cat > "$ONE_LINE_HOME/.conditional" <<'EOF'
+ONE_LINE_CONDITIONAL_TARGET=1
+EOF
+cat > "$ONE_LINE_HOME/.after" <<'EOF'
+ONE_LINE_AFTER_TARGET=1
+EOF
+cat > "$ONE_LINE_HOME/.bashrc" <<'EOF'
+if false; then source ~/.conditional; fi
+source ~/.after
+EOF
+ONE_LINE_OUTPUT=$TMP/one-line.rc
+bash "$RESOLVER" --shell bash --home "$ONE_LINE_HOME" --output "$ONE_LINE_OUTPUT" 2>"$TMP/one-line.err"
+assert_contains "$ONE_LINE_OUTPUT" 'if false; then source ~/.conditional; fi'
+assert_contains "$ONE_LINE_OUTPUT" ONE_LINE_AFTER_TARGET=1
+if grep -Fq 'ONE_LINE_CONDITIONAL_TARGET=1' "$ONE_LINE_OUTPUT"; then
+  fail "one-line conditional source must not be inlined"
+fi
+assert_contains "$TMP/one-line.err" "unresolved source"
+
 CONDITIONAL_FORMS_HOME=$TMP/conditional-forms-home
 mkdir -p "$CONDITIONAL_FORMS_HOME"
 cat > "$CONDITIONAL_FORMS_HOME/.conditional" <<'EOF'

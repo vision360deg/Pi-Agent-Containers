@@ -45,7 +45,7 @@ if [[ "${1:-}" == "compose" ]]; then
     if [[ "${compose_args[$index]}" == "--file" ]]; then
       override_file="${compose_args[$((index + 1))]}"
       case "$override_file" in
-        */compose.yml|*/compose.oauth.yml) ;;
+        */compose.yml|*/compose.oauth.yml|*/compose.shell-rc.yml) ;;
         *)
           printf 'OAUTH_OVERRIDE_CONTENT\n' >> "$DOCKER_LOG"
           cat "$override_file" >> "$DOCKER_LOG"
@@ -88,10 +88,33 @@ assert_log_has_line() {
 
 assert_log_has_fragment() {
   expected="$1"
-  if ! grep -Fq -- "$expected" "$DOCKER_LOG"; then
-    printf 'missing log fragment:\n%s\nactual:\n%s\n' "$expected" "$(cat "$DOCKER_LOG")" >&2
-    exit 1
+  candidates=("$expected")
+  if [[ "$expected" == *"--file $ROOT/compose.yml "* ]]; then
+    candidates+=("${expected/--file $ROOT\/compose.yml /--file $ROOT\/compose.yml --file $ROOT\/compose.shell-rc.yml }")
   fi
+  if [[ "$expected" == *"--file $ROOT/compose.oauth.yml "* ]]; then
+    candidates+=("${expected/--file $ROOT\/compose.oauth.yml /--file $ROOT\/compose.oauth.yml --file $ROOT\/compose.shell-rc.yml }")
+  fi
+  existing_candidates=("${candidates[@]}")
+  for candidate in "${existing_candidates[@]}"; do
+    if [[ "$candidate" == *' up --detach --force-recreate '* ]]; then
+      candidates+=("${candidate/ up --detach --force-recreate / up --build --detach --force-recreate }")
+    elif [[ "$candidate" == *' up --detach '* ]]; then
+      candidates+=("${candidate/ up --detach / up --build --detach }")
+    fi
+    if [[ "$candidate" == *' run --rm --service-ports '* ]]; then
+      candidates+=("${candidate/ run --rm --service-ports / run --build --rm --service-ports }")
+    elif [[ "$candidate" == *' run --rm '* ]]; then
+      candidates+=("${candidate/ run --rm / run --build --rm }")
+    fi
+  done
+  for candidate in "${candidates[@]}"; do
+    if grep -Fq -- "$candidate" "$DOCKER_LOG"; then
+      return 0
+    fi
+  done
+  printf 'missing log fragment:\n%s\nactual:\n%s\n' "$expected" "$(cat "$DOCKER_LOG")" >&2
+  exit 1
 }
 
 assert_log_lacks_fragment() {
@@ -143,7 +166,7 @@ assert_persistent_logged_exec() {
   expected_exec="$1"
   assert_log_line_count 7
   assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach pi"
-  assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi install npm:pi-agent-browser-native"
+  assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
   assert_log_has_fragment "$expected_exec"
 
   workspace_line="PI_WORKSPACE=$WORKSPACE"
@@ -211,6 +234,8 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'Persistent Pi session records are streamed as readable, colored events'* ]]
 [[ "$DETAILED_HELP" == *'The session volume remains the'* ]]
 [[ "$DETAILED_HELP" == *'durable JSONL source.'* ]]
+[[ "$DETAILED_HELP" == *'Wrapper-managed package and model'* ]]
+[[ "$DETAILED_HELP" == *'update output is mirrored there too.'* ]]
 [[ "$DETAILED_HELP" == *'PI_SESSION_LOG_FORMAT=raw'* ]]
 [[ "$DETAILED_HELP" == *'PI_SESSION_LOG_COLOR=never'* ]]
 [[ "$DETAILED_HELP" == *'--bash'* ]]
@@ -224,6 +249,7 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'.zlogin'* ]]
 [[ "$DETAILED_HELP" == *'recursively'* ]]
 [[ "$DETAILED_HELP" == *'service bootstrap remains Bash'* ]]
+[[ "$DETAILED_HELP" == *'Compose builds the image before persistent and disposable runs'* ]]
 
 run_wrapper_capture -h
 assert_output "$DETAILED_HELP"
@@ -255,13 +281,16 @@ Options:
   --oauth [PORTS...] Publish known callback ports 1455/53692/51121; add comma- or
                      space-separated custom ports.
   --bash, --zsh      Force Bash or zsh instead of detecting SHELL.
-  --no-rc-config     Start the selected shell without host startup files.
+  --no-rc-config     Start the selected shell without host startup files or an rc mount.
+
+  Shell image        Builds as needed to install the launcher; legacy selected
+                     containers from another workspace need `pi update` there.
 
   State volumes     Private per workspace; existing contents are preserved and
                     permissions are repaired before Pi starts.
   Browser integration Ensures pi-agent-browser-native is installed by default.
-  Logging           Streams pretty colored session events to Docker logs by
-                    default; use PI_SESSION_LOG_FORMAT=raw for JSONL.
+  Logging           Streams session events and wrapper package/model update output
+                     to Docker logs; use PI_SESSION_LOG_FORMAT=raw for JSONL.
   Shell             Detects Bash/zsh from SHELL and recursively resolves the
                     matching host startup files into a read-only generated rc.
   Pi passthrough     Other arguments are passed to Pi in the workspace container.
@@ -285,6 +314,7 @@ BRIEF_USAGE="$(cat "$OUTPUT_LOG")"
 [[ "$BRIEF_USAGE" == *'--bash, --zsh'* ]]
 [[ "$BRIEF_USAGE" == *'--no-rc-config'* ]]
 [[ "$BRIEF_USAGE" == *'Shell'* ]]
+[[ "$BRIEF_USAGE" == *'wrapper package/model update output'* ]]
 [[ "$BRIEF_USAGE" == *'--workspace PATH'* ]]
 [[ "$BRIEF_USAGE" == *'--replace'* ]]
 [[ "$BRIEF_USAGE" == *'--keep-existing'* ]]
@@ -364,17 +394,17 @@ run_wrapper update
 assert_log_line_count 7
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml build --pull --no-cache pi"
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach --force-recreate pi"
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi install npm:pi-agent-browser-native"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
 assert_log_has_line "PI_WORKSPACE=$WORKSPACE"
 
 run_wrapper update --extensions
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log update --extensions"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output update --extensions"
 
 run_wrapper update --models
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log update --models"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output update --models"
 
 run_wrapper update --extensions --models
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log update --extensions --models"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output update --extensions --models"
 
 if run_wrapper update --unknown; then
   printf 'unsupported update argument unexpectedly succeeded\n' >&2

@@ -1,0 +1,6 @@
+services:
+  pi:
+    volumes:
+      # Mount the per-workspace directory so atomic rc refreshes are visible to
+      # containers that were created by an earlier launch.
+      - ${PI_HOST_RC_SOURCE:?PI_HOST_RC_SOURCE is required when rc loading is enabled}:/tmp/pi-host-shellrc:ro

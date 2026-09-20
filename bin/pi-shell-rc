@@ -125,6 +125,11 @@ is_control_end() {
   [[ $line =~ ^[[:space:]]*(fi|done|esac|\})($|[[:space:];]) ]]
 }
 
+is_same_line_control_end() {
+  local line=$1
+  [[ $line =~ (^|[[:space:];])(fi|done|esac)([[:space:];]|$) ]]
+}
+
 resolve_file() {
   local file=$1 line source quote target path status conditional_depth=0
   if [[ ${active[$file]+yes} ]]; then
@@ -157,9 +162,10 @@ resolve_file() {
       fi
     fi
     if is_control_start "$line"; then
-      conditional_depth=$((conditional_depth + 1))
-    fi
-    if is_control_end "$line" && (( conditional_depth > 0 )); then
+      if ! is_same_line_control_end "$line"; then
+        conditional_depth=$((conditional_depth + 1))
+      fi
+    elif is_control_end "$line" && (( conditional_depth > 0 )); then
       conditional_depth=$((conditional_depth - 1))
     fi
   done < "$file"

@@ -144,8 +144,8 @@ service, and opens the shell. The picker ends with `X) Press Esc to cancel`.
 
 Foreground `pi` commands and `pi shell` use Bash or zsh selected from the
 basename of the host's `$SHELL`. Use `--bash` or `--zsh` to force the choice.
-Use `--no-rc-config` to start the selected shell without loading host startup
-configuration.
+Use `--no-rc-config` to start the selected shell without generating, mounting,
+or loading host startup configuration.
 
 For Bash, the host `.bash_profile` and `.bashrc` are startup roots. For zsh,
 the roots are `.zshenv`, `.zprofile`, `.zshrc`, and `.zlogin`. Every statically
@@ -157,7 +157,9 @@ and produce warnings.
 
 The host home directory is not mounted into the container. The persistent
 container service remains Bash-based; host-shell selection applies only to
-foreground Pi commands and interactive shell attachment.
+foreground Pi commands and interactive shell attachment. Compose builds the
+image for persistent and disposable launches so the shell launcher is present;
+`pi shell` repairs the current workspace image when needed.
 
 Use a leading `-` to force a wrapper command name through to Pi: `pi - list`
 runs Pi's `list` command inside the container, while `pi list` runs the wrapper
@@ -323,9 +325,10 @@ browser execution to the upstream `agent-browser` CLI. Use
 ## Logs and inspection
 
 Persistent Pi session records are streamed by a service-side forwarder to the
-Compose service log stream while Pi runs. Docker stdout is pretty and colored
-by default. Get the readable project name from `./bin/pi list`, then follow it
-with:
+Compose service log stream while Pi runs. Wrapper-managed package and model update
+output is mirrored there too, including `pi update --extensions`. Docker stdout is
+pretty and colored by default. Get the readable project name from `./bin/pi list`,
+then follow it with:
 
 ```bash
 docker compose \

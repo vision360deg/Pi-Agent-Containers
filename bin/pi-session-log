@@ -3,8 +3,14 @@ set -euo pipefail
 
 # Keep Pi in the foreground of the interactive exec PTY. Session JSONL is
 # streamed by pi-session-forwarder, which belongs to the persistent service.
-# Explicitly discard `script`'s terminal transcript so util-linux does not
-# create its default `typescript` file in the mounted workspace.
+# Non-session commands such as package and model updates can opt into
+# mirroring their terminal transcript to the service's stdout as well.
+FORWARD_OUTPUT=false
+if [[ "${1:-}" == "--forward-output" ]]; then
+  FORWARD_OUTPUT=true
+  shift
+fi
+
 printf -v PI_COMMAND '%q ' pi "$@"
 PI_COMMAND="${PI_COMMAND% }"
 
@@ -12,9 +18,17 @@ PI_COMMAND="${PI_COMMAND% }"
 # it remains the foreground process that owns interactive terminal input.
 export PI_SESSION_LOG_PID=$$
 
+SCRIPT_ARGS=(
+  --quiet
+  --flush
+  --return
+)
+if [[ "$FORWARD_OUTPUT" == true ]]; then
+  # docker compose logs only sees the persistent service's main stdout.
+  SCRIPT_ARGS+=(--log-out /proc/1/fd/1)
+fi
+
 exec script \
-  --quiet \
-  --flush \
-  --return \
+  "${SCRIPT_ARGS[@]}" \
   --command "$PI_COMMAND" \
   /dev/null

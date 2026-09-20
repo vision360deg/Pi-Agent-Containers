@@ -32,7 +32,7 @@ services:
       PI_SESSION_LOG_FORMAT: ${PI_SESSION_LOG_FORMAT:-pretty}
       PI_SESSION_LOG_COLOR: ${PI_SESSION_LOG_COLOR:-always}
       PI_HOST_SHELL: ${PI_HOST_SHELL:-bash}
-      PI_HOST_RC_FILE: ${PI_HOST_RC_FILE:-/tmp/pi-host-shellrc}
+      PI_HOST_RC_FILE: ${PI_HOST_RC_FILE:-/tmp/pi-host-shellrc/rc}
       PI_NO_RC_CONFIG: ${PI_NO_RC_CONFIG:-0}
       # Optional: point agent-browser at an existing CDP endpoint instead of
       # launching its own Chromium in this container.
@@ -45,9 +45,6 @@ services:
       # Nested mount keeps sessions isolated per workspace.
       - pi-session-state:/home/node/.pi/agent/sessions
       - agent-browser-state:/home/node/.agent-browser
-      # Mount the per-workspace directory so atomic rc refreshes are visible to
-      # containers that were created by an earlier launch.
-      - ${PI_HOST_RC_SOURCE:-/dev/null}:/tmp/pi-host-shellrc:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

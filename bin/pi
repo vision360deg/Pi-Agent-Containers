@@ -427,14 +427,20 @@ Host shell:
   .zprofile, .zshrc, and .zlogin are startup roots. Statically identifiable
   source and dot references are recursively resolved on the host into one
   generated rc file, which is mounted read-only without mounting the host home.
-  Use --no-rc-config to disable both generation and startup-file loading.
+  Use --no-rc-config to disable rc generation, mounting, and startup-file loading.
+
+  Compose builds the image before persistent and disposable runs so the shell
+  launcher is available. `pi shell` repairs the current workspace image if
+  needed; selected legacy containers in another workspace require `pi update`
+  from that workspace first.
 
   The persistent container service bootstrap remains Bash; host-shell selection
   applies only to foreground Pi commands and interactive shell attachment.
 
 Logging:
   Persistent Pi session records are streamed as readable, colored events to
-  the Docker service log stream while Pi runs. The session volume remains the
+  the Docker service log stream while Pi runs. Wrapper-managed package and model
+  update output is mirrored there too. The session volume remains the
   durable JSONL source. Set PI_SESSION_LOG_FORMAT=raw for JSONL logs or
   PI_SESSION_LOG_COLOR=never for plain text.
 
@@ -525,13 +531,16 @@ Options:
   --oauth [PORTS...] Publish known callback ports 1455/53692/51121; add comma- or
                      space-separated custom ports.
   --bash, --zsh      Force Bash or zsh instead of detecting SHELL.
-  --no-rc-config     Start the selected shell without host startup files.
+  --no-rc-config     Start the selected shell without host startup files or an rc mount.
+
+  Shell image        Builds as needed to install the launcher; legacy selected
+                     containers from another workspace need `pi update` there.
 
   State volumes     Private per workspace; existing contents are preserved and
                     permissions are repaired before Pi starts.
   Browser integration Ensures pi-agent-browser-native is installed by default.
-  Logging           Streams pretty colored session events to Docker logs by
-                    default; use PI_SESSION_LOG_FORMAT=raw for JSONL.
+  Logging           Streams session events and wrapper package/model update output
+                     to Docker logs; use PI_SESSION_LOG_FORMAT=raw for JSONL.
   Shell             Detects Bash/zsh from SHELL and recursively resolves the
                     matching host startup files into a read-only generated rc.
   Pi passthrough     Other arguments are passed to Pi in the workspace container.
@@ -789,6 +798,9 @@ build_compose() {
     if [[ -n "$OAUTH_OVERRIDE_FILE" ]]; then
       COMPOSE+=(--file "$OAUTH_OVERRIDE_FILE")
     fi
+  fi
+  if [[ "$NO_RC_CONFIG" -eq 0 ]]; then
+    COMPOSE+=(--file "$STACK_ROOT/compose.shell-rc.yml")
   fi
 }
 
@@ -1179,16 +1191,16 @@ list_pi_stacks() (
 start_persistent_service() {
   ensure_workspace_volumes
   if [[ "$FORCE_RECREATE" == true ]]; then
-    run_compose up --detach --force-recreate pi
+    run_compose up --build --detach --force-recreate pi
   else
-    run_compose up --detach pi
+    run_compose up --build --detach pi
   fi
 }
 
 install_browser_extension() {
   # The extension must be registered in the mounted Pi agent state, not only
   # installed in the image: /home/node/.pi/agent is a per-workspace volume.
-  run_compose exec pi pi-shell-launch pi install "$PI_BROWSER_EXTENSION_SOURCE"
+  run_compose exec pi pi-shell-launch pi-session-log --forward-output install "$PI_BROWSER_EXTENSION_SOURCE"
 }
 
 path_component() {
@@ -1479,6 +1491,16 @@ shell_container_is_running() {
   [[ "$1" == running ]]
 }
 
+shell_container_has_host_rc_mount() {
+  local container="$1" mounted_source
+  mounted_source="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination \"/tmp/pi-host-shellrc\"}}{{.Source}}{{end}}{{end}}' "$container" 2>/dev/null)" || return 1
+  [[ -n "$mounted_source" ]]
+}
+
+shell_container_has_launcher() {
+  docker exec "$1" test -x /usr/local/bin/pi-shell-launch >/dev/null 2>&1
+}
+
 attach_shell() {
   prepare_host_shell_rc
   select_shell_container
@@ -1496,8 +1518,28 @@ attach_shell() {
     SHELL_SELECTED_STATE=running
   fi
 
+  # A container created by --no-rc-config has no rc bind mount. Reconcile the
+  # current workspace service before attaching normally so the launcher can
+  # read the generated rc file. Containers selected from another workspace
+  # retain their existing mounts and are not recreated under this project.
+  if [[ "$NO_RC_CONFIG" -eq 0 && "$SHELL_SELECTED_NAME" == "$CONTAINER_NAME" ]] &&
+    ! shell_container_has_host_rc_mount "$SHELL_SELECTED_NAME"; then
+    start_persistent_service
+    SHELL_SELECTED_STATE=running
+  fi
+
   if ! shell_container_is_running "$SHELL_SELECTED_STATE"; then
     docker start "$SHELL_SELECTED_NAME" >/dev/null
+    SHELL_SELECTED_STATE=running
+  fi
+
+  if ! shell_container_has_launcher "$SHELL_SELECTED_NAME"; then
+    if [[ "$SHELL_SELECTED_NAME" != "$CONTAINER_NAME" ]]; then
+      printf 'pi: selected container lacks pi-shell-launch; run pi update from its workspace first\n' >&2
+      return 2
+    fi
+    run_compose up --build --detach --force-recreate pi
+    SHELL_SELECTED_STATE=running
   fi
 
   if [[ "$SHELL_AS_ROOT" == true ]]; then
@@ -1748,7 +1790,7 @@ if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "update" ]]; then
   install_browser_extension
   record_state_lineage
   run_logged_pi() {
-    run_compose exec pi pi-shell-launch pi-session-log "$@"
+    run_compose exec pi pi-shell-launch pi-session-log --forward-output "$@"
   }
   run_logged_pi update "${UPDATE_ARGS[@]}"
   exit $?
@@ -1760,8 +1802,8 @@ if [[ "$REMOVE_AFTER_RUN" == true ]]; then
   ensure_workspace_volumes
   initialize_agent_state
   repair_state_permissions
-  run_compose run --rm pi pi-shell-launch pi install "$PI_BROWSER_EXTENSION_SOURCE"
-  run_compose run --rm --service-ports pi pi-shell-launch pi "$@"
+  run_compose run --build --rm pi pi-shell-launch pi install "$PI_BROWSER_EXTENSION_SOURCE"
+  run_compose run --build --rm --service-ports pi pi-shell-launch pi "$@"
   exit $?
 fi
 
