@@ -28,7 +28,10 @@ if [[ "$FORWARD_OUTPUT" == true ]]; then
   SCRIPT_ARGS+=(--log-out /proc/1/fd/1)
 fi
 
-exec script \
-  "${SCRIPT_ARGS[@]}" \
-  --command "$PI_COMMAND" \
-  /dev/null
+SCRIPT_ARGS+=(--command "$PI_COMMAND")
+if [[ "$FORWARD_OUTPUT" == false ]]; then
+  # Without --log-out, discard script's default terminal transcript.
+  SCRIPT_ARGS+=(/dev/null)
+fi
+
+exec script "${SCRIPT_ARGS[@]}"

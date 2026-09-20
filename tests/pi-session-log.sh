@@ -19,10 +19,13 @@ if [[ "$$" -ne "${PI_SESSION_LOG_PID:-0}" ]]; then
 fi
 
 command_string=''
-log_file=''
+transcript_file=''
 log_out_file=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --quiet|--flush|--return)
+      shift
+      ;;
     --command)
       command_string="$2"
       shift 2
@@ -32,14 +35,23 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     *)
-      log_file="$1"
+      if [[ -n "$transcript_file" ]]; then
+        printf 'script: unexpected number of arguments\n' >&2
+        exit 1
+      fi
+      transcript_file="$1"
       shift
       ;;
   esac
 done
 
+if [[ -n "$log_out_file" && -n "$transcript_file" ]]; then
+  printf 'script: unexpected number of arguments\n' >&2
+  exit 1
+fi
+
 printf '%s\n' "$log_out_file" > "$PI_SESSION_LOG_SCRIPT_LOG"
-if [[ "$log_file" != /dev/null ]]; then
+if [[ -z "$log_out_file" && "$transcript_file" != /dev/null ]]; then
   printf 'script transcript must be discarded instead of written to the workspace\n' >&2
   exit 1
 fi
