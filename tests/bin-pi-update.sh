@@ -95,19 +95,6 @@ assert_log_has_fragment() {
   if [[ "$expected" == *"--file $ROOT/compose.oauth.yml "* ]]; then
     candidates+=("${expected/--file $ROOT\/compose.oauth.yml /--file $ROOT\/compose.oauth.yml --file $ROOT\/compose.shell-rc.yml }")
   fi
-  existing_candidates=("${candidates[@]}")
-  for candidate in "${existing_candidates[@]}"; do
-    if [[ "$candidate" == *' up --detach --force-recreate '* ]]; then
-      candidates+=("${candidate/ up --detach --force-recreate / up --build --detach --force-recreate }")
-    elif [[ "$candidate" == *' up --detach '* ]]; then
-      candidates+=("${candidate/ up --detach / up --build --detach }")
-    fi
-    if [[ "$candidate" == *' run --rm --service-ports '* ]]; then
-      candidates+=("${candidate/ run --rm --service-ports / run --build --rm --service-ports }")
-    elif [[ "$candidate" == *' run --rm '* ]]; then
-      candidates+=("${candidate/ run --rm / run --build --rm }")
-    fi
-  done
   for candidate in "${candidates[@]}"; do
     if grep -Fq -- "$candidate" "$DOCKER_LOG"; then
       return 0
@@ -164,15 +151,16 @@ run_wrapper_with_workspace() {
 
 assert_persistent_logged_exec() {
   expected_exec="$1"
-  assert_log_line_count 7
+  assert_log_line_count 9
   assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach pi"
+  assert_log_lacks_fragment ' up --build '
   assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
   assert_log_has_fragment "$expected_exec"
 
   workspace_line="PI_WORKSPACE=$WORKSPACE"
   workspace_count="$(grep -Fxc -- "$workspace_line" "$DOCKER_LOG" || true)"
-  if [[ "$workspace_count" -ne 3 ]]; then
-    printf 'expected 3 workspace propagation lines, got %s:\n%s\n' "$workspace_count" "$(cat "$DOCKER_LOG")" >&2
+  if [[ "$workspace_count" -ne 4 ]]; then
+    printf 'expected 4 workspace propagation lines, got %s:\n%s\n' "$workspace_count" "$(cat "$DOCKER_LOG")" >&2
     exit 1
   fi
 }
@@ -241,6 +229,7 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'--bash'* ]]
 [[ "$DETAILED_HELP" == *'--zsh'* ]]
 [[ "$DETAILED_HELP" == *'--no-rc-config'* ]]
+[[ "$DETAILED_HELP" == *'--rebuild'* ]]
 [[ "$DETAILED_HELP" == *'.bash_profile'* ]]
 [[ "$DETAILED_HELP" == *'.bashrc'* ]]
 [[ "$DETAILED_HELP" == *'.zshenv'* ]]
@@ -249,7 +238,11 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'.zlogin'* ]]
 [[ "$DETAILED_HELP" == *'recursively'* ]]
 [[ "$DETAILED_HELP" == *'service bootstrap remains Bash'* ]]
-[[ "$DETAILED_HELP" == *'Compose builds the image before persistent and disposable runs'* ]]
+[[ "$DETAILED_HELP" == *'Use --rebuild to explicitly build the image with the cache.'* ]]
+[[ "$DETAILED_HELP" == *'pi update performs a pull and no-cache rebuild.'* ]]
+[[ "$DETAILED_HELP" == *'A stale image is reported'* ]]
+[[ "$DETAILED_HELP" == *'use pi update or --rebuild to recover.'* ]]
+[[ "$DETAILED_HELP" == *'--rebuild cannot be combined with update, stop, remove, list, or copy.'* ]]
 
 run_wrapper_capture -h
 assert_output "$DETAILED_HELP"
@@ -259,8 +252,8 @@ run_wrapper_capture --rm --help
 assert_output "$(cat <<'EOF'
 Usage:
   pi [-h|--help]
-  pi [--bash|--zsh] [--no-rc-config] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
-  pi [--bash|--zsh] [--no-rc-config] --oauth [PORTS...] --rm [PI_ARGS...]
+  pi [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
+  pi [--bash|--zsh] [--no-rc-config] [--rebuild] --oauth [PORTS...] --rm [PI_ARGS...]
   pi stop
   pi update [--extensions] [--models]
   pi list
@@ -273,6 +266,7 @@ Options:
   -h, --help        Show detailed help when used alone.
   --rm              Run Pi in a disposable one-off container.
   --replace         Force-recreate the current workspace container.
+  --rebuild         Build the image with cache for this launch.
   --keep-existing   Preserve an existing colliding workspace container.
   --workspace PATH  Use PATH as the workspace; it overrides PI_WORKSPACE.
   --new-state       Start empty; skip copying agent-state files from the seed workspace.
@@ -283,8 +277,8 @@ Options:
   --bash, --zsh      Force Bash or zsh instead of detecting SHELL.
   --no-rc-config     Start the selected shell without host startup files or an rc mount.
 
-  Shell image        Builds as needed to install the launcher; legacy selected
-                     containers from another workspace need `pi update` there.
+  Shell image        Reuses existing images; Compose builds if missing.
+                     `--rebuild` uses cache; `pi update` pulls and rebuilds without cache.
 
   State volumes     Private per workspace; existing contents are preserved and
                     permissions are repaired before Pi starts.
@@ -313,6 +307,7 @@ assert_log ""
 BRIEF_USAGE="$(cat "$OUTPUT_LOG")"
 [[ "$BRIEF_USAGE" == *'--bash, --zsh'* ]]
 [[ "$BRIEF_USAGE" == *'--no-rc-config'* ]]
+[[ "$BRIEF_USAGE" == *'--rebuild'* ]]
 [[ "$BRIEF_USAGE" == *'Shell'* ]]
 [[ "$BRIEF_USAGE" == *'wrapper package/model update output'* ]]
 [[ "$BRIEF_USAGE" == *'--workspace PATH'* ]]
@@ -382,6 +377,10 @@ run_wrapper_capture --no-rc-config --help
 assert_output "$BRIEF_USAGE"
 assert_log ""
 
+run_wrapper_capture --rebuild --help
+assert_output "$BRIEF_USAGE"
+assert_log ""
+
 run_wrapper_capture --help --rm
 assert_output "$BRIEF_USAGE"
 assert_log ""
@@ -391,9 +390,10 @@ assert_output "$BRIEF_USAGE"
 assert_log ""
 
 run_wrapper update
-assert_log_line_count 7
+assert_log_line_count 9
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml build --pull --no-cache pi"
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach --force-recreate pi"
+assert_log_lacks_fragment ' up --build '
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
 assert_log_has_line "PI_WORKSPACE=$WORKSPACE"
 
@@ -417,6 +417,26 @@ else
   fi
 fi
 assert_log ""
+
+if run_wrapper --rebuild update; then
+  printf -- '--rebuild update unexpectedly succeeded\n' >&2
+  exit 1
+else
+  status=$?
+  [[ "$status" -eq 2 ]]
+fi
+assert_log ""
+
+for command in stop remove list copy; do
+  if run_wrapper --rebuild "$command"; then
+    printf -- '--rebuild %s unexpectedly succeeded\n' "$command" >&2
+    exit 1
+  else
+    status=$?
+    [[ "$status" -eq 2 ]]
+  fi
+  assert_log ""
+done
 
 if run_wrapper --rm update; then
   printf -- '--rm update unexpectedly succeeded\n' >&2
@@ -491,9 +511,23 @@ assert_log ""
 
 run_wrapper --rm --version
 assert_log_line_count 5
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm pi pi-shell-launch pi install npm:pi-agent-browser-native"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --entrypoint /bin/sh pi -c"
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi-shell-launch pi --version"
+assert_log_lacks_fragment ' run --build '
 assert_log_has_line "PI_WORKSPACE=$WORKSPACE"
+
+run_wrapper --rebuild --version
+assert_log_line_count 9
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --build --detach pi"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --version"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --build --detach pi"
+
+run_wrapper --rebuild --rm --version
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml build pi"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --entrypoint /bin/sh pi -c"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi-shell-launch pi --version"
+assert_log_lacks_fragment ' run --build '
 
 run_wrapper --version
 assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --version"

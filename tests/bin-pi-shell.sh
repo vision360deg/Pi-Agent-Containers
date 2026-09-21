@@ -137,7 +137,8 @@ grep -Fq '0) Start a new project' "$OUTPUT_LOG"
 grep -Fq '1) pi-agents-pi-existing' "$OUTPUT_LOG"
 grep -Fq 'X) Press Esc to cancel' "$OUTPUT_LOG"
 assert_log_has 'docker compose'
-assert_log_has 'up --build --detach pi'
+assert_log_has 'up --detach pi'
+assert_log_lacks 'up --build'
 assert_log_has 'docker volume create'
 assert_log_has 'docker run'
 assert_log_has 'exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native'

@@ -10,8 +10,9 @@ WORKSPACE="$TMP_DIR/workspace"
 HOST_HOME="$TMP_DIR/home"
 DOCKER_LOG="$TMP_DIR/docker.log"
 OUTPUT_LOG="$TMP_DIR/output.log"
+FAKE_REBUILT_MARKER="$TMP_DIR/image-rebuilt"
 mkdir -p "$FAKE_BIN" "$WORKSPACE" "$HOST_HOME"
-export DOCKER_LOG
+export DOCKER_LOG FAKE_REBUILT_MARKER
 
 cat > "$FAKE_BIN/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
@@ -20,6 +21,18 @@ set -euo pipefail
 printf 'docker %s\n' "$*" >> "$DOCKER_LOG"
 
 if [[ "${1:-}" == compose ]]; then
+  if [[ " $* " == *' --build '* || " $* " == *' build pi '* ]]; then
+    : > "$FAKE_REBUILT_MARKER"
+  fi
+  if [[ "$*" == *'exec -T pi test -x /usr/local/bin/pi-shell-launch'* &&
+    "${FAKE_NO_LAUNCHER-}" == 1 && ! -e "$FAKE_REBUILT_MARKER" ]]; then
+    exit 1
+  fi
+  if [[ " $* " == *' run '* && "$*" == *'pi-shell-launch'* &&
+    "${FAKE_NO_LAUNCHER-}" == 1 && ! -e "$FAKE_REBUILT_MARKER" ]]; then
+    printf 'pi: image lacks pi-shell-launch; run pi update or use --rebuild\n' >&2
+    exit 2
+  fi
   printf 'PI_HOST_SHELL=%s\n' "${PI_HOST_SHELL-<unset>}" >> "$DOCKER_LOG"
   printf 'PI_HOST_RC_SOURCE=%s\n' "${PI_HOST_RC_SOURCE-<unset>}" >> "$DOCKER_LOG"
   printf 'PI_HOST_RC_FILE=%s\n' "${PI_HOST_RC_FILE-<unset>}" >> "$DOCKER_LOG"
@@ -41,7 +54,7 @@ if [[ "${1:-}" == inspect ]]; then
 fi
 
 if [[ "${1:-}" == exec && "$*" == *'test -x /usr/local/bin/pi-shell-launch'* ]]; then
-  [[ "${FAKE_NO_LAUNCHER-}" != 1 ]]
+  [[ "${FAKE_NO_LAUNCHER-}" != 1 || -e "$FAKE_REBUILT_MARKER" ]]
   exit $?
 fi
 
@@ -67,6 +80,7 @@ run_wrapper() {
   shift 2
   : > "$DOCKER_LOG"
   : > "$OUTPUT_LOG"
+  rm -f "$FAKE_REBUILT_MARKER"
   (
     cd "$WORKSPACE"
     env -u PI_WORKSPACE \
@@ -76,6 +90,7 @@ run_wrapper() {
       FAKE_CONTAINERS="${FAKE_CONTAINERS-}" \
       FAKE_NO_RC_MOUNT="${FAKE_NO_RC_MOUNT-}" \
       FAKE_NO_LAUNCHER="${FAKE_NO_LAUNCHER-}" \
+      FAKE_REBUILT_MARKER="$FAKE_REBUILT_MARKER" \
       PATH="$FAKE_BIN:$PATH" \
       "$ROOT/bin/pi" "$@"
   ) >"$OUTPUT_LOG" 2>&1
@@ -93,6 +108,14 @@ assert_log_has_line() {
   local expected="$1"
   if ! grep -Fqx -- "$expected" "$DOCKER_LOG"; then
     printf 'missing Docker log line:\n%s\nactual:\n%s\n' "$expected" "$(cat "$DOCKER_LOG")" >&2
+    exit 1
+  fi
+}
+
+assert_log_lacks() {
+  local unexpected="$1"
+  if grep -Fq -- "$unexpected" "$DOCKER_LOG"; then
+    printf 'unexpected Docker log text:\n%s\nactual:\n%s\n' "$unexpected" "$(cat "$DOCKER_LOG")" >&2
     exit 1
   fi
 }
@@ -139,9 +162,22 @@ assert_log_has_line "PI_HOST_RC_SOURCE=${zsh_rc_dirs[0]}"
 assert_log_has_line 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc'
 assert_log_has_line 'PI_NO_RC_CONFIG=0'
 assert_log_has 'compose.shell-rc.yml'
-assert_log_has 'up --build --detach pi'
+assert_log_has 'up --detach pi'
+assert_log_lacks '--build'
 assert_log_has 'exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native'
 assert_log_has 'exec pi pi-shell-launch pi-session-log --version'
+
+if FAKE_NO_LAUNCHER=1 run_wrapper /usr/local/bin/zsh "$DEFAULT_STATE" --version; then
+  printf 'persistent launch with stale image unexpectedly succeeded\n' >&2
+  exit 1
+else
+  status=$?
+  [[ "$status" -eq 2 ]]
+fi
+grep -Fq 'image lacks pi-shell-launch' "$OUTPUT_LOG"
+grep -Fq 'pi update' "$OUTPUT_LOG"
+assert_log_lacks 'up --build'
+assert_log_lacks 'install npm:pi-agent-browser-native'
 
 # Explicit overrides win over SHELL and rewrite the same rc source file, so an
 # already-running container's read-only mount sees the selected shell's config.
@@ -156,6 +192,12 @@ assert_log_has_line "PI_HOST_RC_SOURCE=${zsh_rc_dirs[0]}"
 ZSH_STATE="$TMP_DIR/zsh-state"
 run_wrapper /bin/bash "$ZSH_STATE" --zsh --version
 assert_log_has_line 'PI_HOST_SHELL=zsh'
+
+REBUILD_STATE="$TMP_DIR/rebuild-state"
+run_wrapper /bin/bash "$REBUILD_STATE" --rebuild --version
+assert_log_has 'up --build --detach pi'
+assert_log_lacks '--no-cache'
+assert_log_lacks ' --pull '
 
 # No-rc mode selects the shell without generating or mounting an rc file.
 NO_RC_STATE="$TMP_DIR/no-rc-state"
@@ -173,8 +215,33 @@ assert_log_has 'exec pi pi-shell-launch pi-session-log --version'
 # Disposable Pi and extension installation both use the shell launcher.
 RM_STATE="$TMP_DIR/rm-state"
 run_wrapper /bin/bash "$RM_STATE" --rm --version
-assert_log_has 'run --build --rm pi pi-shell-launch pi install npm:pi-agent-browser-native'
-assert_log_has 'run --build --rm --service-ports pi pi-shell-launch pi --version'
+assert_log_has 'run --rm --entrypoint /bin/sh pi -c'
+assert_log_has '[ ! -x /usr/local/bin/pi-shell-launch ]'
+assert_log_has 'run pi update or use --rebuild'
+assert_log_has 'run --rm --service-ports pi pi-shell-launch pi --version'
+assert_log_lacks 'run --build'
+compose_run_count="$(grep -Ec '^docker compose .* run --' "$DOCKER_LOG" || true)"
+[[ "$compose_run_count" -eq 2 ]]
+
+if FAKE_NO_LAUNCHER=1 run_wrapper /bin/bash "$RM_STATE" --rm --version; then
+  printf 'disposable launch with stale image unexpectedly succeeded\n' >&2
+  exit 1
+else
+  status=$?
+  [[ "$status" -eq 2 ]]
+fi
+grep -Fq 'image lacks pi-shell-launch' "$OUTPUT_LOG"
+grep -Fq 'pi update' "$OUTPUT_LOG"
+assert_log_lacks 'run --build'
+assert_log_lacks 'build pi'
+
+FAKE_NO_LAUNCHER=1 run_wrapper /bin/bash "$RM_STATE" --rebuild --rm --version
+assert_log_has 'build pi'
+assert_log_has 'run --rm --service-ports pi pi-shell-launch pi --version'
+assert_log_lacks 'run --build'
+assert_log_lacks '--no-cache'
+compose_run_count="$(grep -Ec '^docker compose .* run --' "$DOCKER_LOG" || true)"
+[[ "$compose_run_count" -eq 2 ]]
 
 # Existing-container shell attachment uses the helper and preserves root ordering.
 WORKSPACE_PATH="$(cd -P -- "$WORKSPACE" && pwd)"
@@ -183,16 +250,31 @@ SHELL_STATE="$TMP_DIR/shell-state"
 run_wrapper /bin/zsh "$SHELL_STATE" shell
 assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
 
+run_wrapper /bin/zsh "$SHELL_STATE" --rebuild shell
+assert_log_has 'up --build --detach --force-recreate pi'
+assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
+
 # Normal shell attachment reconciles a current container previously created
 # with --no-rc-config before trying to source the generated rc.
 FAKE_NO_RC_MOUNT=1 run_wrapper /bin/zsh "$SHELL_STATE" shell
 assert_log_has 'compose.shell-rc.yml'
-assert_log_has 'up --build --detach pi'
+assert_log_has 'up --detach pi'
 assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
 
-# If an older image is already mounted/configured but lacks the new helper,
-# rebuild and recreate the current workspace container before attaching.
-FAKE_NO_LAUNCHER=1 run_wrapper /bin/zsh "$SHELL_STATE" shell
+# A stale current image is diagnosed without an implicit rebuild.
+if FAKE_NO_LAUNCHER=1 run_wrapper /bin/zsh "$SHELL_STATE" shell; then
+  printf 'shell attachment with stale image unexpectedly succeeded\n' >&2
+  exit 1
+else
+  status=$?
+  [[ "$status" -eq 2 ]]
+fi
+grep -Fq 'image lacks pi-shell-launch' "$OUTPUT_LOG"
+grep -Fq 'pi update' "$OUTPUT_LOG"
+assert_log_lacks 'up --build'
+
+# Explicit rebuilding repairs the current workspace image before attaching.
+FAKE_NO_LAUNCHER=1 run_wrapper /bin/zsh "$SHELL_STATE" --rebuild shell
 assert_log_has 'up --build --detach --force-recreate pi'
 assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
 

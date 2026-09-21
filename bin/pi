@@ -29,6 +29,7 @@ done
 
 REMOVE_AFTER_RUN=false
 REPLACE_CONTAINER=false
+REBUILD_IMAGE=false
 KEEP_EXISTING=false
 NEW_STATE=false
 SEED_STATE=false
@@ -144,6 +145,10 @@ if [[ "$HELP_REQUESTED" == false ]]; then
         REPLACE_CONTAINER=true
         shift
         ;;
+      --rebuild)
+        REBUILD_IMAGE=true
+        shift
+        ;;
       --keep-existing)
         KEEP_EXISTING=true
         shift
@@ -238,8 +243,8 @@ print_detailed_help() {
 Containerized Pi wrapper
 
 Usage:
-  pi [--bash|--zsh] [--no-rc-config] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
-  pi [--bash|--zsh] [--no-rc-config] --oauth [PORTS...] --rm [PI_ARGS...]
+  pi [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
+  pi [--bash|--zsh] [--no-rc-config] [--rebuild] --oauth [PORTS...] --rm [PI_ARGS...]
   pi stop
   pi update [--extensions] [--models]
   pi list
@@ -277,6 +282,11 @@ Options:
 
   --replace
       Force-recreate the persistent container for the current workspace.
+
+  --rebuild
+      Explicitly build the image with the Docker build cache for this launch.
+      Without it, existing images are reused; missing images may still be built
+      by Compose. Use `pi update` for a pull and no-cache rebuild.
 
   --keep-existing
       When another workspace has the same basename, preserve its container
@@ -429,10 +439,9 @@ Host shell:
   generated rc file, which is mounted read-only without mounting the host home.
   Use --no-rc-config to disable rc generation, mounting, and startup-file loading.
 
-  Compose builds the image before persistent and disposable runs so the shell
-  launcher is available. `pi shell` repairs the current workspace image if
-  needed; selected legacy containers in another workspace require `pi update`
-  from that workspace first.
+  Use --rebuild to explicitly build the image with the cache.
+  pi update performs a pull and no-cache rebuild. A stale image is reported
+  if it lacks pi-shell-launch; use pi update or --rebuild to recover.
 
   The persistent container service bootstrap remains Bash; host-shell selection
   applies only to foreground Pi commands and interactive shell attachment.
@@ -454,6 +463,7 @@ Examples:
   pi --oauth 7000,7001               # Also publish two custom callback ports.
   pi --oauth 7000 7001               # Space-separated form of the same list.
   pi --rm                            # Run Pi in a disposable one-off container.
+  pi --rebuild                       # Build with cache before launching Pi.
   pi --replace                       # Force-recreate the current workspace container.
   pi --keep-existing                 # Preserve a colliding existing container.
   pi --new-state                     # Start empty; skip copying from the seed workspace.
@@ -484,6 +494,8 @@ Help behavior:
 
 Restrictions:
   --rm cannot be combined with stop, update, remove, --replace, or --keep-existing.
+  --rebuild cannot be combined with update, stop, remove, list, or copy. With
+  `pi shell`, it can only rebuild the current workspace's image.
   --oauth is optional; only one simultaneous stack can publish any selected host
   callback port. PI_OAUTH_CALLBACK_PORTS accepts comma- or space-separated ports.
   --replace and --keep-existing apply to persistent workspace containers only.
@@ -509,8 +521,8 @@ print_brief_usage() {
   cat <<'EOF'
 Usage:
   pi [-h|--help]
-  pi [--bash|--zsh] [--no-rc-config] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
-  pi [--bash|--zsh] [--no-rc-config] --oauth [PORTS...] --rm [PI_ARGS...]
+  pi [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
+  pi [--bash|--zsh] [--no-rc-config] [--rebuild] --oauth [PORTS...] --rm [PI_ARGS...]
   pi stop
   pi update [--extensions] [--models]
   pi list
@@ -523,6 +535,7 @@ Options:
   -h, --help        Show detailed help when used alone.
   --rm              Run Pi in a disposable one-off container.
   --replace         Force-recreate the current workspace container.
+  --rebuild         Build the image with cache for this launch.
   --keep-existing   Preserve an existing colliding workspace container.
   --workspace PATH  Use PATH as the workspace; it overrides PI_WORKSPACE.
   --new-state       Start empty; skip copying agent-state files from the seed workspace.
@@ -533,8 +546,8 @@ Options:
   --bash, --zsh      Force Bash or zsh instead of detecting SHELL.
   --no-rc-config     Start the selected shell without host startup files or an rc mount.
 
-  Shell image        Builds as needed to install the launcher; legacy selected
-                     containers from another workspace need `pi update` there.
+  Shell image        Reuses existing images; Compose builds if missing.
+                     `--rebuild` uses cache; `pi update` pulls and rebuilds without cache.
 
   State volumes     Private per workspace; existing contents are preserved and
                     permissions are repaired before Pi starts.
@@ -590,6 +603,11 @@ if [[ "$HELP_REQUESTED" == false && "${1:-}" == "copy" ]]; then
   done
 fi
 
+if [[ "$COPY_COMMAND" == true && "$REBUILD_IMAGE" == true ]]; then
+  printf 'pi: --rebuild cannot be combined with copy\n' >&2
+  exit 2
+fi
+
 if [[ "$HELP_REQUESTED" == false && "${1:-}" == "shell" ]]; then
   SHELL_COMMAND=true
   shift
@@ -634,7 +652,7 @@ fi
 
 LIST_COMMAND=false
 if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "list" ]]; then
-  if [[ "$#" -ne 1 || "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true || "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true || "${WORKSPACE_OPTION:-false}" == true ]]; then
+  if [[ "$#" -ne 1 || "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true || "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true || "${WORKSPACE_OPTION:-false}" == true ]]; then
     printf 'usage: pi list\n' >&2
     exit 2
   fi
@@ -665,6 +683,10 @@ if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "stop" ]]; then
     printf 'pi: --replace, --keep-existing, --new-state, --seed, and --latest-state cannot be combined with stop\n' >&2
     exit 2
   fi
+  if [[ "$REBUILD_IMAGE" == true ]]; then
+    printf 'pi: --rebuild cannot be combined with stop\n' >&2
+    exit 2
+  fi
 
   if [[ "$#" -ne 1 ]]; then
     printf 'usage: pi stop\n' >&2
@@ -672,8 +694,8 @@ if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "stop" ]]; then
   fi
 fi
 
-if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "update" && ( "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true ) ]]; then
-  printf 'pi: --replace and --keep-existing cannot be combined with update\n' >&2
+if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "update" && ( "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true || "$KEEP_EXISTING" == true ) ]]; then
+  printf 'pi: --rebuild, --replace, and --keep-existing cannot be combined with update\n' >&2
   exit 2
 fi
 
@@ -1189,11 +1211,21 @@ list_pi_stacks() (
 )
 
 start_persistent_service() {
+  local -a up_args=(up)
   ensure_workspace_volumes
+  if [[ "$REBUILD_IMAGE" == true ]]; then
+    up_args+=(--build)
+  fi
+  up_args+=(--detach)
   if [[ "$FORCE_RECREATE" == true ]]; then
-    run_compose up --build --detach --force-recreate pi
-  else
-    run_compose up --build --detach pi
+    up_args+=(--force-recreate)
+  fi
+  up_args+=(pi)
+  run_compose "${up_args[@]}"
+
+  if ! run_compose exec -T pi test -x /usr/local/bin/pi-shell-launch >/dev/null 2>&1; then
+    printf 'pi: image lacks pi-shell-launch; run `pi update` to pull and rebuild it, or use `--rebuild` for a cache-aware build\n' >&2
+    return 2
   fi
 }
 
@@ -1518,6 +1550,16 @@ attach_shell() {
     SHELL_SELECTED_STATE=running
   fi
 
+  if [[ "$REBUILD_IMAGE" == true && "$SHELL_START_NEW_PROJECT" != true ]]; then
+    if [[ "$SHELL_SELECTED_NAME" != "$CONTAINER_NAME" ]]; then
+      printf 'pi: --rebuild can only build the current workspace image; run `pi --rebuild shell` from the selected workspace\n' >&2
+      return 2
+    fi
+    FORCE_RECREATE=true
+    start_persistent_service || return $?
+    SHELL_SELECTED_STATE=running
+  fi
+
   # A container created by --no-rc-config has no rc bind mount. Reconcile the
   # current workspace service before attaching normally so the launcher can
   # read the generated rc file. Containers selected from another workspace
@@ -1535,10 +1577,14 @@ attach_shell() {
 
   if ! shell_container_has_launcher "$SHELL_SELECTED_NAME"; then
     if [[ "$SHELL_SELECTED_NAME" != "$CONTAINER_NAME" ]]; then
-      printf 'pi: selected container lacks pi-shell-launch; run pi update from its workspace first\n' >&2
+      printf 'pi: selected container lacks pi-shell-launch; run `pi update` or `pi --rebuild` from its workspace first\n' >&2
       return 2
     fi
-    run_compose up --build --detach --force-recreate pi
+    if [[ "$REBUILD_IMAGE" != true ]]; then
+      printf 'pi: image lacks pi-shell-launch; run `pi update` to pull and rebuild it, or use `--rebuild` for a cache-aware build\n' >&2
+      return 2
+    fi
+    start_persistent_service || return $?
     SHELL_SELECTED_STATE=running
   fi
 
@@ -1702,6 +1748,10 @@ if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "remove" ]]; then
     printf 'pi: --rm cannot be combined with remove; remove targets the persistent service\n' >&2
     exit 2
   fi
+  if [[ "$REBUILD_IMAGE" == true ]]; then
+    printf 'pi: --rebuild cannot be combined with remove\n' >&2
+    exit 2
+  fi
   if [[ "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true || "$LATEST_STATE" == true ]]; then
     printf 'pi: --replace, --keep-existing, --new-state, --seed, and --latest-state cannot be combined with remove\n' >&2
     exit 2
@@ -1802,8 +1852,13 @@ if [[ "$REMOVE_AFTER_RUN" == true ]]; then
   ensure_workspace_volumes
   initialize_agent_state
   repair_state_permissions
-  run_compose run --build --rm pi pi-shell-launch pi install "$PI_BROWSER_EXTENSION_SOURCE"
-  run_compose run --build --rm --service-ports pi pi-shell-launch pi "$@"
+  if [[ "$REBUILD_IMAGE" == true ]]; then
+    run_compose build pi
+  fi
+  run_compose run --rm --entrypoint /bin/sh pi -c \
+    'if [ ! -x /usr/local/bin/pi-shell-launch ]; then printf "%s\n" "pi: image lacks pi-shell-launch; run pi update or use --rebuild" >&2; exit 2; fi; exec pi-shell-launch pi install "$1"' \
+    pi "$PI_BROWSER_EXTENSION_SOURCE"
+  run_compose run --rm --service-ports pi pi-shell-launch pi "$@"
   exit $?
 fi
 
