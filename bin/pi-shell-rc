@@ -31,28 +31,114 @@ case $shell in
   *) printf 'pi-shell-rc: unsupported shell: %s\n' "$shell" >&2; exit 2 ;;
 esac
 
-declare -A visited=()
 declare -A active=()
+declare -A static_paths=()
+declare -A unconditionally_sourced=()
 
 warn() { printf 'pi-shell-rc: %s\n' "$*" >&2; }
 
+strip_shell_comment() {
+  local line=$1 code='' character previous='' quote='' escaped=0 index
+  for ((index = 0; index < ${#line}; index++)); do
+    character=${line:index:1}
+    if (( escaped )); then
+      code+=$character
+      previous=$character
+      escaped=0
+      continue
+    fi
+    if [[ $character == "\\" && $quote != "'" ]]; then
+      code+=$character
+      previous=$character
+      escaped=1
+      continue
+    fi
+    if [[ -n $quote ]]; then
+      if [[ $character == "$quote" ]]; then
+        quote=''
+      fi
+      code+=$character
+      previous=$character
+      continue
+    fi
+    case $character in
+      "'"|'"') quote=$character ;;
+      '#')
+        case $previous in
+          ''|' '|$'\t'|$'\r'|';'|'|'|'&'|'('|')'|'{'|'}'|'<'|'>') break ;;
+        esac
+        ;;
+    esac
+    code+=$character
+    previous=$character
+  done
+  printf '%s' "$code"
+}
+
+strip_shell_control_text() {
+  local line=$1 control='' character quote='' escaped=0 index
+  for ((index = 0; index < ${#line}; index++)); do
+    character=${line:index:1}
+    if (( escaped )); then
+      control+='X'
+      escaped=0
+      continue
+    fi
+    if [[ $character == "\\" && $quote != "'" ]]; then
+      control+='X'
+      escaped=1
+      continue
+    fi
+    if [[ -n $quote ]]; then
+      if [[ $character == "$quote" ]]; then
+        quote=''
+      fi
+      control+='X'
+      continue
+    fi
+    case $character in
+      "'"|'"'|\`) quote=$character; control+='X' ;;
+      *) control+=$character ;;
+    esac
+  done
+  printf '%s' "$control"
+}
+
+has_multiple_source_commands() {
+  local suffix=$1 control
+  local source_after_separator='[;&|][[:space:]]*(source|\.)[[:space:]]'
+  local source_after_control='[;&|][[:space:]]*(then|else|elif)[[:space:]]+(source|\.)[[:space:]]'
+  control=$(strip_shell_control_text "$suffix")
+  [[ $control =~ $source_after_separator || $control =~ $source_after_control ]]
+}
+
 strip_target() {
-  local rest=$1 target quote
-  local double_quoted='^"([^"]*)"[[:space:]]*$'
-  local single_quoted="^'([^']*)'[[:space:]]*$"
+  local rest=$1 target quote suffix
+  local double_quoted='^"([^"]*)"(.*)$'
+  local single_quoted="^'([^']*)'(.*)$"
+  local bare='^([^[:space:];&|]+)(.*)$'
+  local valid_suffix='^[[:space:]]*(#.*|([0-9]*[<>].*|(&&|\|\|)[[:space:]].*|;.*))$'
   if [[ $rest =~ $double_quoted ]]; then
     target=${BASH_REMATCH[1]}
+    suffix=${BASH_REMATCH[2]}
     quote=double
   elif [[ $rest =~ $single_quoted ]]; then
     target=${BASH_REMATCH[1]}
+    suffix=${BASH_REMATCH[2]}
     quote=single
-  elif [[ $rest =~ ^([^[:space:];\&\|]+)[[:space:]]*$ ]]; then
+  elif [[ $rest =~ $bare ]]; then
     target=${BASH_REMATCH[1]}
+    suffix=${BASH_REMATCH[2]}
     quote=bare
   else
     return 1
   fi
-  printf '%s\t%s' "$quote" "$target"
+  if [[ $suffix =~ ^[[:space:]]*$ ]]; then
+    suffix=''
+  elif [[ ! $suffix =~ $valid_suffix ]]; then
+    return 1
+  fi
+  printf '%s\t%s\t%s' "$quote" "$target" "$suffix"
 }
 
 canonical_file() {
@@ -71,24 +157,57 @@ canonical_file() {
   printf '%s/%s' "$directory" "$base"
 }
 
-resolve_target() {
-  local quote=$1 target=$2 path canonical
+expand_path_value() {
+  local quote=$1 target=$2 expanded=$2 name replacement literal
+  local braced_var='\$\{([[:alpha:]_][[:alnum:]_]*)\}'
+  local plain_var='\$([[:alpha:]_][[:alnum:]_]*)'
+  [[ $target != *'$('* && $target != *'`'* && $target != *'['* && $target != *']'* && $target != *'?'* && $target != *'*'* ]] || return 1
   if [[ $quote == single ]]; then
-    case $target in
-      '~'*|'$HOME'*|'${HOME}'*) return 1 ;;
+    [[ $target != *'$'* && $target != '~'* ]] || return 1
+  elif [[ $quote == double && $target == '~'* ]]; then
+    return 1
+  fi
+  while [[ $expanded =~ $braced_var ]]; do
+    name=${BASH_REMATCH[1]}
+    if [[ $name == HOME ]]; then
+      replacement=$home
+    elif [[ ${static_paths[$name]+yes} ]]; then
+      replacement=${static_paths[$name]}
+    else
+      return 1
+    fi
+    literal='${'
+    literal+=$name
+    literal+='}'
+    expanded=${expanded/"$literal"/"$replacement"}
+  done
+  while [[ $expanded =~ $plain_var ]]; do
+    name=${BASH_REMATCH[1]}
+    if [[ $name == HOME ]]; then
+      replacement=$home
+    elif [[ ${static_paths[$name]+yes} ]]; then
+      replacement=${static_paths[$name]}
+    else
+      return 1
+    fi
+    literal='$'
+    literal+=$name
+    expanded=${expanded/"$literal"/"$replacement"}
+  done
+  [[ $expanded != *'$'* ]] || return 1
+  if [[ $quote != single && $quote != double ]]; then
+    case $expanded in
+      '~') expanded=$home ;;
+      '~/'*) expanded=$home/${expanded#'~'/} ;;
     esac
   fi
-  [[ $target != *'$('* && $target != *'`'* && $target != *'['* && $target != *']'* && $target != *'?'* && $target != *'*'* ]] || return 1
-  case $target in
-    '~') path=$home ;;
-    '~/'*) path=$home/${target#'~'/} ;;
-    '$HOME') path=$home ;;
-    '$HOME/'*) path=$home/${target#'$HOME'/} ;;
-    '${HOME}') path=$home ;;
-    '${HOME}/'*) path=$home/${target#'${HOME}'/} ;;
-    /*) path=$target ;;
-    *) return 1 ;;
-  esac
+  [[ $expanded = /* ]] || return 1
+  printf '%s' "$expanded"
+}
+
+resolve_target() {
+  local quote=$1 target=$2 path canonical
+  path=$(expand_path_value "$quote" "$target") || return 1
   canonical=$(canonical_file "$path") || return 1
   case $canonical in
     "$home"|"$home"/*) ;;
@@ -98,19 +217,169 @@ resolve_target() {
 }
 
 extract_source() {
-  local line=$1 rest
+  local line=$1 rest control
+  local source_after_separator='[;&|][[:space:]]*(source|\.)[[:space:]]'
   if [[ $line =~ ^[[:space:]]*(source|\.)[[:space:]]*$ ]]; then
     return 2
   elif [[ $line =~ ^[[:space:]]*(source|\.)[[:space:]]+(.+)$ ]]; then
     rest=${BASH_REMATCH[2]}
   else
-    if [[ $line =~ ^[[:space:]]*(if|elif|else|then|while|until|for|case)[[:space:]] && $line =~ (^|[[:space:];])(source|\.)[[:space:]] ]] ||
-      [[ $line =~ (\&\&|\|\|)[[:space:]]*(source|\.)[[:space:]] ]]; then
+    control=$(strip_shell_control_text "$line")
+    if [[ $control =~ ^[[:space:]]*(if|elif|else|then|while|until|for|case)[[:space:]] && $control =~ (^|[[:space:];])(source|\.)[[:space:]] ]] ||
+      [[ $control =~ (\&\&|\|\|)[[:space:]]*(source|\.)[[:space:]] ]] ||
+      [[ $control =~ $source_after_separator ]]; then
       return 2
     fi
     return 1
   fi
   strip_target "$rest" || return 2
+}
+
+extract_inline_source() {
+  local line=$1 prefix rest parsed
+  local source_after_short_circuit='^(.*[[:space:]](&&|\|\|)[[:space:]]*)(source|\.)[[:space:]]+(.+)$'
+  local source_after_control='^(.*[[:space:];]|[[:space:]]*)(then|else|elif)[[:space:]]+(source|\.)[[:space:]]+(.+)$'
+  if [[ $line =~ $source_after_short_circuit ]]; then
+    prefix=${BASH_REMATCH[1]}
+    rest=${BASH_REMATCH[4]}
+  elif [[ $line =~ $source_after_control ]]; then
+    prefix="${BASH_REMATCH[1]}${BASH_REMATCH[2]} "
+    rest=${BASH_REMATCH[4]}
+  else
+    return 1
+  fi
+  if has_multiple_source_commands "$prefix"; then
+    return 2
+  fi
+  parsed=$(strip_target "$rest") || return 2
+  printf '%s\t%s' "$prefix" "$parsed"
+}
+
+remember_static_assignment() {
+  local line=$1 conditional=$2 name raw fields quote value suffix resolved token
+  local -a unset_words=()
+  local unset_assignment='^[[:space:]]*unset[[:space:]]+(.+)$'
+  local assignment='^[[:space:]]*(export[[:space:]]+)?([[:alpha:]_][[:alnum:]_]*)=(.*)$'
+  if [[ $line =~ $unset_assignment ]]; then
+    raw=${BASH_REMATCH[1]%%;*}
+    read -r -a unset_words <<< "$raw"
+    for token in "${unset_words[@]}"; do
+      case $token in
+        '&&'|'||') break ;;
+        -*) continue ;;
+      esac
+      token=${token#\"}
+      token=${token%\"}
+      token=${token#\'}
+      token=${token%\'}
+      token=${token%;}
+      if [[ $token =~ ^[[:alpha:]_][[:alnum:]_]*$ ]]; then
+        unset 'static_paths[$token]'
+      fi
+    done
+    return 0
+  fi
+  [[ $line =~ $assignment ]] || return 0
+  name=${BASH_REMATCH[2]}
+  raw=${BASH_REMATCH[3]}
+  if (( conditional > 0 )); then
+    unset 'static_paths[$name]'
+    return 0
+  fi
+  fields=$(strip_target "$raw") || { unset 'static_paths[$name]'; return 0; }
+  quote=${fields%%$'\t'*}
+  fields=${fields#*$'\t'}
+  value=${fields%%$'\t'*}
+  suffix=${fields#*$'\t'}
+  if [[ -n $suffix && ! $suffix =~ ^[[:space:]]*# ]]; then
+    unset 'static_paths[$name]'
+    return 0
+  fi
+  if resolved=$(expand_path_value "$quote" "$value"); then
+    static_paths[$name]=$resolved
+  else
+    unset 'static_paths[$name]'
+  fi
+}
+
+normalize_if_file_guard() {
+  local line=$1 head operator rest comment fields quote target suffix path result
+  local double_guard='^([[:space:]]*(if|elif)[[:space:]]+)\[\[[[:space:]]*(-[efrs])[[:space:]]+(.+)[[:space:]]\]\][[:space:]]*;?[[:space:]]*then([[:space:]]*#.*)?$'
+  local single_guard='^([[:space:]]*(if|elif)[[:space:]]+)\[[[:space:]]*(-[efrs])[[:space:]]+(.+)[[:space:]]\][[:space:]]*;?[[:space:]]*then([[:space:]]*#.*)?$'
+  local test_guard='^([[:space:]]*(if|elif)[[:space:]]+)test[[:space:]]+(-[efrs])[[:space:]]+(.+)[[:space:]]*;?[[:space:]]*then([[:space:]]*#.*)?$'
+  if [[ $line =~ $double_guard ]]; then
+    head=${BASH_REMATCH[1]}
+    operator=${BASH_REMATCH[3]}
+    rest=${BASH_REMATCH[4]}
+    comment=${BASH_REMATCH[5]}
+  elif [[ $line =~ $single_guard ]]; then
+    head=${BASH_REMATCH[1]}
+    operator=${BASH_REMATCH[3]}
+    rest=${BASH_REMATCH[4]}
+    comment=${BASH_REMATCH[5]}
+  elif [[ $line =~ $test_guard ]]; then
+    head=${BASH_REMATCH[1]}
+    operator=${BASH_REMATCH[3]}
+    rest=${BASH_REMATCH[4]}
+    comment=${BASH_REMATCH[5]}
+  else
+    printf '%s' "$line"
+    return 0
+  fi
+  fields=$(strip_target "$rest") || { printf '%s' "$line"; return 0; }
+  quote=${fields%%$'\t'*}
+  fields=${fields#*$'\t'}
+  target=${fields%%$'\t'*}
+  suffix=${fields#*$'\t'}
+  [[ -z $suffix ]] || { printf '%s' "$line"; return 0; }
+  path=$(resolve_target "$quote" "$target") || { printf '%s' "$line"; return 0; }
+  result=true
+  if [[ $operator == -s && ! -s $path ]]; then
+    result=false
+  fi
+  printf '%s%s; then%s' "$head" "$result" "$comment"
+}
+
+is_host_file_guard() {
+  local prefix=$1 source_path=$2 operator rest fields quote target suffix path
+  local double_guard='^[[:space:]]*\[\[[[:space:]]*(-[efrs])[[:space:]]+(.+)[[:space:]]\]\][[:space:]]*&&[[:space:]]*$'
+  local single_guard='^[[:space:]]*\[[[:space:]]*(-[efrs])[[:space:]]+(.+)[[:space:]]\][[:space:]]*&&[[:space:]]*$'
+  local test_guard='^[[:space:]]*test[[:space:]]+(-[efrs])[[:space:]]+(.+)[[:space:]]*&&[[:space:]]*$'
+  local double_if_guard='^[[:space:]]*if[[:space:]]+\[\[[[:space:]]*(-[efrs])[[:space:]]+(.+)[[:space:]]\]\][[:space:]]*;?[[:space:]]*then[[:space:]]*$'
+  local single_if_guard='^[[:space:]]*if[[:space:]]+\[[[:space:]]*(-[efrs])[[:space:]]+(.+)[[:space:]]\][[:space:]]*;?[[:space:]]*then[[:space:]]*$'
+  local test_if_guard='^[[:space:]]*if[[:space:]]+test[[:space:]]+(-[efrs])[[:space:]]+(.+)[[:space:]]*;?[[:space:]]*then[[:space:]]*$'
+  if [[ $prefix =~ $double_guard ]]; then
+    operator=${BASH_REMATCH[1]}
+    rest=${BASH_REMATCH[2]}
+  elif [[ $prefix =~ $single_guard ]]; then
+    operator=${BASH_REMATCH[1]}
+    rest=${BASH_REMATCH[2]}
+  elif [[ $prefix =~ $test_guard ]]; then
+    operator=${BASH_REMATCH[1]}
+    rest=${BASH_REMATCH[2]}
+  elif [[ $prefix =~ $double_if_guard ]]; then
+    operator=${BASH_REMATCH[1]}
+    rest=${BASH_REMATCH[2]}
+  elif [[ $prefix =~ $single_if_guard ]]; then
+    operator=${BASH_REMATCH[1]}
+    rest=${BASH_REMATCH[2]}
+  elif [[ $prefix =~ $test_if_guard ]]; then
+    operator=${BASH_REMATCH[1]}
+    rest=${BASH_REMATCH[2]}
+  else
+    return 1
+  fi
+  fields=$(strip_target "$rest") || return 1
+  quote=${fields%%$'\t'*}
+  fields=${fields#*$'\t'}
+  target=${fields%%$'\t'*}
+  suffix=${fields#*$'\t'}
+  [[ -z $suffix ]] || return 1
+  path=$(resolve_target "$quote" "$target") || return 1
+  if [[ $operator == -s && ! -s $path ]]; then
+    return 1
+  fi
+  [[ $path == "$source_path" ]]
 }
 
 is_control_start() {
@@ -121,51 +390,125 @@ is_control_start() {
 }
 
 is_control_end() {
-  local line=$1
-  [[ $line =~ ^[[:space:]]*(fi|done|esac|\})($|[[:space:];]) ]]
+  local line=$1 control
+  control=$(strip_shell_control_text "$line")
+  [[ $control =~ (^|[[:space:];])(fi|done|esac)([[:space:];]|$) ]] ||
+    [[ $control =~ ^[[:space:]]*\}($|[[:space:];]) ]]
 }
 
 is_same_line_control_end() {
-  local line=$1
-  [[ $line =~ (^|[[:space:];])(fi|done|esac)([[:space:];]|$) ]]
+  local line=$1 control
+  control=$(strip_shell_control_text "$line")
+  [[ $control =~ (^|[[:space:];])(fi|done|esac)([[:space:];]|$) ]] ||
+    [[ $control =~ (^|[[:space:];])\}([[:space:];]|$) ]]
+}
+
+is_static_true_guard() {
+  local line=$1 pattern='^[[:space:]]*if[[:space:]]+true[[:space:]]*;?[[:space:]]*then([[:space:]]|$)'
+  [[ $line =~ $pattern ]]
 }
 
 resolve_file() {
-  local file=$1 line source quote target path status conditional_depth=0
+  local file=$1 inherited_conditional=${2:-0} line code_line normalized_line source inline_source prefix quote target suffix path status inline_status child_conditional resolved_guard guard_head conditional_depth=0 name
+  local -A inherited_static_paths=()
+  if (( inherited_conditional > 0 )); then
+    for name in "${!static_paths[@]}"; do
+      inherited_static_paths[$name]=${static_paths[$name]}
+    done
+    local -A static_paths=()
+    for name in "${!inherited_static_paths[@]}"; do
+      static_paths[$name]=${inherited_static_paths[$name]}
+    done
+  fi
   if [[ ${active[$file]+yes} ]]; then
     warn "cyclic source omitted: $file"
     return
   fi
-  if [[ ${visited[$file]+yes} ]]; then
-    return
-  fi
-  visited[$file]=1
   active[$file]=1
   while IFS= read -r line || [[ -n $line ]]; do
-    if (( conditional_depth > 0 )) && [[ $line =~ ^[[:space:]]*(source|\.)($|[[:space:]]) ]]; then
-      printf '%s\n' "$line"
-      warn "unresolved source in $file: $line"
-    elif source=$(extract_source "$line"); then
-      quote=${source%%$'\t'*}
-      target=${source#*$'\t'}
-      if path=$(resolve_target "$quote" "$target"); then
-        resolve_file "$path"
-      else
-        printf '%s\n' "$line"
-        warn "unresolved source in $file: $line"
-      fi
+    code_line=$(strip_shell_comment "$line")
+    normalized_line=$(normalize_if_file_guard "$code_line")
+    if [[ $normalized_line != "$code_line" ]]; then
+      line=$normalized_line
+      code_line=$normalized_line
+    fi
+    if (( conditional_depth > 0 )); then
+      remember_static_assignment "$code_line" 1
+    else
+      remember_static_assignment "$code_line" 0
+    fi
+    prefix=''
+    if source=$(extract_source "$code_line"); then
+      :
     else
       status=$?
-      printf '%s\n' "$line"
-      if (( status == 2 )); then
-        warn "unresolved source in $file: $line"
+      if inline_source=$(extract_inline_source "$code_line"); then
+        prefix=${inline_source%%$'\t'*}
+        source=${inline_source#*$'\t'}
+      else
+        inline_status=$?
+        printf '%s\n' "$line"
+        if (( status == 2 || inline_status == 2 )); then
+          warn "unresolved source in $file: $line"
+        fi
+        if is_control_start "$code_line"; then
+          if ! is_same_line_control_end "$code_line" &&
+            ! is_static_true_guard "$code_line"; then
+            conditional_depth=$((conditional_depth + 1))
+          fi
+        elif is_control_end "$code_line" && (( conditional_depth > 0 )); then
+          conditional_depth=$((conditional_depth - 1))
+        fi
+        continue
       fi
     fi
-    if is_control_start "$line"; then
-      if ! is_same_line_control_end "$line"; then
+    quote=${source%%$'\t'*}
+    source=${source#*$'\t'}
+    target=${source%%$'\t'*}
+    suffix=${source#*$'\t'}
+    resolved_guard=0
+    if has_multiple_source_commands "$suffix"; then
+      printf '%s\n' "$line"
+      warn "unresolved source in $file: $line"
+    elif path=$(resolve_target "$quote" "$target"); then
+      if [[ -n $prefix ]] && is_host_file_guard "$prefix" "$path"; then
+        local inline_if_head='^([[:space:]]*if[[:space:]]+)'
+        if [[ $prefix =~ $inline_if_head ]]; then
+          guard_head=${BASH_REMATCH[1]}
+          prefix="${guard_head}true; then "
+        else
+          prefix=''
+        fi
+        resolved_guard=1
+      fi
+      if [[ -n $prefix ]] && is_static_true_guard "$prefix"; then
+        resolved_guard=1
+      fi
+      child_conditional=0
+      if (( inherited_conditional > 0 || conditional_depth > 0 )) ||
+        { [[ -n $prefix ]] && (( resolved_guard == 0 )); }; then
+        child_conditional=1
+      fi
+      if (( child_conditional == 0 )); then
+        unconditionally_sourced[$path]=1
+      fi
+      if [[ -n $prefix || -n $suffix ]]; then
+        printf '%s{\n' "$prefix"
+        resolve_file "$path" "$child_conditional"
+        printf '}%s\n' "$suffix"
+      else
+        resolve_file "$path" "$child_conditional"
+      fi
+    else
+      printf '%s\n' "$line"
+      warn "unresolved source in $file: $line"
+    fi
+    if is_control_start "$code_line"; then
+      if ! is_same_line_control_end "$code_line" &&
+        ! is_static_true_guard "$code_line"; then
         conditional_depth=$((conditional_depth + 1))
       fi
-    elif is_control_end "$line" && (( conditional_depth > 0 )); then
+    elif is_control_end "$code_line" && (( conditional_depth > 0 )); then
       conditional_depth=$((conditional_depth - 1))
     fi
   done < "$file"
@@ -180,7 +523,9 @@ trap 'rm -f "$temporary"' EXIT
 for root in "${roots[@]}"; do
   if [[ -r $root && -f $root ]]; then
     if root=$(canonical_file "$root") && [[ $root == "$home" || $root == "$home"/* ]]; then
-      resolve_file "$root"
+      if [[ ! ${unconditionally_sourced[$root]+yes} ]]; then
+        resolve_file "$root"
+      fi
     else
       warn "unresolved startup rc: $root"
     fi

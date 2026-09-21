@@ -22,6 +22,11 @@ export DOCKER_LOG
 cat > "$FAKE_BIN/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 set -euo pipefail
+log_docker_command() {
+  local logged_command="$*"
+  logged_command=${logged_command//$'\n'/\\n}
+  printf '%s\n' "$logged_command" >> "$DOCKER_LOG"
+}
 if [[ "${1:-}" == "volume" ]]; then
   if [[ "${2:-}" == "ls" ]]; then
     exit 0
@@ -35,10 +40,10 @@ if [[ "${1:-}" == "ps" ]]; then
   exit 0
 fi
 if [[ "${1:-}" == "run" ]]; then
-  printf '%s\n' "$*" >> "$DOCKER_LOG"
+  log_docker_command "$@"
   exit 0
 fi
-printf '%s\n' "$*" >> "$DOCKER_LOG"
+log_docker_command "$@"
 if [[ "${1:-}" == "compose" ]]; then
   compose_args=("$@")
   for ((index = 1; index < ${#compose_args[@]} - 1; index++)); do
@@ -151,16 +156,27 @@ run_wrapper_with_workspace() {
 
 assert_persistent_logged_exec() {
   expected_exec="$1"
-  assert_log_line_count 9
+  expect_shell_alias_setup="${2:-false}"
+  expected_line_count=9
+  expected_workspace_count=4
+  if [[ "$expect_shell_alias_setup" == true ]]; then
+    expected_line_count=11
+    expected_workspace_count=5
+  fi
+  assert_log_line_count "$expected_line_count"
   assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach pi"
   assert_log_lacks_fragment ' up --build '
   assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
   assert_log_has_fragment "$expected_exec"
+  if [[ "$expect_shell_alias_setup" == true ]]; then
+    assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec -T pi sh -c"
+    assert_log_has_fragment 'pi-agents managed host shell aliases'
+  fi
 
   workspace_line="PI_WORKSPACE=$WORKSPACE"
   workspace_count="$(grep -Fxc -- "$workspace_line" "$DOCKER_LOG" || true)"
-  if [[ "$workspace_count" -ne 4 ]]; then
-    printf 'expected 4 workspace propagation lines, got %s:\n%s\n' "$workspace_count" "$(cat "$DOCKER_LOG")" >&2
+  if [[ "$workspace_count" -ne "$expected_workspace_count" ]]; then
+    printf 'expected %s workspace propagation lines, got %s:\n%s\n' "$expected_workspace_count" "$workspace_count" "$(cat "$DOCKER_LOG")" >&2
     exit 1
   fi
 }
@@ -517,7 +533,7 @@ assert_log_lacks_fragment ' run --build '
 assert_log_has_line "PI_WORKSPACE=$WORKSPACE"
 
 run_wrapper --rebuild --version
-assert_log_line_count 9
+assert_log_line_count 11
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --build --detach pi"
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --version"
@@ -530,26 +546,26 @@ assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run 
 assert_log_lacks_fragment ' run --build '
 
 run_wrapper --version
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --version"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --version" true
 
 run_wrapper - list
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log list"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log list" true
 assert_log_lacks_fragment 'exec pi pi-shell-launch pi-session-log - list'
 
 run_wrapper - stop
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log stop"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log stop" true
 assert_log_lacks_fragment ' stop$'
 
 run_wrapper - update
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log update"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log update" true
 assert_log_lacks_fragment ' build --pull --no-cache pi'
 
 run_wrapper - remove
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log remove"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log remove" true
 assert_log_lacks_fragment ' down'
 
 run_wrapper - shell
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log shell"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log shell" true
 
 if run_wrapper -; then
   printf 'empty passthrough marker unexpectedly succeeded\n' >&2
@@ -561,7 +577,7 @@ fi
 assert_log ""
 
 run_wrapper - --help
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --help"
+assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --help" true
 
 run_wrapper --rm - list
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi-shell-launch pi list"

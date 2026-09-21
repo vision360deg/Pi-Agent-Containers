@@ -1229,6 +1229,53 @@ start_persistent_service() {
   fi
 }
 
+pi_shell_alias_setup_script() {
+  cat <<'PI_SHELL_ALIAS_SETUP'
+set -eu
+[ "${PI_NO_RC_CONFIG:-0}" != 1 ] || exit 0
+
+settings_file="${HOME:-/home/node}/.pi/agent/settings.json"
+mkdir -p "$(dirname "$settings_file")"
+if [ ! -e "$settings_file" ]; then
+  umask 077
+  printf '{}\n' > "$settings_file"
+fi
+
+marker='# pi-agents managed host shell aliases'
+managed_prefix=$(printf '%s\n' \
+  "$marker" \
+  'shopt -s expand_aliases' \
+  'if [ "${PI_NO_RC_CONFIG:-0}" != 1 ] && [ -r "${PI_HOST_RC_FILE:-/tmp/pi-host-shellrc/rc}" ]; then' \
+  "  eval \"\$(grep -E '^[[:space:]]*alias[[:space:]]' \"\${PI_HOST_RC_FILE:-/tmp/pi-host-shellrc/rc}\")\"" \
+  'fi')
+
+if jq -e --arg marker "$marker" \
+  '(.shellCommandPrefix // "") | strings | contains($marker)' \
+  "$settings_file" >/dev/null 2>&1; then
+  exit 0
+fi
+
+temporary_file=$(mktemp "${settings_file}.pi-agents.XXXXXX")
+trap 'rm -f "$temporary_file"' EXIT HUP INT TERM
+jq --arg prefix "$managed_prefix" '
+  if type != "object" then error("Pi settings must contain a JSON object")
+  elif .shellCommandPrefix == null then .shellCommandPrefix = $prefix
+  elif (.shellCommandPrefix | type) != "string" then error("Pi shellCommandPrefix must be a string")
+  elif .shellCommandPrefix == "" then .shellCommandPrefix = $prefix
+  else .shellCommandPrefix += "\n" + $prefix
+  end
+' "$settings_file" > "$temporary_file"
+chmod 600 "$temporary_file"
+mv -f "$temporary_file" "$settings_file"
+trap - EXIT HUP INT TERM
+PI_SHELL_ALIAS_SETUP
+}
+
+configure_pi_shell_aliases() {
+  [[ "$NO_RC_CONFIG" -eq 0 ]] || return 0
+  run_compose exec -T pi sh -c "$(pi_shell_alias_setup_script)"
+}
+
 install_browser_extension() {
   # The extension must be registered in the mounted Pi agent state, not only
   # installed in the image: /home/node/.pi/agent is a per-workspace volume.
@@ -1855,9 +1902,13 @@ if [[ "$REMOVE_AFTER_RUN" == true ]]; then
   if [[ "$REBUILD_IMAGE" == true ]]; then
     run_compose build pi
   fi
+  shell_alias_setup_script=""
+  if [[ "$NO_RC_CONFIG" -eq 0 ]]; then
+    shell_alias_setup_script="$(pi_shell_alias_setup_script)"
+  fi
   run_compose run --rm --entrypoint /bin/sh pi -c \
-    'if [ ! -x /usr/local/bin/pi-shell-launch ]; then printf "%s\n" "pi: image lacks pi-shell-launch; run pi update or use --rebuild" >&2; exit 2; fi; exec pi-shell-launch pi install "$1"' \
-    pi "$PI_BROWSER_EXTENSION_SOURCE"
+    'if [ ! -x /usr/local/bin/pi-shell-launch ]; then printf "%s\n" "pi: image lacks pi-shell-launch; run pi update or use --rebuild" >&2; exit 2; fi; if [ -n "$1" ]; then sh -c "$1"; fi; exec pi-shell-launch pi install "$2"' \
+    pi "$shell_alias_setup_script" "$PI_BROWSER_EXTENSION_SOURCE"
   run_compose run --rm --service-ports pi pi-shell-launch pi "$@"
   exit $?
 fi
@@ -1876,6 +1927,7 @@ run_logged_pi() {
 start_persistent_service
 initialize_agent_state
 repair_state_permissions
+configure_pi_shell_aliases
 install_browser_extension
 record_state_lineage
 run_logged_pi "$@"
