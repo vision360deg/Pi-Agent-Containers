@@ -28,6 +28,7 @@ for arg in "$@"; do
 done
 
 REMOVE_AFTER_RUN=false
+RUN_ON_HOST=false
 REPLACE_CONTAINER=false
 REBUILD_IMAGE=false
 KEEP_EXISTING=false
@@ -56,6 +57,7 @@ OAUTH_CALLBACK_PORTS=(1455 53692 51121)
 OAUTH_EXTRA_PORTS=()
 OAUTH_OVERRIDE_FILE=""
 PI_BROWSER_EXTENSION_SOURCE="npm:pi-agent-browser-native"
+PI_NATIVE_INSTALLER_URL="https://pi.dev/install.sh"
 
 oauth_port_is_known() {
   [[ "$1" == 1455 || "$1" == 53692 || "$1" == 51121 ]]
@@ -139,6 +141,10 @@ if [[ "$HELP_REQUESTED" == false ]]; then
     case "$1" in
       --rm)
         REMOVE_AFTER_RUN=true
+        shift
+        ;;
+      --host)
+        RUN_ON_HOST=true
         shift
         ;;
       --replace)
@@ -245,6 +251,7 @@ Containerized Pi wrapper
 Usage:
   pi [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
   pi [--bash|--zsh] [--no-rc-config] [--rebuild] --oauth [PORTS...] --rm [PI_ARGS...]
+  pi [--workspace PATH] --host [PI_ARGS...]
   pi stop
   pi update [--extensions] [--models]
   pi list
@@ -279,6 +286,15 @@ Options:
   --rm
       Run Pi in a disposable one-off container. The container is removed after
       Pi exits. This mode does not use the persistent service.
+
+  --host
+      Run native Pi on the host instead of Docker, from the selected workspace
+      directory. Pi's installer launcher at
+      ${PI_CODING_AGENT_DIR:-~/.pi/agent}/bin/pi is preferred; otherwise the
+      first pi on PATH that is not this wrapper runs. If neither exists, pi
+      offers to run curl -fsSL https://pi.dev/install.sh | sh. All remaining
+      arguments, including wrapper command names, go to native Pi, which uses
+      the host's ~/.pi/agent state rather than workspace volumes.
 
   --replace
       Force-recreate the persistent container for the current workspace.
@@ -463,6 +479,8 @@ Examples:
   pi --oauth 7000,7001               # Also publish two custom callback ports.
   pi --oauth 7000 7001               # Space-separated form of the same list.
   pi --rm                            # Run Pi in a disposable one-off container.
+  pi --host                          # Run native host Pi without Docker.
+  pi --host update                   # Update the native Pi installation.
   pi --rebuild                       # Build with cache before launching Pi.
   pi --replace                       # Force-recreate the current workspace container.
   pi --keep-existing                 # Preserve a colliding existing container.
@@ -492,8 +510,13 @@ Help behavior:
   When a help flag is combined with another argument, pi prints only the brief
   usage summary instead.
 
+  `pi --host - --help` shows native Pi's help instead.
+
 Restrictions:
   --rm cannot be combined with stop, update, remove, --replace, or --keep-existing.
+  --host accepts only --workspace among wrapper options; container, state,
+  shell, and OAuth options are rejected. Wrapper commands are not interpreted
+  after --host.
   --rebuild cannot be combined with update, stop, remove, list, or copy. With
   `pi shell`, it can only rebuild the current workspace's image.
   --oauth is optional; only one simultaneous stack can publish any selected host
@@ -523,6 +546,7 @@ Usage:
   pi [-h|--help]
   pi [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
   pi [--bash|--zsh] [--no-rc-config] [--rebuild] --oauth [PORTS...] --rm [PI_ARGS...]
+  pi [--workspace PATH] --host [PI_ARGS...]
   pi stop
   pi update [--extensions] [--models]
   pi list
@@ -534,6 +558,7 @@ Usage:
 Options:
   -h, --help        Show detailed help when used alone.
   --rm              Run Pi in a disposable one-off container.
+  --host            Run native host Pi without Docker; offers to install it if missing.
   --replace         Force-recreate the current workspace container.
   --rebuild         Build the image with cache for this launch.
   --keep-existing   Preserve an existing colliding workspace container.
@@ -580,6 +605,97 @@ if [[ "$HELP_REQUESTED" == true ]]; then
     print_brief_usage
   fi
   exit 0
+fi
+
+# Native Pi for --host: the official installer's launcher script, otherwise the
+# first pi on PATH that is not this wrapper under any name.
+find_native_pi() {
+  local agent_dir="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+  local candidate
+
+  while IFS= read -r candidate; do
+    [[ -f "$candidate" && -x "$candidate" ]] || continue
+    [[ "$candidate" -ef "$SOURCE" ]] && continue
+    [[ "$candidate" == /* ]] || candidate="$PWD/$candidate"
+    printf '%s\n' "$candidate"
+    return 0
+  done < <(printf '%s\n' "${agent_dir%/}/bin/pi"; type -aP pi)
+  return 1
+}
+
+# The official installer refuses to install while pi resolves to a program it
+# does not manage, such as this wrapper, so the wrapper is hidden from it. The
+# launcher directory goes first so the installer keeps its launcher there
+# instead of linking pi into a shared PATH directory that would shadow this
+# wrapper or offering to edit shell profiles.
+native_pi_installer_path() {
+  local agent_dir="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+  local installer_path="${agent_dir%/}/bin"
+  local entry
+  local -a entries=()
+
+  IFS=: read -r -a entries <<< "$PATH"
+  for entry in "${entries[@]}"; do
+    [[ "${entry:-.}/pi" -ef "$SOURCE" ]] && continue
+    installer_path+=":$entry"
+  done
+  printf '%s\n' "$installer_path"
+}
+
+offer_native_pi_install() {
+  local answer=""
+  local installer_path
+  local native_pi
+  local status=0
+
+  printf 'pi: native Pi was not found.\n' >&2
+  printf 'pi: run the official installer (curl -fsSL %s | sh)? [y/N] ' "$PI_NATIVE_INSTALLER_URL" >&2
+  IFS= read -r answer || true
+  if [[ "$answer" != y && "$answer" != Y ]]; then
+    printf 'pi: native Pi was not installed; install it with: curl -fsSL %s | sh\n' "$PI_NATIVE_INSTALLER_URL" >&2
+    exit 127
+  fi
+
+  installer_path="$(native_pi_installer_path)"
+  (
+    cd -P -- "$WORKSPACE" &&
+      curl -fsSL "$PI_NATIVE_INSTALLER_URL" | PATH="$installer_path" sh
+  ) || status=$?
+
+  # The installer offers to start Pi itself, so never start it a second time.
+  if native_pi="$(find_native_pi)"; then
+    printf 'pi: native Pi is ready at %s; start it with: pi --host\n' "$native_pi" >&2
+    printf 'pi: update native Pi with: pi --host update\n' >&2
+    exit "$status"
+  fi
+  printf 'pi: native Pi is still not installed\n' >&2
+  if [[ "$status" -eq 0 ]]; then
+    status=127
+  fi
+  exit "$status"
+}
+
+# Native host runs never touch Docker, so every remaining argument, including
+# wrapper command names, belongs to native Pi.
+if [[ "$RUN_ON_HOST" == true ]]; then
+  if [[ "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true ||
+    "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true ||
+    "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true || "$FORCE_BASH" == true ||
+    "$FORCE_ZSH" == true || "$NO_RC_CONFIG" -eq 1 ]]; then
+    printf 'pi: --host cannot be combined with container, state, shell, or OAuth options\n' >&2
+    printf 'usage: pi [--workspace PATH] --host [PI_ARGS...]\n' >&2
+    exit 2
+  fi
+  if [[ "${1:-}" == "-" ]]; then
+    shift
+  fi
+  if [[ ! -d "$WORKSPACE" ]]; then
+    printf 'pi: workspace does not exist: %s\n' "$WORKSPACE" >&2
+    exit 1
+  fi
+  NATIVE_PI="$(find_native_pi)" || offer_native_pi_install
+  cd -P -- "$WORKSPACE"
+  exec "$NATIVE_PI" "$@"
 fi
 
 if [[ "$HELP_REQUESTED" == false && "${1:-}" == "copy" ]]; then

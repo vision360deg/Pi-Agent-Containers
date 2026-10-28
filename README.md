@@ -78,6 +78,9 @@ Run `./bin/pi --help` for the complete, authoritative help text.
 # Run Pi in a disposable one-off container.
 ./bin/pi --rm
 
+# Run native Pi on the host instead of Docker; offers to install it if missing.
+./bin/pi --host
+
 # Stop the current workspace without removing its state.
 ./bin/pi stop
 
@@ -165,6 +168,36 @@ Use a leading `-` to force a wrapper command name through to Pi: `pi - list`
 runs Pi's `list` command inside the container, while `pi list` runs the wrapper
 inventory command. The marker is a literal argument and does not require shell
 escaping.
+
+### Native Pi on the host
+
+`./bin/pi --host` runs Pi directly on the host instead of in Docker. It starts
+in the selected workspace directory, chosen by `--workspace`, then
+`PI_WORKSPACE`, then the invocation directory. It uses the host's
+`~/.pi/agent` authentication, settings, and sessions, not the workspace volumes.
+No Docker command runs.
+
+The wrapper first looks for the launcher script written by Pi's official
+installer at `${PI_CODING_AGENT_DIR:-~/.pi/agent}/bin/pi`. If that is missing,
+it runs the first `pi` on `PATH` that is not this wrapper, such as an npm,
+Homebrew, or Nix installation. If neither exists, it offers to run
+`curl -fsSL https://pi.dev/install.sh | sh`. The installer refuses to install
+while `pi` resolves to this wrapper, so the wrapper hides itself from the
+installer's `PATH`. It also puts the launcher directory first, so the installer
+keeps Pi in `~/.pi/agent/bin` and does not link a `pi` that would shadow this
+wrapper.
+
+Every argument after the wrapper options goes to native Pi, including the
+names of wrapper commands:
+
+```bash
+./bin/pi --host --continue    # Resume native Pi's latest session here.
+./bin/pi --host update        # Update the native Pi installation.
+./bin/pi --host - --help      # Show native Pi's help.
+```
+
+`--host` accepts `--workspace`. It rejects container, state, shell, and OAuth
+options such as `--rm`, `--seed`, `--zsh`, and `--oauth`.
 
 ### Copying agent state
 
@@ -389,6 +422,7 @@ Build the image and run the shell regression tests:
 ```bash
 docker compose build pi
 bash tests/bin-pi-update.sh
+bash tests/bin-pi-host.sh
 bash tests/bin-pi-list.sh
 bash tests/bin-pi-lineage.sh
 bash tests/bin-pi-seed-recovery.sh

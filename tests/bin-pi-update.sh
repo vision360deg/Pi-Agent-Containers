@@ -259,6 +259,13 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'A stale image is reported'* ]]
 [[ "$DETAILED_HELP" == *'use pi update or --rebuild to recover.'* ]]
 [[ "$DETAILED_HELP" == *'--rebuild cannot be combined with update, stop, remove, list, or copy.'* ]]
+[[ "$DETAILED_HELP" == *'pi [--workspace PATH] --host [PI_ARGS...]'* ]]
+[[ "$DETAILED_HELP" == *'Run native Pi on the host instead of Docker'* ]]
+[[ "$DETAILED_HELP" == *'${PI_CODING_AGENT_DIR:-~/.pi/agent}/bin/pi'* ]]
+[[ "$DETAILED_HELP" == *'curl -fsSL https://pi.dev/install.sh | sh'* ]]
+[[ "$DETAILED_HELP" == *'pi --host update'* ]]
+[[ "$DETAILED_HELP" == *'pi --host - --help'* ]]
+[[ "$DETAILED_HELP" == *'--host accepts only --workspace'* ]]
 
 run_wrapper_capture -h
 assert_output "$DETAILED_HELP"
@@ -270,6 +277,7 @@ Usage:
   pi [-h|--help]
   pi [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
   pi [--bash|--zsh] [--no-rc-config] [--rebuild] --oauth [PORTS...] --rm [PI_ARGS...]
+  pi [--workspace PATH] --host [PI_ARGS...]
   pi stop
   pi update [--extensions] [--models]
   pi list
@@ -281,6 +289,7 @@ Usage:
 Options:
   -h, --help        Show detailed help when used alone.
   --rm              Run Pi in a disposable one-off container.
+  --host            Run native host Pi without Docker; offers to install it if missing.
   --replace         Force-recreate the current workspace container.
   --rebuild         Build the image with cache for this launch.
   --keep-existing   Preserve an existing colliding workspace container.
@@ -332,6 +341,7 @@ BRIEF_USAGE="$(cat "$OUTPUT_LOG")"
 [[ "$BRIEF_USAGE" == *'--new-state'* ]]
 [[ "$BRIEF_USAGE" == *'--seed'* ]]
 [[ "$BRIEF_USAGE" == *'--latest-state'* ]]
+[[ "$BRIEF_USAGE" == *'--host'* ]]
 
 run_wrapper_capture --replace --help
 assert_output "$BRIEF_USAGE"
@@ -394,6 +404,14 @@ assert_output "$BRIEF_USAGE"
 assert_log ""
 
 run_wrapper_capture --rebuild --help
+assert_output "$BRIEF_USAGE"
+assert_log ""
+
+run_wrapper_capture --host --help
+assert_output "$BRIEF_USAGE"
+assert_log ""
+
+run_wrapper_capture --workspace "$CLI_WORKSPACE" --host --help
 assert_output "$BRIEF_USAGE"
 assert_log ""
 
