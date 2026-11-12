@@ -4,9 +4,9 @@ set -euo pipefail
 usage() {
   local status=${1:-2}
   if (( status == 0 )); then
-    printf 'usage: pi-shell-rc --shell bash|zsh --home HOST_HOME --output GENERATED_RC\n'
+    printf 'usage: pi-shell-rc --shell bash|zsh --home ABSOLUTE_HOME --output ABSOLUTE_FILE\n'
   else
-    printf 'usage: pi-shell-rc --shell bash|zsh --home HOST_HOME --output GENERATED_RC\n' >&2
+    printf 'usage: pi-shell-rc --shell bash|zsh --home ABSOLUTE_HOME --output ABSOLUTE_FILE\n' >&2
   fi
   exit "$status"
 }
@@ -520,7 +520,8 @@ resolve_file() {
         unconditionally_sourced[$path]=1
       fi
       if [[ -n $prefix || -n $suffix ]]; then
-        # `:` keeps the group valid when the sourced file has no commands.
+        # A leading no-op keeps the group valid when the sourced file is empty
+        # or comment-only; like `source`, an empty group then succeeds.
         printf '%s{ :\n' "$prefix"
         resolve_file "$path" "$child_conditional"
         printf '}%s\n' "$suffix"
