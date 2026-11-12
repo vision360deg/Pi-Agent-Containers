@@ -510,4 +510,39 @@ assert_contains "$TMP/loop.rc" 'source ~/.loop-a'
 assert_once "$TMP/loop.rc" 'export LOOP_AFTER=1'
 assert_once "$TMP/loop.err" 'unresolved source'
 
+BRANCH_HOME=$TMP/branch-home
+mkdir -p "$BRANCH_HOME/.a" "$BRANCH_HOME/.b"
+printf 'FROM_A=1\n' > "$BRANCH_HOME/.a/init"
+printf 'FROM_B=1\n' > "$BRANCH_HOME/.b/init"
+cat > "$BRANCH_HOME/.bashrc" <<'BRC'
+RC_DIR="$HOME/.a"
+if [ -n "$USE_B" ]; then RC_DIR="$HOME/.b"; fi
+source "$RC_DIR/init"
+OTHER_DIR="$HOME/.a"
+if [ -f x ]; then
+  OTHER_DIR="$HOME/.b"
+fi
+source "$OTHER_DIR/init"
+BRC
+bash "$RESOLVER" --shell bash --home "$BRANCH_HOME" --output "$TMP/branch.rc" 2>"$TMP/branch.err"
+assert_contains "$TMP/branch.rc" 'source "$RC_DIR/init"'
+assert_contains "$TMP/branch.rc" 'source "$OTHER_DIR/init"'
+if grep -Fq 'FROM_A=1' "$TMP/branch.rc"; then fail "branch-reassigned path was inlined unconditionally"; fi
+assert_count "$TMP/branch.err" 'unresolved source' 2
+
+for form in one-line multi-line; do
+  TRUE_HOME=$TMP/true-$form-home
+  mkdir -p "$TRUE_HOME/.omz"
+  printf 'export OMZ_LOADED=%s\n' "$form" > "$TRUE_HOME/.omz/init.sh"
+  if [[ $form == one-line ]]; then
+    printf '%s\n' 'ZSH="$HOME/.omz"' 'if true; then source "$ZSH/init.sh"; fi' > "$TRUE_HOME/.bashrc"
+  else
+    printf '%s\n' 'ZSH="$HOME/.omz"' 'if true; then' '  source "$ZSH/init.sh"' 'fi' > "$TRUE_HOME/.bashrc"
+  fi
+  bash "$RESOLVER" --shell bash --home "$TRUE_HOME" --output "$TMP/true-$form.rc" 2>"$TMP/true-$form.err"
+  assert_contains "$TMP/true-$form.rc" "export OMZ_LOADED=$form"
+  if grep -Fq 'source "$ZSH/init.sh"' "$TMP/true-$form.rc"; then fail "static true guard ($form) left source unresolved"; fi
+  bash -n "$TMP/true-$form.rc" || fail "static true guard ($form) output must be valid bash"
+done
+
 printf 'PASS: pi-shell-rc\n'

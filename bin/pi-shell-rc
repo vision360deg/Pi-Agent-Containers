@@ -264,10 +264,22 @@ extract_inline_source() {
 }
 
 remember_static_assignment() {
-  local line=$1 conditional=$2 name raw fields quote value suffix resolved token
+  local line=$1 conditional=$2 name raw fields quote value suffix resolved token control cached_name
   local -a unset_words=()
   local unset_assignment='^[[:space:]]*unset[[:space:]]+(.+)$'
   local assignment='^[[:space:]]*(export[[:space:]]+)?([[:alpha:]_][[:alnum:]_]*)=(.*)$'
+  local branch_control='(^|[^[:alnum:]_])(then|else|elif)([^[:alnum:]_]|$)'
+  local static_true_guard='^[[:space:]]*if[[:space:]]+true[[:space:]]*;?[[:space:]]*then([[:space:]]|$)'
+  control=$(strip_shell_control_text "$line")
+  # A static `if true; then` always runs its body, so it keeps cached values;
+  # only a branch after that guard on the same line clears them.
+  [[ ! $control =~ $static_true_guard ]] || control=${control#"${BASH_REMATCH[0]}"}
+  if [[ $control =~ $branch_control ]]; then
+    for cached_name in "${!static_paths[@]}"; do
+      unset 'static_paths[$cached_name]'
+    done
+    return 0
+  fi
   if [[ $line =~ $unset_assignment ]]; then
     raw=${BASH_REMATCH[1]%%;*}
     read -r -a unset_words <<< "$raw"
