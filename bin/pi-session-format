@@ -155,7 +155,13 @@ format_message() {
 
 while IFS= read -r record || [[ -n "$record" ]]; do
   [[ -n "$record" ]] || continue
-  type="$(jq -r '.type // empty' <<< "$record" 2>/dev/null || true)"
+  # Anything that is not a JSON object (a truncated or corrupt line) is
+  # passed through verbatim so its payload is never lost.
+  if ! jq -e 'type == "object"' <<< "$record" >/dev/null 2>&1; then
+    printf '%s\n' "$record"
+    continue
+  fi
+  type="$(jq -r '.type // empty' <<< "$record")"
   timestamp="$(timestamp_for "$record")"
 
   case "$type" in
