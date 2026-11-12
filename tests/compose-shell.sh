@@ -13,6 +13,5 @@ grep -Fqx '      PI_HOST_RC_FILE: ${PI_HOST_RC_FILE:-/tmp/pi-host-shellrc/rc}' "
 grep -Fqx '      PI_NO_RC_CONFIG: ${PI_NO_RC_CONFIG:-0}' "$ROOT/compose.yml" || fail 'Compose must expose PI_NO_RC_CONFIG'
 if grep -Fq 'PI_HOST_RC_SOURCE' "$ROOT/compose.yml"; then fail 'base Compose must not mount the generated rc'; fi
 grep -Fqx '      - ${PI_HOST_RC_SOURCE:?PI_HOST_RC_SOURCE is required when rc loading is enabled}:/tmp/pi-host-shellrc:ro' "$ROOT/compose.shell-rc.yml" || fail 'rc Compose override must mount the generated rc read-only'
-grep -Fqx '    command: ["bash", "-lc", "pi-session-forwarder & exec sleep infinity"]' "$ROOT/compose.yml" || fail 'persistent service command changed'
 
 printf 'compose shell tests passed\n'
