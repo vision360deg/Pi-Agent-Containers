@@ -7,63 +7,99 @@ set -euo pipefail
 # records through the service's normal stdout stream.
 SESSION_DIR="${PI_CODING_AGENT_SESSION_DIR:-/home/node/.pi/agent/sessions}"
 POLL_INTERVAL="${PI_SESSION_LOG_POLL_INTERVAL:-0.05}"
+RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pi-session-forwarder.XXXXXX")"
 
-declare -A SESSION_SIZES=()
-declare -A SESSION_TAIL_PIDS=()
+declare -A SESSION_OFFSETS=()
+declare -A TAIL_PIDS=()
+declare -A FORMATTER_PIDS=()
+declare -A FIFOS=()
+NEXT_FIFO=0
+SLEEP_PID=''
 shopt -s nullglob
 
+# Each stream is `tail` writing into a FIFO read by `pi-session-format`, both
+# started directly by this shell so both PIDs are known and can be stopped.
+stop_stream() {
+  local session_file="$1"
+  local pid
+
+  for pid in "${TAIL_PIDS[$session_file]:-}" "${FORMATTER_PIDS[$session_file]:-}"; do
+    if [[ -n "$pid" ]]; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+  for pid in "${TAIL_PIDS[$session_file]:-}" "${FORMATTER_PIDS[$session_file]:-}"; do
+    if [[ -n "$pid" ]]; then
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+  if [[ -n "${FIFOS[$session_file]:-}" ]]; then
+    rm -f -- "${FIFOS[$session_file]}"
+  fi
+  unset 'TAIL_PIDS[$session_file]' 'FORMATTER_PIDS[$session_file]' 'FIFOS[$session_file]'
+}
+
+cleanup() {
+  local session_file
+
+  trap - EXIT HUP INT TERM
+  if [[ -n "$SLEEP_PID" ]]; then
+    kill "$SLEEP_PID" 2>/dev/null || true
+    wait "$SLEEP_PID" 2>/dev/null || true
+  fi
+  for session_file in "${!TAIL_PIDS[@]}"; do
+    stop_stream "$session_file"
+  done
+  rm -rf -- "$RUNTIME_DIR"
+}
+
+trap cleanup EXIT
+trap 'exit 0' HUP INT TERM
+
+# OFFSET is the 1-based byte position of the first byte to forward.
+start_stream() {
+  local session_file="$1"
+  local offset="$2"
+  local fifo="$RUNTIME_DIR/stream-$NEXT_FIFO"
+
+  NEXT_FIFO=$((NEXT_FIFO + 1))
+  mkfifo "$fifo"
+  tail -c "+$offset" -F "$session_file" >"$fifo" &
+  TAIL_PIDS["$session_file"]=$!
+  pi-session-format <"$fifo" &
+  FORMATTER_PIDS["$session_file"]=$!
+  FIFOS["$session_file"]="$fifo"
+}
+
+# Sessions present when the forwarder starts are history: follow them from
+# their current end so nothing is replayed, including after a restart.
 for session_file in "$SESSION_DIR"/*.jsonl; do
-  SESSION_SIZES["$session_file"]="$(wc -c < "$session_file")"
+  [[ -f "$session_file" ]] || continue
+  SESSION_OFFSETS["$session_file"]=$(( $(wc -c < "$session_file") + 1 ))
+  start_stream "$session_file" "${SESSION_OFFSETS[$session_file]}"
 done
 
-stop_tails() {
-  local session_file
-  local tail_pid
-  for session_file in "${!SESSION_TAIL_PIDS[@]}"; do
-    tail_pid="${SESSION_TAIL_PIDS[$session_file]}"
-    kill "$tail_pid" 2>/dev/null || true
-  done
-}
-
-trap stop_tails EXIT
-trap 'exit 143' HUP INT TERM
-
-start_tail() {
-  local session_file="$1"
-  local start_offset="$2"
-
-  if (( start_offset > 0 )); then
-    tail -c +$((start_offset + 1)) -F "$session_file" | pi-session-format &
-  else
-    tail -c +1 -F "$session_file" | pi-session-format &
-  fi
-  SESSION_TAIL_PIDS["$session_file"]=$!
-}
-
 while :; do
+  # Restarting a dead stream from a stale offset could re-emit records, so a
+  # stopped stream is fatal; the service restarts the forwarder from the end.
+  for session_file in "${!TAIL_PIDS[@]}"; do
+    if ! kill -0 "${TAIL_PIDS[$session_file]}" 2>/dev/null \
+      || ! kill -0 "${FORMATTER_PIDS[$session_file]}" 2>/dev/null; then
+      printf 'pi-session-forwarder: session log stream stopped: %s\n' "$session_file" >&2
+      exit 1
+    fi
+  done
+
   for session_file in "$SESSION_DIR"/*.jsonl; do
     [[ -f "$session_file" ]] || continue
-
-    if [[ ! -v "SESSION_SIZES[$session_file]" ]]; then
-      SESSION_SIZES["$session_file"]=0
-      start_tail "$session_file" 0
-      continue
-    fi
-
-    if [[ -v "SESSION_TAIL_PIDS[$session_file]" ]]; then
-      tail_pid="${SESSION_TAIL_PIDS[$session_file]}"
-      if kill -0 "$tail_pid" 2>/dev/null; then
-        continue
-      fi
-      unset "SESSION_TAIL_PIDS[$session_file]"
-    fi
-
-    current_size="$(wc -c < "$session_file")"
-    original_size="${SESSION_SIZES[$session_file]}"
-    if (( current_size > original_size )); then
-      start_tail "$session_file" "$original_size"
-      SESSION_SIZES["$session_file"]="$current_size"
+    if [[ ! -v "SESSION_OFFSETS[$session_file]" ]]; then
+      SESSION_OFFSETS["$session_file"]=1
+      start_stream "$session_file" 1
     fi
   done
-  sleep "$POLL_INTERVAL"
+
+  sleep "$POLL_INTERVAL" &
+  SLEEP_PID=$!
+  wait "$SLEEP_PID"
+  SLEEP_PID=''
 done
