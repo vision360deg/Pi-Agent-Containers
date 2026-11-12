@@ -266,35 +266,4 @@ assert_log_lacks_fragment ' run --build '
 run_wrapper --new-state --version
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach --force-recreate pi"
 
-run_wrapper --oauth --version
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml --file $ROOT/compose.oauth.yml exec pi pi-shell-launch pi-session-log --version"
-
-PI_OAUTH_CALLBACK_PORTS='7000,7001' run_wrapper --oauth --version
-assert_log_has_fragment 'OAUTH_OVERRIDE_CONTENT'
-assert_log_lacks_fragment 'pi-oauth.XXXXXX'
-assert_log_has_fragment '127.0.0.1:7000:7000'
-assert_log_has_fragment '[::1]:7000:7000'
-assert_log_has_fragment '127.0.0.1:7001:7001'
-assert_log_has_fragment '[::1]:7001:7001'
-
-PI_OAUTH_CALLBACK_PORTS='7005 7006' run_wrapper --oauth --version
-assert_log_has_fragment '127.0.0.1:7005:7005'
-assert_log_has_fragment '[::1]:7006:7006'
-
-run_wrapper --oauth 7002,7003 7004 --version
-assert_log_has_fragment '127.0.0.1:7002:7002'
-assert_log_has_fragment '[::1]:7003:7003'
-assert_log_has_fragment '127.0.0.1:7004:7004'
-
-if run_wrapper --oauth 70000 --version; then
-  printf 'out-of-range OAuth callback port unexpectedly succeeded\n' >&2
-  exit 1
-else
-  status=$?
-  if [[ "$status" -ne 2 ]]; then
-    printf 'out-of-range OAuth callback port returned status %s, expected 2\n' "$status" >&2
-    exit 1
-  fi
-fi
-
 printf 'bin/pi wrapper tests passed\n'

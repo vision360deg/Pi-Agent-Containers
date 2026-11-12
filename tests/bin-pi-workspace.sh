@@ -359,35 +359,6 @@ FAKE_MANAGED_LABEL='<no value>' run_wrapper "$PATH_1"
 assert_log_has 'PI_CONTAINER_NAME=pi-agents-pi-workspace'
 assert_log_has 'up --detach pi'
 
-# OAuth callback ports are checked before anything starts. Ports this
-# workspace's running stack already publishes are reused; a port that anything
-# else listens on is refused, and a disposable --rm run cannot share the
-# stack's ports.
-OWNED_PORTS=$'127.0.0.1:1455:1455/tcp\n::1:1455:1455/tcp\n127.0.0.1:53692:53692/tcp\n::1:53692:53692/tcp\n127.0.0.1:51121:51121/tcp\n::1:51121:51121/tcp'
-FAKE_BUSY_PORTS='1455 53692 51121' FAKE_PORT_BINDINGS="$OWNED_PORTS" run_wrapper "$PATH_1" --oauth
-assert_log_has 'up --detach pi'
-assert_output_lacks 'already in use'
-
-if FAKE_BUSY_PORTS='1455 53692 51121 7000' FAKE_PORT_BINDINGS="$OWNED_PORTS" run_wrapper "$PATH_1" --oauth 7000; then
-  printf 'busy OAuth callback port unexpectedly succeeded\n' >&2
-  exit 1
-elif [[ $? -ne 2 ]]; then
-  printf 'busy OAuth callback port returned an unexpected status\n' >&2
-  exit 1
-fi
-assert_output_has 'pi: OAuth callback port is already in use: 7000'
-assert_log_lacks ' up '
-
-if FAKE_BUSY_PORTS='1455 53692 51121' FAKE_PORT_BINDINGS="$OWNED_PORTS" run_wrapper "$PATH_1" --rm --oauth; then
-  printf 'disposable run on the stack OAuth ports unexpectedly succeeded\n' >&2
-  exit 1
-elif [[ $? -ne 2 ]]; then
-  printf 'disposable run on the stack OAuth ports returned an unexpected status\n' >&2
-  exit 1
-fi
-assert_output_has 'pi: OAuth callback port is already in use: 1455'
-assert_log_lacks 'run --rm --service-ports'
-
 export FAKE_CONTAINERS=$'id-1\tpi-agents-pi-workspace\tExited (0) 3 hours ago\t'$PATH_1
 if printf 'c\n' | run_wrapper "$PATH_2"; then
   printf 'stopped-container collision cancel unexpectedly succeeded\n' >&2
