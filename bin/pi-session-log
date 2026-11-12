@@ -11,8 +11,20 @@ if [[ "${1:-}" == "--forward-output" ]]; then
   shift
 fi
 
-printf -v PI_COMMAND '%q ' pi "$@"
-PI_COMMAND="${PI_COMMAND% }"
+# script runs the command through /bin/sh (dash in the image), so quote
+# for POSIX sh: bash's printf %q emits $'...' for newlines and control
+# characters, which dash does not understand.
+shell_quote() {
+  local value="$1"
+
+  value="${value//\'/\'\\\'\'}"
+  printf "'%s'" "$value"
+}
+
+PI_COMMAND="$(shell_quote pi)"
+for argument in "$@"; do
+  PI_COMMAND+=" $(shell_quote "$argument")"
+done
 
 # Exposed only for the regression test: `exec script` must retain this PID so
 # it remains the foreground process that owns interactive terminal input.

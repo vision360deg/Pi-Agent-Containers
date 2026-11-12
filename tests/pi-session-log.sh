@@ -56,31 +56,58 @@ if [[ -z "$log_out_file" && "$transcript_file" != /dev/null ]]; then
   exit 1
 fi
 
-bash -c "$command_string"
+# util-linux script runs the command through /bin/sh, which is dash in the
+# image; parse it the same way.
+"$PI_SESSION_LOG_TEST_SH" -c "$command_string"
 FAKE_SCRIPT
 chmod +x "$FAKE_BIN/script"
 
 cat > "$FAKE_BIN/pi" <<'FAKE_PI'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" > "$PI_SESSION_LOG_TEST_INVOCATION"
+: > "$PI_SESSION_LOG_TEST_INVOCATION"
+for argument in "$@"; do
+  printf 'arg=%s\n' "$argument" >> "$PI_SESSION_LOG_TEST_INVOCATION"
+done
+exit "${FAKE_PI_STATUS:-0}"
 FAKE_PI
 chmod +x "$FAKE_BIN/pi"
 SCRIPT_OPTIONS_LOG="$TMP_DIR/script-options.log"
+if command -v dash >/dev/null 2>&1; then
+  TEST_SH="$(command -v dash)"
+else
+  TEST_SH=/bin/sh
+fi
 
-PI_SESSION_LOG_SCRIPT_LOG="$SCRIPT_OPTIONS_LOG" \
-PI_SESSION_LOG_TEST_INVOCATION="$INVOCATION_LOG" \
-PATH="$FAKE_BIN:$PATH" \
-  bash "$ROOT/bin/pi-session-log" prompt
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-grep -Fqx -- 'prompt' "$INVOCATION_LOG"
-[[ -z "$(cat "$SCRIPT_OPTIONS_LOG")" ]]
+STATUS=0
+run_log() {
+  if PI_SESSION_LOG_SCRIPT_LOG="$SCRIPT_OPTIONS_LOG" \
+    PI_SESSION_LOG_TEST_INVOCATION="$INVOCATION_LOG" \
+    PI_SESSION_LOG_TEST_SH="$TEST_SH" \
+    PATH="$FAKE_BIN:$PATH" \
+    bash "$ROOT/bin/pi-session-log" "$@"; then STATUS=0; else STATUS=$?; fi
+}
 
-PI_SESSION_LOG_SCRIPT_LOG="$SCRIPT_OPTIONS_LOG" \
-PI_SESSION_LOG_TEST_INVOCATION="$INVOCATION_LOG" \
-PATH="$FAKE_BIN:$PATH" \
-  bash "$ROOT/bin/pi-session-log" --forward-output prompt
+run_log prompt
+[[ $STATUS == 0 ]] || fail "session-log status $STATUS"
+[[ "$(cat "$INVOCATION_LOG")" == 'arg=prompt' ]] || fail "pi arguments: $(cat "$INVOCATION_LOG")"
+[[ -z "$(cat "$SCRIPT_OPTIONS_LOG")" ]] || fail 'transcript must not be forwarded by default'
 
-grep -Fqx -- 'prompt' "$INVOCATION_LOG"
-grep -Fqx -- '/proc/1/fd/1' "$SCRIPT_OPTIONS_LOG"
+run_log --forward-output prompt
+[[ "$(cat "$INVOCATION_LOG")" == 'arg=prompt' ]] || fail "forwarded pi arguments: $(cat "$INVOCATION_LOG")"
+grep -Fqx -- '/proc/1/fd/1' "$SCRIPT_OPTIONS_LOG" || fail 'transcript must be forwarded to the service stdout'
+
+# Arguments reach Pi unchanged through /bin/sh, including quotes, shell
+# syntax, empty arguments, and multi-line prompts.
+run_log "it's two words" '$(touch /tmp/never)' ';' '' $'first line\nsecond line' $'tab\there'
+[[ $STATUS == 0 ]] || fail "quoted session-log status $STATUS"
+expected=$'arg=it\'s two words\narg=$(touch /tmp/never)\narg=;\narg=\narg=first line\nsecond line\narg=tab\there'
+[[ "$(cat "$INVOCATION_LOG")" == "$expected" ]] || fail "quoted pi arguments:"$'\n'"$(cat "$INVOCATION_LOG")"
+
+# Pi's exit status is returned.
+FAKE_PI_STATUS=4 run_log
+[[ $STATUS == 4 ]] || fail "pi status must propagate, got $STATUS"
+
 printf 'pi session PTY tests passed\n'
