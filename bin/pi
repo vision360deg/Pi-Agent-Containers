@@ -531,6 +531,8 @@ Workspace:
 Host shell:
   Foreground Pi commands and `pi shell` use Bash or zsh based on the basename
   of the host SHELL value. Use --bash or --zsh to override that choice.
+  Commands that start no host-shell session (list, stop, remove, copy) do
+  not check SHELL.
 
   For Bash, .bash_profile and .bashrc are startup roots. For zsh, .zshenv,
   .zprofile, .zshrc, and .zlogin are startup roots. Statically identifiable
@@ -1005,13 +1007,6 @@ else
   HOST_SHELL_NAME="${SHELL:-/bin/bash}"
   HOST_SHELL_NAME="${HOST_SHELL_NAME##*/}"
 fi
-case "$HOST_SHELL_NAME" in
-  bash|zsh) ;;
-  *)
-    printf 'pi: unsupported host shell: %s (supported: bash, zsh)\n' "$HOST_SHELL_NAME" >&2
-    exit 2
-    ;;
-esac
 SHELL_RC_DIRECTORY="$CONFIG_PATH/shell-rc"
 HOST_SHELL_RC_FILE=""
 HOST_SHELL_RC_SOURCE=""
@@ -1089,7 +1084,15 @@ ensure_helper_image() {
   HELPER_IMAGE_PROJECT="$PROJECT_NAME"
 }
 
+# Only flows that start a host-shell session need a supported shell.
 prepare_host_shell_rc() {
+  case "$HOST_SHELL_NAME" in
+    bash|zsh) ;;
+    *)
+      printf 'pi: unsupported host shell: %s (supported: bash, zsh)\n' "$HOST_SHELL_NAME" >&2
+      exit 2
+      ;;
+  esac
   [[ "$NO_RC_CONFIG" -eq 0 ]] || return 0
   mkdir -p -- "$HOST_SHELL_RC_SOURCE"
   "$STACK_ROOT/bin/pi-shell-rc" \

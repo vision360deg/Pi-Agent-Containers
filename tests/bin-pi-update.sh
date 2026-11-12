@@ -302,6 +302,7 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'curl -fsSL https://pi.dev/install.sh | sh'* ]]
 [[ "$DETAILED_HELP" == *'pi --host update'* ]]
 [[ "$DETAILED_HELP" == *'pi --host - --help'* ]]
+[[ "$DETAILED_HELP" == *'(list, stop, remove, copy) do'* ]]
 [[ "$DETAILED_HELP" == *'--host accepts only --workspace'* ]]
 [[ "$DETAILED_HELP" == *'--new-state cannot be combined with stop, remove, --seed, or --latest-state.'* ]]
 [[ "$DETAILED_HELP" == *'Before starting, pi refuses a selected port that something else already'* ]]

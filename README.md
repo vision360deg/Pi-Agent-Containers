@@ -166,6 +166,8 @@ more containers, a choice starting with 1-9 is a number confirmed with Enter.
 
 Foreground `pi` commands and `pi shell` use Bash or zsh selected from the
 basename of the host's `$SHELL`. Use `--bash` or `--zsh` to force the choice.
+`pi list`, `pi stop`, `pi remove`, and `pi copy` start no host shell and do
+not check `$SHELL`.
 Use `--no-rc-config` to start the selected shell without generating, mounting,
 or loading host startup configuration.
 

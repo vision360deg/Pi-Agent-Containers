@@ -401,6 +401,15 @@ assert_status_2 'unsupported host shell' run_wrapper /usr/bin/fish "$INVALID_STA
 assert_no_docker
 grep -Fq 'unsupported host shell: fish' "$OUTPUT_LOG"
 
+# Commands that never start a host-shell session ignore an unsupported SHELL.
+for command in list stop remove copy; do
+  run_wrapper /usr/bin/fish "$INVALID_STATE" "$command" </dev/null || true
+  if grep -Fq 'unsupported host shell' "$OUTPUT_LOG" || [[ ! -s "$DOCKER_LOG" ]]; then
+    printf 'pi %s with SHELL=fish did not reach Docker:\n%s\n' "$command" "$(cat "$OUTPUT_LOG")" >&2
+    exit 1
+  fi
+done
+
 # Read-only inventory does not generate startup configuration.
 FAKE_CONTAINERS=''
 LIST_STATE="$TMP_DIR/list-state"
