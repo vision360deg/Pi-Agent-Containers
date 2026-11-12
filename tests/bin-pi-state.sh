@@ -73,6 +73,8 @@ if [[ "${1:-}" == "run" ]]; then
     exit 11
   fi
   if [[ "$*" == *'exit 42'* ]]; then
+    # Keep the probe script so the test can run it against a real directory.
+    printf '%s' "${@: -1}" > "${DOCKER_LOG%/*}/auth-probe.sh"
     [[ "${FAKE_TARGET_HAS_USEFUL_STATE-false}" == true ]] && exit 0
     exit 42
   fi
@@ -168,6 +170,18 @@ if grep -Fq ':/state-source:ro' "$DOCKER_LOG"; then
 fi
 if grep -Fq 'pi-agents_pi-agent-state' "$DOCKER_LOG"; then
   printf 'forbidden shared agent-state volume was referenced\n' >&2
+  exit 1
+fi
+
+# The auth probe stays quiet on a fresh volume without auth.json.
+[[ -s "$TMP_DIR/auth-probe.sh" ]] || { printf 'auth probe was never run\n' >&2; exit 1; }
+PROBE_STATE="$TMP_DIR/probe-state"
+mkdir -p "$PROBE_STATE"
+probe_script="$(sed "s#/state#$PROBE_STATE#g" "$TMP_DIR/auth-probe.sh")"
+probe_status=0
+sh -c "$probe_script" 2>"$TMP_DIR/probe.err" || probe_status=$?
+if [[ "$probe_status" -ne 42 || -s "$TMP_DIR/probe.err" ]]; then
+  printf 'auth probe on empty state: status %s, stderr:\n%s\n' "$probe_status" "$(cat "$TMP_DIR/probe.err")" >&2
   exit 1
 fi
 

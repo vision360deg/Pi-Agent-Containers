@@ -1322,7 +1322,7 @@ state_volume_has_auth_or_settings() {
   local status
   ensure_helper_image || return 2
   if docker run --rm --user 0:0 -v "$1:/state:ro" "$HELPER_IMAGE" sh -c \
-    '[ -d /state ] || exit 43; auth=$(tr -d "[:space:]" < /state/auth.json 2>/dev/null || true); if [ -n "$auth" ] && [ "$auth" != "{}" ]; then exit 0; fi; if grep -Eq "\"(defaultProvider|defaultModel)\"" /state/settings.json 2>/dev/null; then exit 0; fi; exit 42'; then
+    '[ -d /state ] || exit 43; auth=""; if [ -r /state/auth.json ]; then auth=$(tr -d "[:space:]" < /state/auth.json 2>/dev/null || true); fi; if [ -n "$auth" ] && [ "$auth" != "{}" ]; then exit 0; fi; if grep -Eq "\"(defaultProvider|defaultModel)\"" /state/settings.json 2>/dev/null; then exit 0; fi; exit 42'; then
     return 0
   else
     status=$?
