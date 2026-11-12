@@ -160,7 +160,7 @@ for INPUT in 'l\n' '\n' ''; do
   assert_log_lacks 'docker compose'
 done
 
-# Deleting the seed volume clears the seed when no other state remains.
+# Deleting the seed volume deletes the seed pointer when no other state remains.
 leftovers
 mkdir -p "$CONFIG_DIR"
 printf '%s\n' "$NORMAL_1" > "$SEED_FILE"
@@ -173,7 +173,7 @@ for volume in "$NORMAL_1" "$SESSIONS_1" "$BROWSER_1" "$EXTRA_1"; do
   ! volume_exists "$volume" || fail "$volume must be removed"
 done
 assert_log_lacks 'docker compose'
-[[ -z $(seed_value) ]] || fail "seed pointer still names a deleted volume: $(seed_value)"
+[[ ! -e $SEED_FILE ]] || fail "seed pointer was not deleted with its volume: $(seed_value)"
 
 leftovers
 INPUT='s\n2, 4\n'

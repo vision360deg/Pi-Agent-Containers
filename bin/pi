@@ -8,14 +8,14 @@ fi
 
 SOURCE="${BASH_SOURCE[0]}"
 while [[ -L "$SOURCE" ]]; do
-  SOURCE_DIR="$(cd -P -- "$(dirname -- "$SOURCE")" && pwd)"
+  SOURCE_DIRECTORY="$(cd -P -- "$(dirname -- "$SOURCE")" && pwd)"
   SOURCE="$(readlink -- "$SOURCE")"
-  [[ "$SOURCE" = /* ]] || SOURCE="$SOURCE_DIR/$SOURCE"
+  [[ "$SOURCE" = /* ]] || SOURCE="$SOURCE_DIRECTORY/$SOURCE"
 done
 
-STACK_ROOT="$(cd -P -- "$(dirname -- "$SOURCE")/.." && pwd)"
+ROOT="$(cd -P -- "$(dirname -- "$SOURCE")/.." && pwd)"
 WORKSPACE="${PI_WORKSPACE:-$PWD}"
-ORIGINAL_ARG_COUNT=$#
+ORIGINAL_ARGUMENT_COUNT=$#
 HELP_REQUESTED=false
 HELP_SCAN_PASSTHROUGH=false
 for arg in "$@"; do
@@ -56,7 +56,7 @@ COPY_AUTH=false
 COPY_EXTENSIONS=false
 COPY_ALL=false
 COPY_OVERRIDE=false
-PI_PASSTHROUGH_MARKER=false
+PASSTHROUGH_MARKER=false
 WORKSPACE_MISSING=false
 OAUTH_CALLBACK_PORTS=(1455 53692 51121)
 OAUTH_EXTRA_PORTS=()
@@ -697,7 +697,7 @@ EOF
 }
 
 if [[ "$HELP_REQUESTED" == true ]]; then
-  if [[ "$ORIGINAL_ARG_COUNT" -eq 1 ]]; then
+  if [[ "$ORIGINAL_ARGUMENT_COUNT" -eq 1 ]]; then
     print_detailed_help
   else
     print_brief_usage
@@ -863,7 +863,7 @@ if [[ "$HELP_REQUESTED" == false && "${1:-}" == "shell" ]]; then
 fi
 
 if [[ "$HELP_REQUESTED" == false && "${1:-}" == "-" ]]; then
-  PI_PASSTHROUGH_MARKER=true
+  PASSTHROUGH_MARKER=true
   shift
   if [[ $# -eq 0 ]]; then
     printf 'pi: - requires a Pi command\n' >&2
@@ -881,7 +881,7 @@ if [[ "$SHELL_COMMAND" == true &&
   exit 2
 fi
 
-if [[ "$OAUTH_CALLBACK" == true && "$HELP_REQUESTED" == false && "$PI_PASSTHROUGH_MARKER" == false &&
+if [[ "$OAUTH_CALLBACK" == true && "$HELP_REQUESTED" == false && "$PASSTHROUGH_MARKER" == false &&
   ( "${1:-}" == "stop" || "${1:-}" == "remove" ) ]]; then
   printf 'pi: --oauth cannot be combined with %s\n' "$1" >&2
   exit 2
@@ -893,7 +893,7 @@ if [[ "$OAUTH_CALLBACK" == true ]]; then
 fi
 
 LIST_COMMAND=false
-if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "list" ]]; then
+if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "list" ]]; then
   if [[ "$#" -ne 1 || "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true || "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true || "${WORKSPACE_OPTION:-false}" == true ]]; then
     printf 'usage: pi list\n' >&2
     exit 2
@@ -926,7 +926,7 @@ if [[ "$LATEST_STATE" == true && "$NEW_STATE" == true ]]; then
   exit 2
 fi
 
-if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "stop" ]]; then
+if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "stop" ]]; then
   if [[ "$REMOVE_AFTER_RUN" == true ]]; then
     printf 'pi: --rm cannot be combined with stop; stop targets the persistent service\n' >&2
     exit 2
@@ -946,7 +946,7 @@ if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "stop" ]]; then
   fi
 fi
 
-if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "update" && ( "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true || "$KEEP_EXISTING" == true ) ]]; then
+if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "update" && ( "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true || "$KEEP_EXISTING" == true ) ]]; then
   printf 'pi: --rebuild, --replace, and --keep-existing cannot be combined with update\n' >&2
   exit 2
 fi
@@ -1019,16 +1019,17 @@ workspace_hash() {
   printf '%s' "$digest"
 }
 
+WORKSPACE_HASH="$(workspace_hash "$WORKSPACE")"
 PROJECT_NAME="pi-agents-pi-$WORKSPACE_BASENAME"
-VOLUME_NAMESPACE="pi-agents-ws-$(workspace_hash "$WORKSPACE")"
+VOLUME_NAMESPACE="pi-agents-ws-$WORKSPACE_HASH"
 # --new-state runs the workspace against a separate, extra agent-state volume.
 # The extra volume is never seeded, never a seed, and never the latest state.
 EXTRA_AGENT_STATE_PREFIX="pi-agents-new-ws-"
 NORMAL_AGENT_STATE_VOLUME_NAME="${VOLUME_NAMESPACE}_pi-agent-state"
-EXTRA_AGENT_STATE_VOLUME_NAME="${EXTRA_AGENT_STATE_PREFIX}$(workspace_hash "$WORKSPACE")_pi-agent-state"
-AGENT_STATE_VOLUME_NAME="$NORMAL_AGENT_STATE_VOLUME_NAME"
+EXTRA_AGENT_STATE_VOLUME_NAME="${EXTRA_AGENT_STATE_PREFIX}${WORKSPACE_HASH}_pi-agent-state"
+ACTIVE_AGENT_STATE_VOLUME_NAME="$NORMAL_AGENT_STATE_VOLUME_NAME"
 if [[ "$NEW_STATE" == true ]]; then
-  AGENT_STATE_VOLUME_NAME="$EXTRA_AGENT_STATE_VOLUME_NAME"
+  ACTIVE_AGENT_STATE_VOLUME_NAME="$EXTRA_AGENT_STATE_VOLUME_NAME"
 fi
 SESSION_STATE_VOLUME_NAME="${VOLUME_NAMESPACE}_pi-sessions"
 BROWSER_STATE_VOLUME_NAME="${VOLUME_NAMESPACE}_agent-browser-state"
@@ -1062,17 +1063,17 @@ build_compose() {
   COMPOSE=(
     docker compose
     --project-name "$PROJECT_NAME"
-    --project-directory "$STACK_ROOT"
-    --file "$STACK_ROOT/compose.yml"
+    --project-directory "$ROOT"
+    --file "$ROOT/compose.yml"
   )
   if [[ "$OAUTH_CALLBACK" == true ]]; then
-    COMPOSE+=(--file "$STACK_ROOT/compose.oauth.yml")
+    COMPOSE+=(--file "$ROOT/compose.oauth.yml")
     if [[ -n "$OAUTH_OVERRIDE_FILE" ]]; then
       COMPOSE+=(--file "$OAUTH_OVERRIDE_FILE")
     fi
   fi
   if [[ "$NO_RC_CONFIG" -eq 0 ]]; then
-    COMPOSE+=(--file "$STACK_ROOT/compose.shell-rc.yml")
+    COMPOSE+=(--file "$ROOT/compose.shell-rc.yml")
   fi
 }
 
@@ -1084,7 +1085,7 @@ run_compose() {
     PI_WORKSPACE_BASENAME="$WORKSPACE_BASENAME" \
     PI_CONTAINER_NAME="$CONTAINER_NAME" \
     PI_WORKSPACE_PROJECT="$PROJECT_NAME" \
-    PI_AGENT_STATE_VOLUME_NAME="$AGENT_STATE_VOLUME_NAME" \
+    PI_AGENT_STATE_VOLUME_NAME="$ACTIVE_AGENT_STATE_VOLUME_NAME" \
     PI_SESSION_STATE_VOLUME_NAME="$SESSION_STATE_VOLUME_NAME" \
     PI_BROWSER_STATE_VOLUME_NAME="$BROWSER_STATE_VOLUME_NAME" \
     PI_HOST_SHELL="$HOST_SHELL_NAME" \
@@ -1135,39 +1136,34 @@ prepare_host_shell_rc() {
   esac
   [[ "$NO_RC_CONFIG" -eq 0 ]] || return 0
   mkdir -p -- "$HOST_SHELL_RC_SOURCE"
-  "$STACK_ROOT/bin/pi-shell-rc" \
+  "$ROOT/bin/pi-shell-rc" \
     --shell "$HOST_SHELL_NAME" \
     --home "$HOME" \
     --output "$HOST_SHELL_RC_FILE"
 }
 
-read_state_pointer() {
-  local file="$1"
+read_seed_pointer() {
   local value=""
-  if [[ -s "$file" ]]; then
-    IFS= read -r value < "$file"
+  if [[ -s "$STATE_SEED_FILE" ]]; then
+    IFS= read -r value < "$STATE_SEED_FILE"
   fi
   printf '%s' "$value"
 }
 
-write_state_pointer() {
-  local file="$1"
-  local value="$2"
+write_seed_pointer() {
+  local value="$1"
   local temporary_file
-  mkdir -p "$CONFIG_PATH"
-  temporary_file="${file}.$$"
+  mkdir -p -- "$CONFIG_PATH"
+  temporary_file="$(mktemp "$CONFIG_PATH/.seed.XXXXXX")"
   printf '%s\n' "$value" > "$temporary_file"
-  mv -f -- "$temporary_file" "$file"
+  mv -f -- "$temporary_file" "$STATE_SEED_FILE"
 }
 
-clear_state_pointer() {
-  local file="$1"
-  if [[ -e "$file" ]]; then
-    : > "$file"
-  fi
+clear_seed_pointer() {
+  rm -f -- "$STATE_SEED_FILE"
 }
 
-state_volume_exists() {
+volume_exists() {
   [[ -n "$1" ]] && docker volume inspect "$1" >/dev/null 2>&1
 }
 
@@ -1194,19 +1190,19 @@ assert_managed_state_volume() {
 
 # Extra state volumes are recognised by name: those created by older releases
 # carry the normal agent kind label, which Docker cannot change.
-is_extra_state_volume() {
+is_extra_agent_state_volume() {
   [[ "$1" == "$EXTRA_AGENT_STATE_PREFIX"* ]]
 }
 
-extra_state_volume_for_workspace() {
+extra_agent_state_volume_for_workspace() {
   printf '%s%s_pi-agent-state' "$EXTRA_AGENT_STATE_PREFIX" "$(workspace_hash "$1")"
 }
 
 assert_agent_state_volume() {
-  if [[ "$AGENT_STATE_VOLUME_NAME" == "$EXTRA_AGENT_STATE_VOLUME_NAME" ]]; then
-    assert_managed_state_volume "$AGENT_STATE_VOLUME_NAME" "$WORKSPACE" agent-extra agent
+  if [[ "$ACTIVE_AGENT_STATE_VOLUME_NAME" == "$EXTRA_AGENT_STATE_VOLUME_NAME" ]]; then
+    assert_managed_state_volume "$ACTIVE_AGENT_STATE_VOLUME_NAME" "$WORKSPACE" agent-extra agent
   else
-    assert_managed_state_volume "$AGENT_STATE_VOLUME_NAME" "$WORKSPACE" agent
+    assert_managed_state_volume "$ACTIVE_AGENT_STATE_VOLUME_NAME" "$WORKSPACE" agent
   fi
 }
 
@@ -1216,14 +1212,14 @@ ensure_workspace_volumes() {
   # state. Create the volumes first and let Compose consume them as external.
   # Existing volumes are deliberately left untouched.
   local volume kind
-  for volume in "$AGENT_STATE_VOLUME_NAME" "$SESSION_STATE_VOLUME_NAME" "$BROWSER_STATE_VOLUME_NAME"; do
+  for volume in "$ACTIVE_AGENT_STATE_VOLUME_NAME" "$SESSION_STATE_VOLUME_NAME" "$BROWSER_STATE_VOLUME_NAME"; do
     case "$volume" in
       "$EXTRA_AGENT_STATE_VOLUME_NAME") kind=agent-extra ;;
-      "$AGENT_STATE_VOLUME_NAME") kind=agent ;;
+      "$ACTIVE_AGENT_STATE_VOLUME_NAME") kind=agent ;;
       "$SESSION_STATE_VOLUME_NAME") kind=sessions ;;
       *) kind=browser ;;
     esac
-    if ! state_volume_exists "$volume"; then
+    if ! volume_exists "$volume"; then
       docker volume create \
         --label com.pi-agents.managed=true \
         --label "com.pi-agents.state-kind=$kind" \
@@ -1231,7 +1227,7 @@ ensure_workspace_volumes() {
         --label "com.pi-agents.project=$PROJECT_NAME" \
         "$volume" >/dev/null
     fi
-    if [[ "$volume" == "$AGENT_STATE_VOLUME_NAME" ]]; then
+    if [[ "$volume" == "$ACTIVE_AGENT_STATE_VOLUME_NAME" ]]; then
       assert_agent_state_volume
     else
       assert_managed_state_volume "$volume" "$WORKSPACE" "$kind"
@@ -1239,18 +1235,18 @@ ensure_workspace_volumes() {
   done
 }
 
-state_volume_created_at() {
+volume_created_at() {
   local volume="$1"
   docker volume inspect --format '{{.CreatedAt}}' "$volume" 2>/dev/null
 }
 
 # Extra state volumes are excluded: they are never seed candidates and never
 # the latest state.
-list_managed_state_volumes() {
+list_managed_agent_state_volumes() {
   local volume
   while IFS= read -r volume; do
     [[ -n "$volume" ]] || continue
-    is_extra_state_volume "$volume" && continue
+    is_extra_agent_state_volume "$volume" && continue
     printf '%s\n' "$volume"
   done < <(docker volume ls \
     --filter 'label=com.pi-agents.managed=true' \
@@ -1258,7 +1254,7 @@ list_managed_state_volumes() {
     --format '{{.Name}}')
 }
 
-find_managed_state_volume_by_age() {
+find_agent_state_volume_by_age() {
   local direction="$1"
   local excluded="${2:-}"
   local candidate
@@ -1269,7 +1265,7 @@ find_managed_state_volume_by_age() {
   while IFS= read -r candidate; do
     [[ -n "$candidate" ]] || continue
     [[ -n "$excluded" && "$candidate" == "$excluded" ]] && continue
-    created_at="$(state_volume_created_at "$candidate" || true)"
+    created_at="$(volume_created_at "$candidate" || true)"
     [[ -n "$created_at" ]] || continue
     if [[ -z "$selected" || \
       ( "$direction" == oldest && ( "$created_at" < "$selected_created_at" || \
@@ -1279,53 +1275,41 @@ find_managed_state_volume_by_age() {
       selected="$candidate"
       selected_created_at="$created_at"
     fi
-  done < <(list_managed_state_volumes)
+  done < <(list_managed_agent_state_volumes)
 
   printf '%s' "$selected"
-}
-
-find_oldest_managed_state_volume() {
-  find_managed_state_volume_by_age oldest "$NORMAL_AGENT_STATE_VOLUME_NAME"
-}
-
-find_newest_managed_state_volume() {
-  find_managed_state_volume_by_age newest "$NORMAL_AGENT_STATE_VOLUME_NAME"
-}
-
-find_newest_managed_state_volume_for_listing() {
-  find_managed_state_volume_by_age newest
 }
 
 bootstrap_seed_pointer() {
   local seed
 
-  seed="$(read_state_pointer "$STATE_SEED_FILE")"
-  if [[ -n "$seed" ]] && { is_extra_state_volume "$seed" || ! state_volume_exists "$seed"; }; then
-    clear_state_pointer "$STATE_SEED_FILE"
+  seed="$(read_seed_pointer)"
+  if [[ -n "$seed" ]] && { is_extra_agent_state_volume "$seed" || ! volume_exists "$seed"; }; then
+    clear_seed_pointer
   fi
 }
 
-print_managed_state_volume_candidates() {
+print_agent_state_volume_candidates() {
   local candidate created
   printf 'Managed Pi state volumes:\n' >&2
   while IFS= read -r candidate; do
-    created="$(state_volume_created_at "$candidate" || true)"
+    created="$(volume_created_at "$candidate" || true)"
     printf '  %s  (%s)\n' "$candidate" "${created:-unknown creation time}" >&2
-  done < <(list_managed_state_volumes)
+  done < <(list_managed_agent_state_volumes)
 }
 
 confirm_missing_seed_pointer() {
   local candidate="$1"
   local answer="n"
 
-  print_managed_state_volume_candidates
+  print_agent_state_volume_candidates
   printf 'pi: warning: the seed pointer was not found.\n' >&2
   printf 'pi: the oldest managed agent-state volume is:\n  %s\n' "$candidate" >&2
   printf 'pi: use it as the seed for this new workspace? [y/N] ' >&2
   if IFS= read -r answer; then
     case "$answer" in
       y|Y|yes|YES)
-        write_state_pointer "$STATE_SEED_FILE" "$candidate"
+        write_seed_pointer "$candidate"
         return 0
         ;;
     esac
@@ -1343,7 +1327,7 @@ STATE_INITIAL_SOURCE=''
 state_initialization_status() {
   local status
   ensure_helper_image || return 2
-  if docker run --rm --user 0:0 -v "$AGENT_STATE_VOLUME_NAME:/state:ro" "$HELPER_IMAGE" sh -c \
+  if docker run --rm --user 0:0 -v "$ACTIVE_AGENT_STATE_VOLUME_NAME:/state:ro" "$HELPER_IMAGE" sh -c \
     '[ -d /state ] || exit 43; [ ! -f /state/.container-initialized ] || exit 0; [ ! -f /state/.container-initialization-pending ] || exit 10; exit 11'; then
     return 0
   else
@@ -1378,7 +1362,7 @@ state_volume_has_auth_or_settings() {
 mark_state_initialization() {
   local phase="$1" source_volume="${2:-}"
   ensure_helper_image
-  docker run --rm --user 0:0 -v "$AGENT_STATE_VOLUME_NAME:/state" "$HELPER_IMAGE" sh -c '
+  docker run --rm --user 0:0 -v "$ACTIVE_AGENT_STATE_VOLUME_NAME:/state" "$HELPER_IMAGE" sh -c '
     set -eu
     phase=$1
     temporary=$(mktemp /state/.container-initialization.XXXXXX)
@@ -1405,7 +1389,7 @@ prepare_state_lineage() {
   # The extra state volume starts empty and is never seeded, so no seed
   # pointer or source logic runs; it is only marked initialized.
   if [[ "$NEW_STATE" == true ]]; then
-    if state_volume_exists "$AGENT_STATE_VOLUME_NAME"; then
+    if volume_exists "$ACTIVE_AGENT_STATE_VOLUME_NAME"; then
       assert_agent_state_volume
       if state_initialization_status; then
         STATE_VOLUME_ALREADY_INITIALIZED=true
@@ -1413,7 +1397,7 @@ prepare_state_lineage() {
     fi
     return 0
   fi
-  if state_volume_exists "$AGENT_STATE_VOLUME_NAME"; then
+  if volume_exists "$ACTIVE_AGENT_STATE_VOLUME_NAME"; then
     assert_agent_state_volume
     if state_initialization_status; then initialization_status=0; else initialization_status=$?; fi
     case "$initialization_status" in
@@ -1422,7 +1406,7 @@ prepare_state_lineage() {
       11)
         # Volumes initialized before the markers existed, or filled by
         # `pi copy`, keep their state and are marked complete.
-        if state_volume_has_auth_or_settings "$AGENT_STATE_VOLUME_NAME"; then
+        if state_volume_has_auth_or_settings "$ACTIVE_AGENT_STATE_VOLUME_NAME"; then
           STATE_VOLUME_ALREADY_INITIALIZED=true
           mark_state_initialization complete
         else
@@ -1442,18 +1426,18 @@ prepare_state_lineage() {
   fi
 
   if [[ "$STATE_INITIALIZATION_PENDING" == true ]]; then
-    STATE_INITIAL_SOURCE="$(docker run --rm --user 0:0 -v "$AGENT_STATE_VOLUME_NAME:/state:ro" "$HELPER_IMAGE" cat /state/.container-initialization-pending)" ||
+    STATE_INITIAL_SOURCE="$(docker run --rm --user 0:0 -v "$ACTIVE_AGENT_STATE_VOLUME_NAME:/state:ro" "$HELPER_IMAGE" cat /state/.container-initialization-pending)" ||
       fail 'could not read the pending agent-state initialization source'
-    if [[ -z "$STATE_INITIAL_SOURCE" || "$STATE_INITIAL_SOURCE" == "$AGENT_STATE_VOLUME_NAME" ]] || ! state_volume_exists "$STATE_INITIAL_SOURCE"; then
+    if [[ -z "$STATE_INITIAL_SOURCE" || "$STATE_INITIAL_SOURCE" == "$ACTIVE_AGENT_STATE_VOLUME_NAME" ]] || ! volume_exists "$STATE_INITIAL_SOURCE"; then
       fail "pending agent-state initialization source is unavailable; restore it before retrying: ${STATE_INITIAL_SOURCE:-unknown}"
     fi
     return 0
   fi
 
   bootstrap_seed_pointer
-  seed="$(read_state_pointer "$STATE_SEED_FILE")"
+  seed="$(read_seed_pointer)"
   if [[ -z "$seed" ]]; then
-    candidate="$(find_oldest_managed_state_volume)"
+    candidate="$(find_agent_state_volume_by_age oldest "$NORMAL_AGENT_STATE_VOLUME_NAME")"
     if [[ -n "$candidate" ]]; then
       confirm_missing_seed_pointer "$candidate" || return $?
     fi
@@ -1466,12 +1450,12 @@ select_state_source() {
   local source=""
   bootstrap_seed_pointer
   if [[ "$LATEST_STATE" == true ]]; then
-    source="$(find_newest_managed_state_volume)"
+    source="$(find_agent_state_volume_by_age newest "$NORMAL_AGENT_STATE_VOLUME_NAME")"
   else
-    source="$(read_state_pointer "$STATE_SEED_FILE")"
+    source="$(read_seed_pointer)"
   fi
 
-  if [[ -n "$source" && "$source" != "$AGENT_STATE_VOLUME_NAME" ]] && state_volume_exists "$source"; then
+  if [[ -n "$source" && "$source" != "$ACTIVE_AGENT_STATE_VOLUME_NAME" ]] && volume_exists "$source"; then
     printf '%s' "$source"
   fi
 }
@@ -1486,7 +1470,7 @@ initialize_agent_state() {
   [[ "$STATE_VOLUME_ALREADY_INITIALIZED" != true ]] || return 0
   if [[ -n "$STATE_INITIAL_SOURCE" ]]; then
     if [[ "$STATE_INITIALIZATION_PENDING" != true ]]; then
-      if state_volume_has_auth_or_settings "$AGENT_STATE_VOLUME_NAME"; then
+      if state_volume_has_auth_or_settings "$ACTIVE_AGENT_STATE_VOLUME_NAME"; then
         fail 'refusing to seed an agent-state volume that already contains auth or settings'
       else
         probe_status=$?
@@ -1496,7 +1480,7 @@ initialize_agent_state() {
     mark_state_initialization pending "$STATE_INITIAL_SOURCE"
     docker run --rm --user 0:0 \
       -v "$STATE_INITIAL_SOURCE:/state-source:ro" \
-      -v "$AGENT_STATE_VOLUME_NAME:/state-target" \
+      -v "$ACTIVE_AGENT_STATE_VOLUME_NAME:/state-target" \
       "$HELPER_IMAGE" \
       sh -c 'set -eu; find /state-source -mindepth 1 -maxdepth 1 ! -name sessions ! -name .container-initialized ! -name ".container-initialization*" -exec cp -a {} /state-target/ \; ; chown -R 1000:1000 /state-target'
   fi
@@ -1509,7 +1493,7 @@ repair_state_permissions() {
   # auth, settings, models, sessions, and browser state without data loss.
   ensure_helper_image
   docker run --rm --user 0:0 \
-    -v "$AGENT_STATE_VOLUME_NAME:/state" \
+    -v "$ACTIVE_AGENT_STATE_VOLUME_NAME:/state" \
     -v "$SESSION_STATE_VOLUME_NAME:/sessions" \
     -v "$BROWSER_STATE_VOLUME_NAME:/browser" \
     "$HELPER_IMAGE" \
@@ -1525,7 +1509,7 @@ remove_workspace_volumes() {
     "$EXTRA_AGENT_STATE_VOLUME_NAME" \
     "$SESSION_STATE_VOLUME_NAME" \
     "$BROWSER_STATE_VOLUME_NAME"; do
-    if state_volume_exists "$volume"; then
+    if volume_exists "$volume"; then
       if ! docker volume rm "$volume"; then
         status=1
       fi
@@ -1539,7 +1523,7 @@ remove_workspace_volumes() {
 # container runs on it. The first argument says whether it is in use.
 warn_extra_state_volume() {
   local in_use="${1:-$NEW_STATE}"
-  state_volume_exists "$EXTRA_AGENT_STATE_VOLUME_NAME" || return 0
+  volume_exists "$EXTRA_AGENT_STATE_VOLUME_NAME" || return 0
   if [[ "$in_use" == true ]]; then
     printf 'pi: warning: using the extra state volume %s; the normal state volume %s is untouched\n' \
       "$EXTRA_AGENT_STATE_VOLUME_NAME" "$NORMAL_AGENT_STATE_VOLUME_NAME" >&2
@@ -1557,18 +1541,18 @@ record_state_lineage() {
   local seed volume
 
   # The extra state volume never becomes the seed.
-  [[ "$AGENT_STATE_VOLUME_NAME" != "$EXTRA_AGENT_STATE_VOLUME_NAME" ]] || return 0
+  [[ "$ACTIVE_AGENT_STATE_VOLUME_NAME" != "$EXTRA_AGENT_STATE_VOLUME_NAME" ]] || return 0
   if [[ "$SEED_STATE" == true ]]; then
-    write_state_pointer "$STATE_SEED_FILE" "$AGENT_STATE_VOLUME_NAME"
+    write_seed_pointer "$ACTIVE_AGENT_STATE_VOLUME_NAME"
     return 0
   fi
   bootstrap_seed_pointer
-  seed="$(read_state_pointer "$STATE_SEED_FILE")"
+  seed="$(read_seed_pointer)"
   [[ -z "$seed" ]] || return 0
   while IFS= read -r volume; do
-    [[ "$volume" == "$AGENT_STATE_VOLUME_NAME" ]] || return 0
-  done < <(list_managed_state_volumes)
-  write_state_pointer "$STATE_SEED_FILE" "$AGENT_STATE_VOLUME_NAME"
+    [[ "$volume" == "$ACTIVE_AGENT_STATE_VOLUME_NAME" ]] || return 0
+  done < <(list_managed_agent_state_volumes)
+  write_seed_pointer "$ACTIVE_AGENT_STATE_VOLUME_NAME"
 }
 
 repoint_seed_after_removal() {
@@ -1576,21 +1560,21 @@ repoint_seed_after_removal() {
   local candidate
 
   bootstrap_seed_pointer
-  seed="$(read_state_pointer "$STATE_SEED_FILE")"
-  if [[ -n "$seed" ]] && state_volume_exists "$seed"; then
+  seed="$(read_seed_pointer)"
+  if [[ -n "$seed" ]] && volume_exists "$seed"; then
     return 0
   fi
 
-  candidate="$(find_oldest_managed_state_volume)"
+  candidate="$(find_agent_state_volume_by_age oldest "$NORMAL_AGENT_STATE_VOLUME_NAME")"
   if [[ -n "$candidate" ]]; then
-    write_state_pointer "$STATE_SEED_FILE" "$candidate"
+    write_seed_pointer "$candidate"
     printf 'pi: the previous seed was removed; seed reassigned to oldest state %s\n' "$candidate" >&2
   else
-    clear_state_pointer "$STATE_SEED_FILE"
+    clear_seed_pointer
   fi
 }
 
-list_pi_stacks() (
+list_stacks() (
   local temp_dir
   local ids
   local id
@@ -1622,9 +1606,9 @@ list_pi_stacks() (
     return 0
   fi
 
-  seed="$(read_state_pointer "$STATE_SEED_FILE")"
-  ! is_extra_state_volume "$seed" || seed=""
-  latest="$(find_newest_managed_state_volume_for_listing)"
+  seed="$(read_seed_pointer)"
+  ! is_extra_agent_state_volume "$seed" || seed=""
+  latest="$(find_agent_state_volume_by_age newest)"
 
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
@@ -1632,13 +1616,13 @@ list_pi_stacks() (
     IFS="$delimiter" read -r name status created started workspace project agent_state <<< "$record"
     name="${name#/}"
     [[ "$started" == 0001-* ]] && started="never"
-    if [[ -n "$agent_state" ]] && ! state_volume_exists "$agent_state"; then
+    if [[ -n "$agent_state" ]] && ! volume_exists "$agent_state"; then
       agent_state=""
     fi
     extra_state=""
     if [[ -n "$workspace" && "$workspace" != '<no value>' ]]; then
-      extra_state="$(extra_state_volume_for_workspace "$workspace")"
-      state_volume_exists "$extra_state" || extra_state=""
+      extra_state="$(extra_agent_state_volume_for_workspace "$workspace")"
+      volume_exists "$extra_state" || extra_state=""
     fi
     printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
       "$name" "$delimiter" "$status" "$delimiter" "$created" "$delimiter" "$started" \
@@ -1659,7 +1643,7 @@ list_pi_stacks() (
     if [[ -z "$agent_state" ]]; then
       agent_state="none"
       active_state="none"
-    elif is_extra_state_volume "$agent_state"; then
+    elif is_extra_agent_state_volume "$agent_state"; then
       active_state="extra"
     else
       active_state="normal"
@@ -1688,7 +1672,7 @@ start_persistent_service() {
   # the container onto the requested volume.
   mounted_agent_state="$(mounted_agent_state_volume "$CONTAINER_NAME")"
   if [[ "$FORCE_RECREATE" == true ||
-    ( -n "$mounted_agent_state" && "$mounted_agent_state" != "$AGENT_STATE_VOLUME_NAME" ) ]]; then
+    ( -n "$mounted_agent_state" && "$mounted_agent_state" != "$ACTIVE_AGENT_STATE_VOLUME_NAME" ) ]]; then
     up_args+=(--force-recreate)
   fi
   up_args+=(pi)
@@ -1982,7 +1966,7 @@ resolve_workspace_project() {
 
 # stop and remove act only on the stack labelled with this exact workspace.
 # Returns 1 when the workspace has no stack; other failures exit.
-resolve_exact_workspace_stack() {
+find_exact_workspace_stack() {
   local rows id name project count=0
   rows="$(docker ps -a \
     --filter "label=com.pi-agents.workspace=$WORKSPACE" \
@@ -2002,13 +1986,17 @@ resolve_exact_workspace_stack() {
   build_compose
 }
 
+resolve_exact_workspace_stack() {
+  find_exact_workspace_stack || fail "no stack found for workspace: $WORKSPACE"
+}
+
 # Lists this workspace's existing state volumes as `name<TAB>kind` rows.
 workspace_state_volume_rows() {
   local volume kind labelled
   local -A seen=()
   for volume in "$NORMAL_AGENT_STATE_VOLUME_NAME" "$SESSION_STATE_VOLUME_NAME" \
     "$BROWSER_STATE_VOLUME_NAME" "$EXTRA_AGENT_STATE_VOLUME_NAME"; do
-    state_volume_exists "$volume" || continue
+    volume_exists "$volume" || continue
     seen[$volume]=1
     case "$volume" in
       "$NORMAL_AGENT_STATE_VOLUME_NAME") kind=agent ;;
@@ -2045,7 +2033,7 @@ remove_orphaned_workspace_volumes() {
   printf 'pi: no stack found for workspace: %s\n' "$WORKSPACE" >&2
   printf 'Existing state volumes:\n' >&2
   for index in "${!volumes[@]}"; do
-    created="$(state_volume_created_at "${volumes[$index]}" || true)"
+    created="$(volume_created_at "${volumes[$index]}" || true)"
     printf '  %s) %s\n     kind: %s\n     created: %s\n' "$((index + 1))" "${volumes[$index]}" \
       "${kinds[$index]}" "${created:-unknown}" >&2
   done
@@ -2206,7 +2194,7 @@ shell_container_is_running() {
   [[ "$1" == running ]]
 }
 
-shell_container_has_host_rc_mount() {
+container_has_host_rc_mount() {
   local container="$1" mounted_source
   mounted_source="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/tmp/pi-host-shellrc"}}{{.Source}}{{end}}{{end}}' "$container" 2>/dev/null)" || return 1
   [[ -n "$mounted_source" ]]
@@ -2262,7 +2250,7 @@ attach_shell() {
   # read the generated rc file. Containers selected from another workspace
   # retain their existing mounts and are not recreated under this project.
   if [[ "$NO_RC_CONFIG" -eq 0 && "$selected_is_current" == true ]] &&
-    ! shell_container_has_host_rc_mount "$SHELL_SELECTED_NAME"; then
+    ! container_has_host_rc_mount "$SHELL_SELECTED_NAME"; then
     start_persistent_service
     SHELL_SELECTED_STATE=running
   fi
@@ -2340,7 +2328,7 @@ copy_session_volume() {
       fail "could not inspect session mount of container: $container"
   fi
   [[ -n "$volume" ]] || volume="$fallback"
-  [[ -n "$volume" ]] && state_volume_exists "$volume" || fail "no session volume found for workspace: $workspace"
+  [[ -n "$volume" ]] && volume_exists "$volume" || fail "no session volume found for workspace: $workspace"
   printf '%s' "$volume"
 }
 
@@ -2395,7 +2383,7 @@ current_copy_container() {
     return 0
   done < <(list_copy_containers)
   COPY_CURRENT_NAME=''
-  COPY_CURRENT_VOLUME="$AGENT_STATE_VOLUME_NAME"
+  COPY_CURRENT_VOLUME="$ACTIVE_AGENT_STATE_VOLUME_NAME"
   COPY_CURRENT_STATE='unknown'
   docker volume inspect "$COPY_CURRENT_VOLUME" >/dev/null 2>&1
 }
@@ -2456,7 +2444,7 @@ copy_agent_state() {
   copy_tty_args=(-i)
   [[ -t 0 ]] && copy_tty_args+=(-t)
   docker run --rm "${copy_tty_args[@]}" --user 0:0 \
-    -v "$STACK_ROOT/bin/pi-state-copy:/usr/local/bin/pi-state-copy:ro" \
+    -v "$ROOT/bin/pi-state-copy:/usr/local/bin/pi-state-copy:ro" \
     -v "$source_volume:/state-source:ro" \
     -v "$target_volume:/state-target" \
     ${session_mounts[@]+"${session_mounts[@]}"} \
@@ -2472,7 +2460,7 @@ if [[ "$COPY_COMMAND" == true ]]; then
 fi
 
 if [[ "$LIST_COMMAND" == true ]]; then
-  list_pi_stacks
+  list_stacks
   exit $?
 fi
 
@@ -2481,7 +2469,7 @@ if [[ "$SHELL_COMMAND" == true ]]; then
   exit $?
 fi
 
-if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "remove" ]]; then
+if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "remove" ]]; then
   if [[ "$REMOVE_AFTER_RUN" == true ]]; then
     printf 'pi: --rm cannot be combined with remove; remove targets the persistent service\n' >&2
     exit 2
@@ -2510,7 +2498,7 @@ if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "remove" ]]; then
     esac
   done
 
-  if ! resolve_exact_workspace_stack; then
+  if ! find_exact_workspace_stack; then
     [[ "$REMOVE_VOLUMES" == true ]] || fail "no stack found for workspace: $WORKSPACE"
     remove_orphaned_workspace_volumes
     exit $?
@@ -2528,7 +2516,7 @@ if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "remove" ]]; then
     fi
   else
     run_compose down
-    if state_volume_exists "$EXTRA_AGENT_STATE_VOLUME_NAME"; then
+    if volume_exists "$EXTRA_AGENT_STATE_VOLUME_NAME"; then
       printf 'pi: warning: state volumes are kept, including the extra state volume %s; use `pi remove --all` to remove them\n' \
         "$EXTRA_AGENT_STATE_VOLUME_NAME" >&2
     fi
@@ -2536,13 +2524,13 @@ if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "remove" ]]; then
   exit $?
 fi
 
-if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "stop" ]]; then
-  resolve_exact_workspace_stack || fail "no stack found for workspace: $WORKSPACE"
+if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "stop" ]]; then
+  resolve_exact_workspace_stack
   run_compose stop
   exit $?
 fi
 
-if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "update" ]]; then
+if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "update" ]]; then
   if [[ "$REMOVE_AFTER_RUN" == true ]]; then
     printf 'pi: --rm cannot be combined with update; updates require the persistent service\n' >&2
     exit 2

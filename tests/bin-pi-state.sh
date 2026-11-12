@@ -309,14 +309,14 @@ assert_eq "$(seed_value)" "$FIRST" 'seed after answering y'
 
 # Launching an already-initialized workspace while the pointer is missing, or
 # names a volume that is gone, never silently makes it the seed: the pointer
-# stays unset so the next new workspace gets the confirmation.
+# is deleted and stays missing so the next new workspace gets the confirmation.
 for stale_pointer in '' pi-agents-ws-gone_pi-agent-state; do
   restore lineage
   rm -f -- "$SEED_FILE"
   [[ -z $stale_pointer ]] || set_seed "$stale_pointer"
   run_pi "$WS_F" --version
   assert_status 0
-  [[ -z $(seed_value) ]] || fail "initialized workspace became the seed: $(seed_value)"
+  [[ ! -e $SEED_FILE ]] || fail "initialized workspace became the seed: $(seed_value)"
   assert_output_lacks 'seed pointer was not found'
 done
 
