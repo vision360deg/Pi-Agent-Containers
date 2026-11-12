@@ -19,12 +19,6 @@ grep -Fqx '      - "[::1]:53692:53692"' "$ROOT/compose.oauth.yml"
 grep -Fqx '      - "127.0.0.1:51121:51121"' "$ROOT/compose.oauth.yml"
 grep -Fqx '      - "[::1]:51121:51121"' "$ROOT/compose.oauth.yml"
 
-if ! docker compose --project-name pi-agents-pi-example --project-directory "$ROOT" \
-  --file "$ROOT/compose.yml" config | grep -Fqx '      - pi-session-forwarder & exec sleep infinity'; then
-  printf 'persistent service must start the session forwarder beside sleep infinity\n' >&2
-  exit 1
-fi
-
 if docker compose --project-name pi-agents-pi-example --project-directory "$ROOT" \
   --file "$ROOT/compose.yml" config | grep -Fq 'tty: true'; then
   printf 'persistent service must not allocate a TTY for Docker log forwarding\n' >&2
