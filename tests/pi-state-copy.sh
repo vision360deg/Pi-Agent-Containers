@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
+# bin/pi-state-copy: copying auth, sessions, and extensions between agent-state volumes.
 set -euo pipefail
 
-ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.bash"
 
 SOURCE="$TMP_DIR/source"
 TARGET="$TMP_DIR/target"
@@ -68,8 +67,7 @@ grep -Fqx -- 'duplicate source' "$TARGET/npm/node_modules/duplicate-package/inde
 printf '%s\n' '{"packages":["npm:source-package","npm:missing-package"]}' > "$SOURCE/settings.json"
 run_copy --extensions --all --override
 if jq -e '.packages | index("npm:missing-package")' "$TARGET/settings.json" >/dev/null; then
-  printf 'stale extension was copied into destination settings\n' >&2
-  exit 1
+  fail 'stale extension was copied into destination settings'
 fi
 
 # Make a directory impossible to rename into a backup: macOS honours the
@@ -86,8 +84,7 @@ snapshot_target() {
 }
 assert_no_copy_leftovers() {
   if find "$TARGET" -name '.pi-state-copy*' -print | grep -q .; then
-    printf 'copy left staging, publication, or backup entries behind\n' >&2
-    exit 1
+    fail 'copy left staging, publication, or backup entries behind'
   fi
 }
 
@@ -101,7 +98,7 @@ status=$?
 set -e
 [[ $status -eq 3 ]] || { printf 'cancel exited %s, expected 3\n' "$status" >&2; exit 1; }
 snapshot_target "$TMP_DIR/after-cancel"
-cmp -s "$TMP_DIR/before-cancel" "$TMP_DIR/after-cancel" || { printf 'cancelled copy changed the target\n' >&2; exit 1; }
+cmp -s "$TMP_DIR/before-cancel" "$TMP_DIR/after-cancel" || fail 'cancelled copy changed the target'
 assert_no_copy_leftovers
 rm -f "$SOURCE/sessions/a-cancel.jsonl"
 
@@ -116,8 +113,7 @@ if [[ $(id -u) -ne 0 ]]; then
   lock_directory "$TARGET/npm/node_modules/source-package"
   if run_copy --all --override 2>"$TMP_DIR/rollback.err"; then
     unlock_directory "$TARGET/npm/node_modules/source-package"
-    printf 'copy with an unpublishable item unexpectedly succeeded\n' >&2
-    exit 1
+    fail 'copy with an unpublishable item unexpectedly succeeded'
   fi
   unlock_directory "$TARGET/npm/node_modules/source-package"
   grep -Fq 'restoring the previous destination items' "$TMP_DIR/rollback.err"
@@ -137,8 +133,7 @@ printf 'outside\n' > "$TMP_DIR/outside"
 printf '%s\n' '{"session":"linked"}' > "$SOURCE/sessions/linked.jsonl"
 ln -s "$TMP_DIR/outside" "$TARGET/sessions/linked.jsonl"
 if run_copy --session linked.jsonl --override 2>"$TMP_DIR/symlink.err"; then
-  printf 'copy through a target symlink unexpectedly succeeded\n' >&2
-  exit 1
+  fail 'copy through a target symlink unexpectedly succeeded'
 fi
 grep -Fq 'refusing symlinked state path' "$TMP_DIR/symlink.err"
 grep -Fqx 'outside' "$TMP_DIR/outside"
@@ -149,15 +144,13 @@ LINKED_SOURCE="$TMP_DIR/linked-source"
 mkdir -p "$LINKED_SOURCE"
 ln -s "$SOURCE/auth.json" "$LINKED_SOURCE/auth.json"
 if bash "$ROOT/bin/pi-state-copy" --source "$LINKED_SOURCE" --target "$TARGET" --auth --all 2>"$TMP_DIR/symlink.err"; then
-  printf 'copy from a source symlink unexpectedly succeeded\n' >&2
-  exit 1
+  fail 'copy from a source symlink unexpectedly succeeded'
 fi
 grep -Fq 'refusing symlinked state path' "$TMP_DIR/symlink.err"
 
 # Source and target must not overlap.
 if bash "$ROOT/bin/pi-state-copy" --source "$TARGET" --target "$TARGET/sessions" --all 2>"$TMP_DIR/overlap.err"; then
-  printf 'overlapping source and target unexpectedly succeeded\n' >&2
-  exit 1
+  fail 'overlapping source and target unexpectedly succeeded'
 fi
 grep -Fq 'non-overlapping' "$TMP_DIR/overlap.err"
 assert_no_copy_leftovers
@@ -166,8 +159,7 @@ assert_no_copy_leftovers
 cp "$TARGET/auth.json" "$TMP_DIR/auth-before.json"
 printf '%s\n' '{not-json' > "$SOURCE/auth.json"
 if run_copy --auth --all; then
-  printf 'malformed source auth unexpectedly succeeded\n' >&2
-  exit 1
+  fail 'malformed source auth unexpectedly succeeded'
 fi
 cmp -s "$TMP_DIR/auth-before.json" "$TARGET/auth.json"
 
@@ -175,4 +167,4 @@ cmp -s "$TMP_DIR/auth-before.json" "$TARGET/auth.json"
 grep -Fqx -- 'source package' "$SOURCE/npm/node_modules/source-package/index.js"
 grep -Fqx -- '{"session":"keep","value":"source"}' "$SOURCE/sessions/keep.jsonl"
 
-printf 'pi state-copy helper tests passed\n'
+pass

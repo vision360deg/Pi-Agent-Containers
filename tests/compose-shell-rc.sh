@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
+# Compose files: the host shell, rc mount, and launcher wiring in the image and services.
 set -euo pipefail
 
-ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.bash"
 
 grep -Eq '^[[:space:]]+zsh \\$' "$ROOT/Dockerfile" || fail 'Dockerfile must install zsh'
 grep -Fqx 'COPY bin/pi-shell-launch /usr/local/bin/pi-shell-launch' "$ROOT/Dockerfile" || fail 'Dockerfile must copy the launcher'
@@ -14,4 +14,4 @@ grep -Fqx '      PI_NO_RC_CONFIG: ${PI_NO_RC_CONFIG:-0}' "$ROOT/compose.yml" || 
 if grep -Fq 'PI_HOST_RC_SOURCE' "$ROOT/compose.yml"; then fail 'base Compose must not mount the generated rc'; fi
 grep -Fqx '      - ${PI_HOST_RC_SOURCE:?PI_HOST_RC_SOURCE is required when rc loading is enabled}:/tmp/pi-host-shellrc:ro' "$ROOT/compose.shell-rc.yml" || fail 'rc Compose override must mount the generated rc read-only'
 
-printf 'compose shell tests passed\n'
+pass

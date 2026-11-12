@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
+# bin/pi-session-forwarder: streaming session logs to the container output without leaking processes.
 set -euo pipefail
 
-ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP_DIR="$(mktemp -d)"
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.bash"
 cleanup() {
   if [[ -n "${FORWARDER_PID:-}" ]]; then
     kill "$FORWARDER_PID" 2>/dev/null || true
@@ -77,16 +77,14 @@ wait_for_line() {
 wait_for_line '{"session":"new","event":"start"}'
 
 if grep -Fq -- '"session":"old"' "$OUTPUT_LOG"; then
-  printf 'old session was replayed into the Docker log\n' >&2
-  exit 1
+  fail 'old session was replayed into the Docker log'
 fi
 
 printf '%s\n' '{"session":"old","event":"new_append"}' >> "$SESSION_DIR/old.jsonl"
 wait_for_line '{"session":"old","event":"new_append"}'
 
 if grep -Fq -- '{"session":"old","event":"history"}' "$OUTPUT_LOG"; then
-  printf 'existing session history was replayed into the Docker log\n' >&2
-  exit 1
+  fail 'existing session history was replayed into the Docker log'
 fi
 
 # Termination exits cleanly and leaves no tail, formatter, or runtime
@@ -111,8 +109,7 @@ if [[ -n "${survivors// /}" ]]; then
   exit 1
 fi
 if [[ -n "$(/usr/bin/find "$TMP_DIR/tmp" -mindepth 1 -maxdepth 1)" ]]; then
-  printf 'forwarder runtime directory was not removed\n' >&2
-  exit 1
+  fail 'forwarder runtime directory was not removed'
 fi
 
 # A stream that dies is fatal: restarting it from a stale offset could
@@ -128,14 +125,12 @@ for attempt in {1..40}; do
   sleep 0.05
 done
 if kill -0 "$FORWARDER_PID" 2>/dev/null; then
-  printf 'forwarder kept running after a session stream died\n' >&2
-  exit 1
+  fail 'forwarder kept running after a session stream died'
 fi
 if wait "$FORWARDER_PID"; then status=0; else status=$?; fi
 FORWARDER_PID=''
 if (( status == 0 )); then
-  printf 'a dead session stream must make the forwarder fail\n' >&2
-  exit 1
+  fail 'a dead session stream must make the forwarder fail'
 fi
 grep -Fq -- 'session log stream stopped' "$OUTPUT_LOG"
 survivors="$(live_pids $(cat "$FORMATTER_PIDS")) $(session_tail_pids)"
@@ -145,4 +140,4 @@ if [[ -n "${survivors// /}" ]]; then
   exit 1
 fi
 
-printf 'pi session forwarder tests passed\n'
+pass

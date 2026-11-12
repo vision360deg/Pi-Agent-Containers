@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
+# bin/pi-session-log: running Pi under a PTY and recording its session log.
 set -euo pipefail
 
-ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.bash"
 
 FAKE_BIN="$TMP_DIR/bin"
 INVOCATION_LOG="$TMP_DIR/pi-invocation.log"
@@ -14,8 +13,7 @@ cat > "$FAKE_BIN/script" <<'FAKE_SCRIPT'
 set -euo pipefail
 
 if [[ "$$" -ne "${PI_SESSION_LOG_PID:-0}" ]]; then
-  printf 'script is not the foreground helper process\n' >&2
-  exit 1
+  fail 'script is not the foreground helper process'
 fi
 
 command_string=''
@@ -36,8 +34,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       if [[ -n "$transcript_file" ]]; then
-        printf 'script: unexpected number of arguments\n' >&2
-        exit 1
+        fail 'script: unexpected number of arguments'
       fi
       transcript_file="$1"
       shift
@@ -46,14 +43,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -n "$log_out_file" && -n "$transcript_file" ]]; then
-  printf 'script: unexpected number of arguments\n' >&2
-  exit 1
+  fail 'script: unexpected number of arguments'
 fi
 
 printf '%s\n' "$log_out_file" > "$PI_SESSION_LOG_SCRIPT_LOG"
 if [[ -z "$log_out_file" && "$transcript_file" != /dev/null ]]; then
-  printf 'script transcript must be discarded instead of written to the workspace\n' >&2
-  exit 1
+  fail 'script transcript must be discarded instead of written to the workspace'
 fi
 
 # util-linux script runs the command through /bin/sh, which is dash in the
@@ -79,7 +74,6 @@ else
   TEST_SH=/bin/sh
 fi
 
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 STATUS=0
 run_log() {
@@ -110,4 +104,4 @@ expected=$'arg=it\'s two words\narg=$(touch /tmp/never)\narg=;\narg=\narg=first 
 FAKE_PI_STATUS=4 run_log
 [[ $STATUS == 4 ]] || fail "pi status must propagate, got $STATUS"
 
-printf 'pi session PTY tests passed\n'
+pass

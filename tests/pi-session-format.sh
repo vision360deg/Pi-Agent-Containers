@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
+# bin/pi-session-format: rendering Pi session JSONL as pretty, plain, and raw output.
 set -euo pipefail
 
-ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.bash"
 
 INPUT="$TMP_DIR/input.jsonl"
 PRETTY="$TMP_DIR/pretty.log"
@@ -35,8 +34,7 @@ grep -Fq -- 'MODEL' "$PRETTY"
 PI_SESSION_LOG_FORMAT=pretty PI_SESSION_LOG_COLOR=never \
   bash "$ROOT/bin/pi-session-format" < "$INPUT" > "$PLAIN"
 if grep -Fq -- $'\033[' "$PLAIN"; then
-  printf 'plain pretty output unexpectedly contains ANSI color codes\n' >&2
-  exit 1
+  fail 'plain pretty output unexpectedly contains ANSI color codes'
 fi
 
 PI_SESSION_LOG_FORMAT=raw \
@@ -56,4 +54,4 @@ if ! grep -Fq -- 'EVENT' <<< "$MALFORMED_OUTPUT" || ! grep -Fq -- 'custom' <<< "
   exit 1
 fi
 
-printf 'pi session formatter tests passed\n'
+pass
