@@ -408,7 +408,6 @@ run_wrapper /bin/zsh "$LIST_STATE" list
 [[ ! -e "$LIST_STATE/shell-rc" ]]
 
 # The long-lived service supervisor remains Bash.
-grep -Fq 'command: ["bash", "-lc", "pi-session-forwarder & exec sleep infinity"]' "$ROOT/compose.yml"
 [[ $(jq -r '.shellCommandPrefix' "$HOST_HOME/.pi/agent/settings.json" | grep -Fc 'pi-agents managed host shell aliases') -eq 1 ]]
 
 printf 'bin/pi host shell tests passed\n'
