@@ -485,7 +485,9 @@ Workspace:
   Workspace selection precedence is: --workspace PATH, then PI_WORKSPACE, then
   the directory from which pi is invoked.
 
-  Persistent containers are named pi-agents-pi-<workspace-basename>. If two
+  Persistent containers are named pi-agents-pi-<workspace-basename>. The
+  basename is lowercased and every character other than a-z, 0-9, _ and - is
+  replaced with -, so ~/src/my.project becomes pi-agents-pi-my-project. If two
   different workspaces have the same basename, pi prompts before expanding
   the names to pi-agents-pi-<first-differing-path-components>-<path-hash>.
   Every expanded container name and Compose project is checked before the
@@ -941,9 +943,11 @@ if [[ "$LIST_COMMAND" != true ]]; then
   fi
 fi
 
+# Compose project names must match [a-z0-9][a-z0-9_-]*, so every other
+# character, including dots, becomes a hyphen.
 sanitize_slug() {
   local value="$1"
-  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9_.-]/-/g' -e 's/^[^a-z0-9]*//' -e 's/[^a-z0-9]*$//' -e 's/-\{2,\}/-/g')"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9_-]/-/g' -e 's/^[^a-z0-9]*//' -e 's/[^a-z0-9]*$//' -e 's/-\{2,\}/-/g')"
   if [[ -z "$value" ]]; then
     value="workspace"
   fi

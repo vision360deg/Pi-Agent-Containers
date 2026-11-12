@@ -273,6 +273,7 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'The session volume remains the'* ]]
 [[ "$DETAILED_HELP" == *'durable JSONL source.'* ]]
 [[ "$DETAILED_HELP" == *'Wrapper-managed package and model'* ]]
+[[ "$DETAILED_HELP" == *'so ~/src/my.project becomes pi-agents-pi-my-project.'* ]]
 [[ "$DETAILED_HELP" == *'update output is mirrored there too.'* ]]
 [[ "$DETAILED_HELP" == *'PI_SESSION_LOG_FORMAT=raw'* ]]
 [[ "$DETAILED_HELP" == *'PI_SESSION_LOG_COLOR=never'* ]]

@@ -134,6 +134,11 @@ Persistent mode is the default. It keeps the container and named volumes so a
 later `./bin/pi` can reconnect to the same workspace. `--rm` is the exception:
 it uses a temporary Compose container and removes it when Pi exits.
 
+Each workspace's Compose project and persistent container are named
+`pi-agents-pi-<workspace-basename>`. The basename is lowercased and every
+character other than `a-z`, `0-9`, `_` and `-` becomes `-`, as Compose project
+names require, so `~/src/my.project` runs as `pi-agents-pi-my-project`.
+
 `--replace` force-recreates the current workspace container. If another
 workspace has the same basename, `pi` prompts before renaming the existing
 container to `pi-agents-pi-<first-differing-path-components>-<path-hash>` and

@@ -122,6 +122,16 @@ if [[ "${1:-}" == "stop" || "${1:-}" == "rm" ]]; then
 fi
 
 if [[ "${1:-}" == "compose" ]]; then
+  # Compose rejects project names outside [a-z0-9][a-z0-9_-]*.
+  project_arguments=("$@")
+  for index in "${!project_arguments[@]}"; do
+    [[ "${project_arguments[$index]}" == --project-name ]] || continue
+    project="${project_arguments[$((index + 1))]}"
+    if ! [[ "$project" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+      printf 'invalid project name "%s"\n' "$project" >&2
+      exit 1
+    fi
+  done
   printf 'PI_WORKSPACE=%s\nPI_WORKSPACE_BASENAME=%s\nPI_CONTAINER_NAME=%s\nPI_WORKSPACE_PROJECT=%s\nPI_AGENT_STATE_VOLUME_NAME=%s\nPI_SESSION_STATE_VOLUME_NAME=%s\nPI_BROWSER_STATE_VOLUME_NAME=%s\n' \
     "${PI_WORKSPACE-}" "${PI_WORKSPACE_BASENAME-}" "${PI_CONTAINER_NAME-}" \
     "${PI_WORKSPACE_PROJECT-}" "${PI_AGENT_STATE_VOLUME_NAME-}" \
@@ -192,6 +202,15 @@ grep -Eq '^PI_AGENT_STATE_VOLUME_NAME=pi-agents-ws-[a-z0-9]+_pi-agent-state$' "$
 grep -Eq '^PI_SESSION_STATE_VOLUME_NAME=pi-agents-ws-[a-z0-9]+_pi-sessions$' "$DOCKER_LOG"
 grep -Eq '^PI_BROWSER_STATE_VOLUME_NAME=pi-agents-ws-[a-z0-9]+_agent-browser-state$' "$DOCKER_LOG"
 assert_log_has "PI_WORKSPACE=$PATH_1"
+
+# Compose project names cannot contain dots, so a dotted basename is mapped
+# to hyphens and the launch proceeds.
+mkdir -p "$HOME_ROOT/src/my.project"
+DOTTED="$(cd -P -- "$HOME_ROOT/src/my.project" && pwd)"
+run_wrapper "$DOTTED"
+assert_log_has '--project-name pi-agents-pi-my-project '
+assert_log_has 'PI_CONTAINER_NAME=pi-agents-pi-my-project'
+assert_log_has 'up --detach pi'
 
 assert_output_has() {
   if ! grep -Fq -- "$1" "$OUTPUT_LOG"; then
