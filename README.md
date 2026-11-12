@@ -346,8 +346,10 @@ export PI_AGENT_CONTAINERS_CONFIG_PATH="$HOME/.config/pi-agent-containers"
 ```
 
 If the pointer is missing but managed state volumes exist, the wrapper proposes
-the oldest state as the seed and asks for confirmation. A pointer naming an
-extra state volume is discarded the same way. Removing the current seed with
+the oldest state as the seed and asks for confirmation before initializing a
+new workspace. A pointer naming an extra state volume is discarded the same
+way. Launching an already-initialized workspace never fills a missing pointer
+on its own; only `--seed` does. Removing the current seed with
 `./bin/pi remove --all` reassigns the pointer to the oldest remaining normal
 state, if one exists.
 

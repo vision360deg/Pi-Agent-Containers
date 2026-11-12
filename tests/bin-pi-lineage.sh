@@ -300,6 +300,35 @@ RECOVERED_VOLUME="$(target_volume)"
 assert_source "$FIRST_VOLUME"
 [[ "$(cat "$RECOVERY_REGISTRY/seed")" == "$FIRST_VOLUME" ]]
 
+# Launching an already-initialized workspace while the pointer is missing, or
+# names a volume that is gone, never silently makes it the seed: the pointer
+# stays unset so the next new workspace gets the confirmation.
+UNSET_REGISTRY="$TMP_DIR/unset-registry"
+mkdir -p "$UNSET_REGISTRY"
+FAKE_TARGET_VOLUME_NAME="$SIXTH_VOLUME"
+FAKE_TARGET_VOLUME_EXISTS=true
+FAKE_STATE_MARKER=complete
+for stale_pointer in '' pi-agents-ws-gone_pi-agent-state; do
+  rm -f "$UNSET_REGISTRY/seed"
+  [[ -z "$stale_pointer" ]] || printf '%s\n' "$stale_pointer" > "$UNSET_REGISTRY/seed"
+  run_wrapper_with_registry "$UNSET_REGISTRY" "$WORKSPACE_F" < /dev/null
+  if [[ -s "$UNSET_REGISTRY/seed" ]]; then
+    printf 'initialized workspace became the seed: %s\n' "$(cat "$UNSET_REGISTRY/seed")" >&2
+    exit 1
+  fi
+  if grep -Fq -- 'seed pointer was not found' "$OUTPUT_LOG"; then
+    printf 'initialized workspace prompted for a seed\n' >&2
+    exit 1
+  fi
+done
+
+# --seed still promotes it when the pointer is missing.
+rm -f "$UNSET_REGISTRY/seed"
+run_wrapper_with_registry "$UNSET_REGISTRY" "$WORKSPACE_F" --seed < /dev/null
+[[ "$(cat "$UNSET_REGISTRY/seed")" == "$SIXTH_VOLUME" ]]
+FAKE_STATE_MARKER=none
+FAKE_TARGET_VOLUME_EXISTS=false
+
 # Running a workspace on its extra volume never records it as the seed.
 EMPTY_REGISTRY="$TMP_DIR/empty-registry"
 mkdir -p "$EMPTY_REGISTRY"

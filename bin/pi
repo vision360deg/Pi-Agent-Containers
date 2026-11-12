@@ -517,7 +517,9 @@ Workspace:
   Docker volume creation metadata identifies the latest-created state for
   --latest-state. Use --seed to promote a workspace to the seed. If the seed
   pointer is missing while managed state volumes exist, pi warns, proposes the
-  oldest managed state volume as the seed, and asks for confirmation before continuing.
+  oldest managed state volume as the seed, and asks for confirmation before
+  initializing a new workspace. Launching an already-initialized workspace
+  leaves a missing pointer unset unless --seed is given.
 
   Existing running and stopped containers are both considered during collision
   checks. Containers created before the com.pi-agents.managed label existed
@@ -1491,22 +1493,26 @@ warn_extra_state_volume() {
   fi
 }
 
+# The pointer is written for --seed, or when this is the first stack: no other
+# managed normal agent-state volume exists. With other volumes and no pointer,
+# it stays unset so the next new workspace asks which state to seed from
+# instead of an already-initialized workspace silently becoming the seed.
 record_state_lineage() {
-  local seed
+  local seed volume
 
   # The extra state volume never becomes the seed.
   [[ "$AGENT_STATE_VOLUME_NAME" != "$EXTRA_AGENT_STATE_VOLUME_NAME" ]] || return 0
-  bootstrap_seed_pointer
-  seed="$(read_state_pointer "$STATE_SEED_FILE")"
-
-  if [[ -z "$seed" ]]; then
+  if [[ "$SEED_STATE" == true ]]; then
     write_state_pointer "$STATE_SEED_FILE" "$AGENT_STATE_VOLUME_NAME"
     return 0
   fi
-
-  if [[ "$SEED_STATE" == true ]]; then
-    write_state_pointer "$STATE_SEED_FILE" "$AGENT_STATE_VOLUME_NAME"
-  fi
+  bootstrap_seed_pointer
+  seed="$(read_state_pointer "$STATE_SEED_FILE")"
+  [[ -z "$seed" ]] || return 0
+  while IFS= read -r volume; do
+    [[ "$volume" == "$AGENT_STATE_VOLUME_NAME" ]] || return 0
+  done < <(list_managed_state_volumes)
+  write_state_pointer "$STATE_SEED_FILE" "$AGENT_STATE_VOLUME_NAME"
 }
 
 repoint_seed_after_removal() {
