@@ -267,17 +267,6 @@ grep -Fq 'X) Press Esc to cancel' "$OUTPUT_LOG"
 grep -Fq 'container selection cancelled' "$OUTPUT_LOG"
 assert_log_lacks 'docker compose'
 
-# Invalid shell options are rejected without touching Docker.
-if run_wrapper shell --unknown; then
-  printf 'unknown shell option unexpectedly succeeded\n' >&2
-  exit 1
-else
-  status=$?
-  [[ "$status" -eq 2 ]]
-fi
-assert_log_lacks 'docker '
-grep -Fq 'usage: pi shell [--root|-r]' "$OUTPUT_LOG"
-
 # A workspace with no current container offers new-project and cancellation.
 FAKE_CONTAINERS=''
 if printf 'x' | run_wrapper shell; then

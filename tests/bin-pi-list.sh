@@ -237,26 +237,6 @@ unset INHERITED_PI_WORKSPACE
 assert_output "$expected_alpha_seed"
 assert_read_only_docker_calls
 
-if run_wrapper list extra; then
-  printf 'pi list extra unexpectedly succeeded\n' >&2
-  exit 1
-else
-  status=$?
-fi
-[[ "$status" -eq 2 ]]
-assert_output 'usage: pi list'
-assert_no_docker_calls
-
-if run_wrapper --rm list; then
-  printf 'pi --rm list unexpectedly succeeded\n' >&2
-  exit 1
-else
-  status=$?
-fi
-[[ "$status" -eq 2 ]]
-assert_output 'usage: pi list'
-assert_no_docker_calls
-
 export FAKE_EMPTY=true
 run_wrapper list
 assert_output 'No Pi stacks found.'

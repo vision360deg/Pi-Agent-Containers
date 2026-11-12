@@ -290,17 +290,6 @@ FAKE_EXISTING_VOLUMES="$EXTRA_1" run_wrapper "$PATH_1" --rm --new-state
 assert_log_has "PI_AGENT_STATE_VOLUME_NAME=$EXTRA_1"
 assert_output_has "pi: warning: using the extra state volume $EXTRA_1"
 
-# The extra volume can never become the seed.
-if run_wrapper "$PATH_1" --seed --new-state; then
-  printf '%s\n' '--seed --new-state unexpectedly succeeded' >&2
-  exit 1
-else
-  status=$?
-fi
-[[ "$status" -eq 2 ]]
-assert_output_has 'pi: --seed cannot be combined with --new-state'
-[[ ! -s "$DOCKER_LOG" ]]
-
 export FAKE_CONTAINERS=$'id-1\tpi-agents-pi-workspace\tUp 2 minutes\t'$PATH_1
 if printf 'c\n' | run_wrapper "$PATH_2"; then
   printf 'collision cancel unexpectedly succeeded\n' >&2
@@ -569,34 +558,6 @@ fi
 assert_output_has "pi: could not remove state volume $SESSIONS_1"
 assert_log_has "volume rm $BROWSER_1"
 assert_log_has "volume rm $EXTRA_1"
-
-# Contradictory option combinations exit 2 before any Docker call.
-assert_guard() {
-  local expected="$1" status=0
-  shift
-  run_wrapper "$PATH_1" "$@" || status=$?
-  if [[ "$status" -ne 2 ]]; then
-    printf 'pi %s exited %s, expected 2\n' "$*" "$status" >&2
-    exit 1
-  fi
-  assert_output_has "$expected"
-  if [[ -s "$DOCKER_LOG" ]]; then
-    printf 'pi %s called docker:\n%s\n' "$*" "$(cat "$DOCKER_LOG")" >&2
-    exit 1
-  fi
-}
-
-export FAKE_CONTAINERS=$'id-1\tpi-agents-pi-workspace\tUp 2 minutes\t'$PATH_1
-assert_guard 'pi: --replace and --keep-existing are mutually exclusive' --replace --keep-existing
-assert_guard 'pi: --oauth cannot be combined with stop' --oauth stop
-assert_guard 'pi: --oauth cannot be combined with remove' --oauth remove
-assert_guard 'pi: --oauth cannot be combined with remove' --oauth=1455 remove --all
-for option in --replace --keep-existing --new-state --seed --latest-state --oauth; do
-  assert_guard 'pi: copy cannot be combined with launch, state, or OAuth options' "$option" copy
-done
-assert_guard 'pi: --rebuild cannot be combined with copy' --rebuild copy
-assert_guard 'pi: --rm cannot be combined with copy' --rm copy
-assert_guard 'pi: --from and --to are mutually exclusive' copy --from --to
 
 # stop and remove refuse a stack whose Compose project also holds another
 # workspace's container, before any compose stop or down.

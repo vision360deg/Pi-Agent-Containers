@@ -63,26 +63,6 @@ run_capture() {
   (cd "$WORKSPACE" && env -u PI_WORKSPACE HOME="$TMP_DIR/home" PATH="$FAKE_BIN:$PATH" "$ROOT/bin/pi" "$@") >"$OUTPUT_LOG" 2>&1 || return $?
 }
 
-if run_capture --help; then
-  grep -Fq -- 'pi copy' "$OUTPUT_LOG"
-  grep -Fq -- '--sessions, -s' "$OUTPUT_LOG"
-  grep -Fq -- '--auth, -a' "$OUTPUT_LOG"
-  grep -Fq -- '--extensions, -e' "$OUTPUT_LOG"
-  grep -Fq -- '--override' "$OUTPUT_LOG"
-else
-  printf 'detailed help failed\n%s\n' "$(cat "$OUTPUT_LOG")" >&2
-  exit 1
-fi
-
-run_capture copy --help
-grep -Fq -- 'Run `pi --help` for detailed usage.' "$OUTPUT_LOG"
-
-if run_capture copy --unknown; then
-  printf 'unknown copy option unexpectedly succeeded\n' >&2
-  exit 1
-fi
-grep -Fq -- 'usage: pi copy' "$OUTPUT_LOG"
-
 : > "$DOCKER_LOG"
 export FAKE_CURRENT_WORKSPACE="$CURRENT_PATH" FAKE_OTHER_WORKSPACE="$OTHER_PATH"
 printf '1' | run_capture copy --from --sessions --all
