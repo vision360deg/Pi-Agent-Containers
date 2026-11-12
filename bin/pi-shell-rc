@@ -142,13 +142,21 @@ strip_target() {
 }
 
 canonical_file() {
-  local path=$1 link directory base
+  local path=$1 link directory base link_depth=0 max_symlink_depth=64
+  local -A visited_links=()
   while [[ -L $path ]]; do
+    directory=$(cd -P -- "$(dirname "$path")" 2>/dev/null && pwd -P) || return 1
+    base=$(basename "$path")
+    path=$directory/$base
+    [[ ! ${visited_links[$path]+yes} ]] || return 1
+    visited_links[$path]=1
+    link_depth=$((link_depth + 1))
+    (( link_depth <= max_symlink_depth )) || return 1
     link=$(readlink "$path") || return 1
     if [[ $link = /* ]]; then
       path=$link
     else
-      path=$(dirname "$path")/$link
+      path=$directory/$link
     fi
   done
   directory=$(cd -P -- "$(dirname "$path")" 2>/dev/null && pwd -P) || return 1

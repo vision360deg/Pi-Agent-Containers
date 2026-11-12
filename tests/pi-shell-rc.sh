@@ -495,4 +495,19 @@ elif [[ $? -ne 2 ]]; then
   fail "unsupported shell returned unexpected status"
 fi
 
+timeout_command=()
+if command -v timeout >/dev/null 2>&1; then timeout_command=(timeout 20); elif command -v gtimeout >/dev/null 2>&1; then timeout_command=(gtimeout 20); fi
+LOOP_HOME=$TMP/loop-home
+mkdir -p "$LOOP_HOME"
+printf 'export LOOP_BEFORE=1\nsource ~/.loop-a\nexport LOOP_AFTER=1\n' > "$LOOP_HOME/.bashrc"
+ln -s .loop-b "$LOOP_HOME/.loop-a"
+ln -s .loop-a "$LOOP_HOME/.loop-b"
+LOOP_STATUS=0
+"${timeout_command[@]}" bash "$RESOLVER" --shell bash --home "$LOOP_HOME" --output "$TMP/loop.rc" 2>"$TMP/loop.err" || LOOP_STATUS=$?
+[[ $LOOP_STATUS -ne 124 ]] || fail "symlink loops must not hang the resolver"
+[[ $LOOP_STATUS -eq 0 ]] || fail "symlink loop resolution returned $LOOP_STATUS"
+assert_contains "$TMP/loop.rc" 'source ~/.loop-a'
+assert_once "$TMP/loop.rc" 'export LOOP_AFTER=1'
+assert_once "$TMP/loop.err" 'unresolved source'
+
 printf 'PASS: pi-shell-rc\n'
