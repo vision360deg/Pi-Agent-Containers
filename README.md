@@ -387,10 +387,14 @@ export PI_OAUTH_CALLBACK_PORTS="7000,7001"
 ./bin/pi --oauth
 ```
 
-Only one running stack can reserve a given host port. Changing OAuth mappings
-can cause Compose to recreate the container; Pi's persisted state volumes keep
-authentication and settings intact. Run `./bin/pi` without `--oauth` afterward
-to reconcile the stack without host callback mappings.
+Only one running stack can reserve a given host port. Before starting, the
+wrapper checks each selected port with `lsof` (or `nc` when `lsof` is missing)
+and refuses one that something else already listens on. Ports the workspace's
+own running stack already publishes are reused; a `--rm` run cannot share them.
+Changing OAuth mappings can cause Compose to recreate the container; Pi's
+persisted state volumes keep authentication and settings intact. Run
+`./bin/pi` without `--oauth` afterward to reconcile the stack without host
+callback mappings.
 
 Some providers and extensions use dynamic or provider-specific callback flows.
 When no fixed port is available, use Pi's device-code or paste-redirect login

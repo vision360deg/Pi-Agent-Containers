@@ -90,6 +90,13 @@ unset PI_WORKSPACE
 FAKE_DOCKER
 chmod +x "$FAKE_BIN/docker"
 
+cat > "$FAKE_BIN/lsof" <<'FAKE_LSOF'
+#!/usr/bin/env bash
+# No OAuth callback port has a listener.
+exit 1
+FAKE_LSOF
+chmod +x "$FAKE_BIN/lsof"
+
 run_wrapper() {
   : > "$DOCKER_LOG"
   (
@@ -294,6 +301,7 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'pi --host - --help'* ]]
 [[ "$DETAILED_HELP" == *'--host accepts only --workspace'* ]]
 [[ "$DETAILED_HELP" == *'--new-state cannot be combined with stop, remove, --seed, or --latest-state.'* ]]
+[[ "$DETAILED_HELP" == *'Before starting, pi refuses a selected port that something else already'* ]]
 
 run_wrapper_capture -h
 assert_output "$DETAILED_HELP"
@@ -327,7 +335,7 @@ Options:
   --seed            Promote this workspace's state to the default seed state.
   --latest-state    Copy the newest Docker-managed state when initializing.
   --oauth [PORTS...] Publish known callback ports 1455/53692/51121; add comma- or
-                     space-separated custom ports.
+                     space-separated custom ports. Ports already in use are refused.
   --bash, --zsh      Force Bash or zsh instead of detecting SHELL.
   --no-rc-config     Start the selected shell without host startup files or an rc mount.
 

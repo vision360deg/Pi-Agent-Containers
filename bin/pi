@@ -137,6 +137,37 @@ create_oauth_override() {
   trap '[[ -z "${OAUTH_OVERRIDE_FILE:-}" || ! -e "$OAUTH_OVERRIDE_FILE" ]] || rm -f -- "$OAUTH_OVERRIDE_FILE"' EXIT
 }
 
+# Whether nothing on the host listens on a TCP port: lsof first, then nc.
+oauth_port_is_available() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    ! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return
+  fi
+  if command -v nc >/dev/null 2>&1; then
+    ! nc -z 127.0.0.1 "$port" >/dev/null 2>&1 && ! nc -z ::1 "$port" >/dev/null 2>&1
+    return
+  fi
+  fail 'cannot check OAuth callback ports: install lsof or nc'
+}
+
+# Refuses OAuth callback ports that something already listens on. Ports this
+# workspace's own stack already publishes stay usable, so a repeated `pi --oauth`
+# reuses them; a disposable --rm run cannot share them.
+validate_oauth_ports() {
+  local port owned=$'\n'
+  [[ "$OAUTH_CALLBACK" == true ]] || return 0
+  if [[ "$REMOVE_AFTER_RUN" != true ]] && docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    owned+="$(docker inspect --format '{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{printf "%s:%s:%s\n" .HostIp .HostPort $port}}{{end}}{{end}}' "$CONTAINER_NAME")" ||
+      fail 'could not inspect the OAuth callback ports of this workspace stack'
+    owned+=$'\n'
+  fi
+  for port in "${OAUTH_CALLBACK_PORTS[@]}"; do
+    [[ "$owned" != *$'\n'"127.0.0.1:$port:$port/tcp"$'\n'* && "$owned" != *$'\n'"::1:$port:$port/tcp"$'\n'* ]] || continue
+    oauth_port_is_available "$port" || fail "OAuth callback port is already in use: $port"
+  done
+}
+
 # These are wrapper options, so consume them before passing the remaining
 # arguments to Pi. Keeping them here also lets `pi --replace --help` take the
 # local brief-help path without starting Docker. Help invocations skip parsing
@@ -362,6 +393,9 @@ Options:
       comma- or space-separated list, for example --oauth 7000,7001 or
       --oauth 7000 7001. PI_OAUTH_CALLBACK_PORTS adds ports from the
       environment. Without this option, stacks do not publish host ports.
+      Before starting, pi refuses a selected port that something else already
+      listens on, checked with lsof or nc. Ports this workspace's running stack
+      already publishes are reused; a --rm run cannot share them.
 
 Commands:
   stop
@@ -610,7 +644,7 @@ Options:
   --seed            Promote this workspace's state to the default seed state.
   --latest-state    Copy the newest Docker-managed state when initializing.
   --oauth [PORTS...] Publish known callback ports 1455/53692/51121; add comma- or
-                     space-separated custom ports.
+                     space-separated custom ports. Ports already in use are refused.
   --bash, --zsh      Force Bash or zsh instead of detecting SHELL.
   --no-rc-config     Start the selected shell without host startup files or an rc mount.
 
@@ -2443,6 +2477,7 @@ if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "update" ]]; then
 
   prepare_host_shell_rc
   prepare_workspace_container
+  validate_oauth_ports
   prepare_state_lineage
   if [[ "${#UPDATE_ARGS[@]}" -eq 0 ]]; then
     run_compose build --pull --no-cache pi
@@ -2469,6 +2504,7 @@ fi
 
 if [[ "$REMOVE_AFTER_RUN" == true ]]; then
   resolve_workspace_project
+  validate_oauth_ports
   prepare_host_shell_rc
   ensure_helper_image
   prepare_state_lineage
@@ -2489,6 +2525,7 @@ fi
 
 prepare_host_shell_rc
 prepare_workspace_container
+validate_oauth_ports
 prepare_state_lineage
 
 # `docker compose logs` only captures the service's main process streams.
