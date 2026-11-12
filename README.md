@@ -320,7 +320,7 @@ normal agent-state volume is left untouched. Running without `--new-state`
 later recreates the container on the normal agent state.
 
 - The extra volume is created empty, marked initialized, and never seeded;
-  `--latest-state` has no effect with `--new-state`.
+  `--new-state --latest-state` is rejected.
 - It is never the seed or a seed candidate, never the `latest` volume, and
   never a `--latest-state` source. `--seed --new-state` is rejected.
 - New extra volumes are labelled `com.pi-agents.state-kind=agent-extra` with

@@ -569,8 +569,7 @@ Restrictions:
   shell accepts only -r/--root. When a current workspace container exists it
   reuses or starts it without creating Compose resources. Otherwise it offers
   0 to create/start the current workspace and X/Escape to cancel.
-  --new-state cannot be combined with stop, remove, or --seed; --latest-state
-  has no effect with it.
+  --new-state cannot be combined with stop, remove, --seed, or --latest-state.
   --latest-state only affects first initialization of a workspace and warns
   after that workspace already has initialized state. It selects the newest
   managed Docker state volume rather than a second pointer file.
@@ -607,6 +606,7 @@ Options:
   --keep-existing   Preserve an existing colliding workspace container.
   --workspace PATH  Use PATH as the workspace; it overrides PI_WORKSPACE.
   --new-state       Use a separate, empty extra agent-state volume; normal state is kept.
+                    Cannot be combined with --seed or --latest-state.
   --seed            Promote this workspace's state to the default seed state.
   --latest-state    Copy the newest Docker-managed state when initializing.
   --oauth [PORTS...] Publish known callback ports 1455/53692/51121; add comma- or
@@ -835,6 +835,11 @@ fi
 
 if [[ "$SEED_STATE" == true && "$NEW_STATE" == true ]]; then
   printf 'pi: --seed cannot be combined with --new-state; the extra state volume is never a seed\n' >&2
+  exit 2
+fi
+
+if [[ "$LATEST_STATE" == true && "$NEW_STATE" == true ]]; then
+  printf 'pi: --latest-state cannot be combined with --new-state; the extra state volume is never seeded\n' >&2
   exit 2
 fi
 
@@ -1304,9 +1309,6 @@ prepare_state_lineage() {
   # The extra state volume starts empty and is never seeded, so no seed
   # pointer or source logic runs; it is only marked initialized.
   if [[ "$NEW_STATE" == true ]]; then
-    if [[ "$LATEST_STATE" == true ]]; then
-      printf 'pi: warning: --latest-state has no effect with --new-state; the extra state volume is never seeded\n' >&2
-    fi
     if state_volume_exists "$AGENT_STATE_VOLUME_NAME"; then
       assert_agent_state_volume
       if state_initialization_status; then

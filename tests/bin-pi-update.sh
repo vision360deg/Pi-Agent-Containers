@@ -233,7 +233,6 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'The extra volume starts empty and is never seeded, never becomes'* ]]
 [[ "$DETAILED_HELP" == *'active-state says whether the container mounts the normal or extra agent'* ]]
 [[ "$DETAILED_HELP" == *'browser state volumes, including the extra state volume.'* ]]
-[[ "$DETAILED_HELP" == *'--new-state cannot be combined with stop, remove, or --seed'* ]]
 [[ "$DETAILED_HELP" == *'from an existing'* ]]
 [[ "$DETAILED_HELP" == *'normal workspace state volume'* ]]
 [[ "$DETAILED_HELP" == *'--seed'* ]]
@@ -294,6 +293,7 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'pi --host update'* ]]
 [[ "$DETAILED_HELP" == *'pi --host - --help'* ]]
 [[ "$DETAILED_HELP" == *'--host accepts only --workspace'* ]]
+[[ "$DETAILED_HELP" == *'--new-state cannot be combined with stop, remove, --seed, or --latest-state.'* ]]
 
 run_wrapper_capture -h
 assert_output "$DETAILED_HELP"
@@ -323,6 +323,7 @@ Options:
   --keep-existing   Preserve an existing colliding workspace container.
   --workspace PATH  Use PATH as the workspace; it overrides PI_WORKSPACE.
   --new-state       Use a separate, empty extra agent-state volume; normal state is kept.
+                    Cannot be combined with --seed or --latest-state.
   --seed            Promote this workspace's state to the default seed state.
   --latest-state    Copy the newest Docker-managed state when initializing.
   --oauth [PORTS...] Publish known callback ports 1455/53692/51121; add comma- or
@@ -412,6 +413,10 @@ assert_output "$BRIEF_USAGE"
 assert_log ""
 
 run_wrapper_capture --latest-state --help
+assert_output "$BRIEF_USAGE"
+assert_log ""
+
+run_wrapper_capture --new-state --latest-state --help
 assert_output "$BRIEF_USAGE"
 assert_log ""
 

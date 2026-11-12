@@ -187,15 +187,21 @@ grep -Fq -- 'state-initialization complete' "$DOCKER_LOG"
 FAKE_VOLUME_CREATED_ATS="$FAKE_VOLUME_CREATED_ATS
 $FOURTH_VOLUME|2026-08-04T12:00:00Z"
 
-# The extra volume is never seeded, even when --latest-state is also given.
+# The extra volume is never seeded, so --new-state --latest-state is refused
+# before anything runs.
 FAKE_VOLUMES="$FIRST_VOLUME
 $SECOND_VOLUME
 $THIRD_VOLUME
 $FOURTH_VOLUME"
-run_wrapper "$WORKSPACE_D" --new-state --latest-state
-[[ "$(target_volume)" == "$FOURTH_VOLUME" ]]
-assert_no_source_copy
-grep -Fq -- '--latest-state has no effect with --new-state' "$OUTPUT_LOG"
+if run_wrapper "$WORKSPACE_D" --new-state --latest-state; then
+  printf -- '--new-state --latest-state unexpectedly succeeded\n' >&2
+  exit 1
+elif [[ $? -ne 2 ]]; then
+  printf -- '--new-state --latest-state returned an unexpected status\n' >&2
+  exit 1
+fi
+grep -Fq -- 'pi: --latest-state cannot be combined with --new-state' "$OUTPUT_LOG"
+[[ ! -s "$DOCKER_LOG" ]]
 [[ "$(cat "$REGISTRY/seed")" == "$FIRST_VOLUME" ]]
 
 # The newest volume is the extra one, but --latest-state skips it.
