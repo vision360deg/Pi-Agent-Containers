@@ -14,271 +14,59 @@ while [[ -L "$SOURCE" ]]; do
 done
 
 ROOT="$(cd -P -- "$(dirname -- "$SOURCE")/.." && pwd)"
-WORKSPACE="${PI_WORKSPACE:-$PWD}"
-ORIGINAL_ARGUMENT_COUNT=$#
-HELP_REQUESTED=false
-HELP_SCAN_PASSTHROUGH=false
-for arg in "$@"; do
-  if [[ "$HELP_SCAN_PASSTHROUGH" == true ]]; then
-    continue
-  fi
-  if [[ "$arg" == "-" ]]; then
-    HELP_SCAN_PASSTHROUGH=true
-    continue
-  fi
-  if [[ "$arg" == "-h" || "$arg" == "--help" ]]; then
-    HELP_REQUESTED=true
-    break
-  fi
-done
+INVOCATION_DIRECTORY="$PWD"
 
-REMOVE_AFTER_RUN=false
-RUN_ON_HOST=false
-REPLACE_CONTAINER=false
-REBUILD_IMAGE=false
-KEEP_EXISTING=false
-NEW_STATE=false
-SEED_STATE=false
-LATEST_STATE=false
-OAUTH_CALLBACK=false
-WORKSPACE_OPTION=false
 FORCE_BASH=false
 FORCE_ZSH=false
 NO_RC_CONFIG=0
-SHELL_COMMAND=false
-SHELL_AS_ROOT=false
-SHELL_START_NEW_PROJECT=false
-COPY_COMMAND=false
-COPY_FROM=false
-COPY_TO=false
-COPY_SESSIONS=false
-COPY_AUTH=false
-COPY_EXTENSIONS=false
-COPY_ALL=false
-COPY_OVERRIDE=false
-PASSTHROUGH_MARKER=false
-WORKSPACE_MISSING=false
-OAUTH_CALLBACK_PORTS=(1455 53692 51121)
-OAUTH_EXTRA_PORTS=()
-OAUTH_OVERRIDE_FILE=""
-PI_BROWSER_EXTENSION_SOURCE="npm:pi-agent-browser-native"
-PI_NATIVE_INSTALLER_URL="https://pi.dev/install.sh"
+HOST_SHELL_NAME=""
+TEMPORARY_DIRECTORIES=()
 
-oauth_port_is_known() {
-  [[ "$1" == 1455 || "$1" == 53692 || "$1" == 51121 ]]
+cleanup_temporary_files() {
+  local directory
+  for directory in "${TEMPORARY_DIRECTORIES[@]}"; do
+    [[ ! -e "$directory" ]] || rm -rf -- "$directory"
+  done
 }
+trap cleanup_temporary_files EXIT
 
-oauth_append_port() {
-  local raw_port="$1"
-  local source="$2"
-  local port
-  local existing
-
-  if ! [[ "$raw_port" =~ ^[0-9]+$ ]]; then
-    printf 'pi: invalid OAuth callback port in %s: %s\n' "$source" "$raw_port" >&2
+select_host_shell() {
+  if [[ "$FORCE_BASH" == true && "$FORCE_ZSH" == true ]]; then
+    printf 'pi: --bash and --zsh are mutually exclusive\n' >&2
     return 2
   fi
-
-  port=$((10#$raw_port))
-  if (( port < 1 || port > 65535 )); then
-    printf 'pi: OAuth callback port must be between 1 and 65535 in %s: %s\n' "$source" "$raw_port" >&2
-    return 2
+  if [[ "$FORCE_BASH" == true ]]; then
+    HOST_SHELL_NAME=bash
+  elif [[ "$FORCE_ZSH" == true ]]; then
+    HOST_SHELL_NAME=zsh
+  else
+    HOST_SHELL_NAME="${SHELL:-/bin/bash}"
+    HOST_SHELL_NAME="${HOST_SHELL_NAME##*/}"
   fi
-
-  for existing in "${OAUTH_CALLBACK_PORTS[@]}"; do
-    if [[ "$existing" == "$port" ]]; then
-      return 0
-    fi
-  done
-
-  OAUTH_CALLBACK_PORTS+=("$port")
-  if ! oauth_port_is_known "$port"; then
-    OAUTH_EXTRA_PORTS+=("$port")
-  fi
+  case "$HOST_SHELL_NAME" in
+    bash|zsh) ;;
+    *)
+      printf 'pi: unsupported host shell: %s (supported: bash, zsh)\n' "$HOST_SHELL_NAME" >&2
+      return 2
+      ;;
+  esac
 }
 
-oauth_parse_port_list() {
-  local list="$1"
-  local source="$2"
-  local normalized
-  local token
-  local -a tokens=()
-
-  normalized="${list//$'\n'/ }"
-  normalized="${normalized//,/ }"
-  if [[ -z "${normalized//[[:space:]]/}" ]]; then
-    return 0
-  fi
-
-  read -r -a tokens <<< "$normalized"
-  for token in "${tokens[@]}"; do
-    oauth_append_port "$token" "$source" || return $?
-  done
+# Only flows that start a host-shell session need a supported shell.
+prepare_host_shell_rc() {
+  select_host_shell || return
+  [[ "$NO_RC_CONFIG" -eq 0 ]] || return 0
+  mkdir -p -- "$HOST_SHELL_RC_SOURCE"
+  "$ROOT/bin/pi-shell-rc" \
+    --shell "$HOST_SHELL_NAME" \
+    --home "$HOME" \
+    --output "$HOST_SHELL_RC_FILE"
 }
 
-oauth_cli_token_is_port_list() {
-  [[ "$1" =~ ^[0-9]+(,[0-9]+)*,?$ ]]
+fail() {
+  printf 'pi: %s\n' "$*" >&2
+  exit 2
 }
-
-create_oauth_override() {
-  local port
-
-  [[ "${#OAUTH_EXTRA_PORTS[@]}" -gt 0 ]] || return 0
-  OAUTH_OVERRIDE_FILE="$(mktemp "${TMPDIR:-/tmp}/pi-oauth.XXXXXX")"
-  {
-    printf 'services:\n'
-    printf '  pi:\n'
-    printf '    ports:\n'
-    for port in "${OAUTH_EXTRA_PORTS[@]}"; do
-      printf '      - "127.0.0.1:%s:%s"\n' "$port" "$port"
-      printf '      - "[::1]:%s:%s"\n' "$port" "$port"
-    done
-  } > "$OAUTH_OVERRIDE_FILE"
-  trap '[[ -z "${OAUTH_OVERRIDE_FILE:-}" || ! -e "$OAUTH_OVERRIDE_FILE" ]] || rm -f -- "$OAUTH_OVERRIDE_FILE"' EXIT
-}
-
-# Whether nothing on the host listens on a TCP port: lsof first, then nc.
-oauth_port_is_available() {
-  local port="$1"
-  if command -v lsof >/dev/null 2>&1; then
-    ! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
-    return
-  fi
-  if command -v nc >/dev/null 2>&1; then
-    ! nc -z 127.0.0.1 "$port" >/dev/null 2>&1 && ! nc -z ::1 "$port" >/dev/null 2>&1
-    return
-  fi
-  fail 'cannot check OAuth callback ports: install lsof or nc'
-}
-
-# Refuses OAuth callback ports that something already listens on. Ports this
-# workspace's own stack already publishes stay usable, so a repeated `pi --oauth`
-# reuses them; a disposable --rm run cannot share them.
-validate_oauth_ports() {
-  local port owned=$'\n'
-  [[ "$OAUTH_CALLBACK" == true ]] || return 0
-  if [[ "$REMOVE_AFTER_RUN" != true ]] && docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
-    owned+="$(docker inspect --format '{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{printf "%s:%s:%s\n" .HostIp .HostPort $port}}{{end}}{{end}}' "$CONTAINER_NAME")" ||
-      fail 'could not inspect the OAuth callback ports of this workspace stack'
-    owned+=$'\n'
-  fi
-  for port in "${OAUTH_CALLBACK_PORTS[@]}"; do
-    [[ "$owned" != *$'\n'"127.0.0.1:$port:$port/tcp"$'\n'* && "$owned" != *$'\n'"::1:$port:$port/tcp"$'\n'* ]] || continue
-    oauth_port_is_available "$port" || fail "OAuth callback port is already in use: $port"
-  done
-}
-
-# These are wrapper options, so consume them before passing the remaining
-# arguments to Pi. Keeping them here also lets `pi --replace --help` take the
-# local brief-help path without starting Docker. Help invocations skip parsing
-# entirely so even `pi --workspace --help` remains a local brief-help request.
-if [[ "$HELP_REQUESTED" == false ]]; then
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --rm)
-        REMOVE_AFTER_RUN=true
-        shift
-        ;;
-      --host)
-        RUN_ON_HOST=true
-        shift
-        ;;
-      --replace)
-        REPLACE_CONTAINER=true
-        shift
-        ;;
-      --rebuild)
-        REBUILD_IMAGE=true
-        shift
-        ;;
-      --keep-existing)
-        KEEP_EXISTING=true
-        shift
-        ;;
-      --new-state)
-        NEW_STATE=true
-        shift
-        ;;
-      --seed)
-        SEED_STATE=true
-        shift
-        ;;
-      --latest-state)
-        LATEST_STATE=true
-        shift
-        ;;
-      --bash)
-        FORCE_BASH=true
-        shift
-        ;;
-      --zsh)
-        FORCE_ZSH=true
-        shift
-        ;;
-      --no-rc-config)
-        NO_RC_CONFIG=1
-        shift
-        ;;
-      --oauth)
-        OAUTH_CALLBACK=true
-        shift
-        while [[ $# -gt 0 ]]; do
-          case "$1" in
-            --*)
-              break
-              ;;
-            *,*|[0-9]*)
-              if ! oauth_cli_token_is_port_list "$1"; then
-                printf 'pi: invalid OAuth callback port list: %s\n' "$1" >&2
-                exit 2
-              fi
-              oauth_parse_port_list "$1" '--oauth' || exit $?
-              shift
-              ;;
-            *)
-              break
-              ;;
-          esac
-        done
-        ;;
-      --oauth=*)
-        OAUTH_CALLBACK=true
-        oauth_value="${1#--oauth=}"
-        if [[ -n "$oauth_value" ]]; then
-          oauth_cli_token_is_port_list "$oauth_value" || {
-            printf 'pi: invalid OAuth callback port list: %s\n' "$oauth_value" >&2
-            exit 2
-          }
-          oauth_parse_port_list "$oauth_value" '--oauth' || exit $?
-        fi
-        shift
-        ;;
-      --workspace)
-        if [[ "$#" -lt 2 ]]; then
-          printf 'pi: --workspace requires a path\n' >&2
-          printf 'usage: pi [--workspace PATH] [PI_ARGS...]\n' >&2
-          exit 2
-        fi
-        WORKSPACE="$2"
-        WORKSPACE_OPTION=true
-        shift 2
-        ;;
-      --workspace=*)
-        WORKSPACE="${1#--workspace=}"
-        if [[ -z "$WORKSPACE" ]]; then
-          printf 'pi: --workspace requires a path\n' >&2
-          printf 'usage: pi [--workspace PATH] [PI_ARGS...]\n' >&2
-          exit 2
-        fi
-        WORKSPACE_OPTION=true
-        shift
-        ;;
-      *)
-        break
-        ;;
-    esac
-  done
-fi
 
 print_detailed_help() {
   cat <<'EOF'
@@ -696,6 +484,22 @@ Run `pi --help` for detailed usage.
 EOF
 }
 
+ORIGINAL_ARGUMENT_COUNT=$#
+HELP_REQUESTED=false
+HELP_SCAN_PASSTHROUGH=false
+for arg in "$@"; do
+  if [[ "$HELP_SCAN_PASSTHROUGH" == true ]]; then
+    continue
+  fi
+  if [[ "$arg" == "-" ]]; then
+    HELP_SCAN_PASSTHROUGH=true
+    continue
+  fi
+  if [[ "$arg" == "-h" || "$arg" == "--help" ]]; then
+    HELP_REQUESTED=true
+    break
+  fi
+done
 if [[ "$HELP_REQUESTED" == true ]]; then
   if [[ "$ORIGINAL_ARGUMENT_COUNT" -eq 1 ]]; then
     print_detailed_help
@@ -704,6 +508,243 @@ if [[ "$HELP_REQUESTED" == true ]]; then
   fi
   exit 0
 fi
+
+REMOVE_AFTER_RUN=false
+RUN_ON_HOST=false
+REPLACE_CONTAINER=false
+REBUILD_IMAGE=false
+KEEP_EXISTING=false
+NEW_STATE=false
+SEED_STATE=false
+LATEST_STATE=false
+OAUTH_CALLBACK=false
+WORKSPACE_OPTION=false
+PASSTHROUGH_MARKER=false
+COMMAND=run
+SHELL_AS_ROOT=false
+SHELL_START_NEW_PROJECT=false
+REMOVE_VOLUMES=false
+COPY_FROM=false
+COPY_TO=false
+COPY_SESSIONS=false
+COPY_AUTH=false
+COPY_EXTENSIONS=false
+COPY_ALL=false
+COPY_OVERRIDE=false
+UPDATE_ARGS=()
+WORKSPACE="${PI_WORKSPACE:-$INVOCATION_DIRECTORY}"
+WORKSPACE_MISSING=false
+OAUTH_CALLBACK_PORTS=(1455 53692 51121)
+OAUTH_EXTRA_PORTS=()
+OAUTH_OVERRIDE_FILE=""
+PI_BROWSER_EXTENSION_SOURCE="npm:pi-agent-browser-native"
+PI_NATIVE_INSTALLER_URL="https://pi.dev/install.sh"
+
+oauth_port_is_known() {
+  [[ "$1" == 1455 || "$1" == 53692 || "$1" == 51121 ]]
+}
+
+oauth_append_port() {
+  local raw_port="$1"
+  local source="$2"
+  local port
+  local existing
+
+  if ! [[ "$raw_port" =~ ^[0-9]+$ ]]; then
+    fail "invalid OAuth callback port in $source: $raw_port"
+  fi
+
+  port=$((10#$raw_port))
+  if (( port < 1 || port > 65535 )); then
+    fail "OAuth callback port must be between 1 and 65535 in $source: $raw_port"
+  fi
+
+  for existing in "${OAUTH_CALLBACK_PORTS[@]}"; do
+    if [[ "$existing" == "$port" ]]; then
+      return 0
+    fi
+  done
+
+  OAUTH_CALLBACK_PORTS+=("$port")
+  if ! oauth_port_is_known "$port"; then
+    OAUTH_EXTRA_PORTS+=("$port")
+  fi
+}
+
+oauth_parse_port_list() {
+  local list="$1"
+  local source="$2"
+  local normalized
+  local token
+  local -a tokens=()
+
+  normalized="${list//$'\n'/ }"
+  normalized="${normalized//,/ }"
+  if [[ -z "${normalized//[[:space:]]/}" ]]; then
+    return 0
+  fi
+
+  read -r -a tokens <<< "$normalized"
+  for token in "${tokens[@]}"; do
+    oauth_append_port "$token" "$source"
+  done
+}
+
+oauth_cli_token_is_port_list() {
+  [[ "$1" =~ ^[0-9]+(,[0-9]+)*,?$ ]]
+}
+
+create_oauth_override() {
+  local override_directory port
+
+  [[ "$OAUTH_CALLBACK" == true ]] || return 0
+  oauth_parse_port_list "${PI_OAUTH_CALLBACK_PORTS:-}" 'PI_OAUTH_CALLBACK_PORTS'
+  [[ "${#OAUTH_EXTRA_PORTS[@]}" -gt 0 ]] || return 0
+  override_directory="$(mktemp -d "${TMPDIR:-/tmp}/pi-oauth.XXXXXX")"
+  TEMPORARY_DIRECTORIES+=("$override_directory")
+  OAUTH_OVERRIDE_FILE="$override_directory/compose.oauth.yml"
+  {
+    printf 'services:\n'
+    printf '  pi:\n'
+    printf '    ports:\n'
+    for port in "${OAUTH_EXTRA_PORTS[@]}"; do
+      printf '      - "127.0.0.1:%s:%s"\n' "$port" "$port"
+      printf '      - "[::1]:%s:%s"\n' "$port" "$port"
+    done
+  } > "$OAUTH_OVERRIDE_FILE"
+}
+
+# Whether nothing on the host listens on a TCP port: lsof first, then nc.
+oauth_port_is_available() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    ! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return
+  fi
+  if command -v nc >/dev/null 2>&1; then
+    ! nc -z 127.0.0.1 "$port" >/dev/null 2>&1 && ! nc -z ::1 "$port" >/dev/null 2>&1
+    return
+  fi
+  fail 'cannot check OAuth callback ports: install lsof or nc'
+}
+
+# Refuses OAuth callback ports that something already listens on. Ports this
+# workspace's own stack already publishes stay usable, so a repeated `pi --oauth`
+# reuses them; a disposable --rm run cannot share them.
+validate_oauth_ports() {
+  local port owned=$'\n'
+  [[ "$OAUTH_CALLBACK" == true ]] || return 0
+  if [[ "$REMOVE_AFTER_RUN" != true ]] && docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    owned+="$(docker inspect --format '{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{printf "%s:%s:%s\n" .HostIp .HostPort $port}}{{end}}{{end}}' "$CONTAINER_NAME")" ||
+      fail 'could not inspect the OAuth callback ports of this workspace stack'
+    owned+=$'\n'
+  fi
+  for port in "${OAUTH_CALLBACK_PORTS[@]}"; do
+    [[ "$owned" != *$'\n'"127.0.0.1:$port:$port/tcp"$'\n'* && "$owned" != *$'\n'"::1:$port:$port/tcp"$'\n'* ]] || continue
+    oauth_port_is_available "$port" || fail "OAuth callback port is already in use: $port"
+  done
+}
+
+# These are wrapper options, so consume them before passing the remaining
+# arguments to Pi. Help invocations exit before this point, so even
+# `pi --workspace --help` remains a local brief-help request.
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --rm)
+      REMOVE_AFTER_RUN=true
+      shift
+      ;;
+    --host)
+      RUN_ON_HOST=true
+      shift
+      ;;
+    --replace)
+      REPLACE_CONTAINER=true
+      shift
+      ;;
+    --rebuild)
+      REBUILD_IMAGE=true
+      shift
+      ;;
+    --keep-existing)
+      KEEP_EXISTING=true
+      shift
+      ;;
+    --new-state)
+      NEW_STATE=true
+      shift
+      ;;
+    --seed)
+      SEED_STATE=true
+      shift
+      ;;
+    --latest-state)
+      LATEST_STATE=true
+      shift
+      ;;
+    --bash)
+      FORCE_BASH=true
+      shift
+      ;;
+    --zsh)
+      FORCE_ZSH=true
+      shift
+      ;;
+    --no-rc-config)
+      NO_RC_CONFIG=1
+      shift
+      ;;
+    --oauth)
+      OAUTH_CALLBACK=true
+      shift
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --*)
+            break
+            ;;
+          *,*|[0-9]*)
+            oauth_cli_token_is_port_list "$1" || fail "invalid OAuth callback port list: $1"
+            oauth_parse_port_list "$1" '--oauth'
+            shift
+            ;;
+          *)
+            break
+            ;;
+        esac
+      done
+      ;;
+    --oauth=*)
+      OAUTH_CALLBACK=true
+      oauth_value="${1#--oauth=}"
+      if [[ -n "$oauth_value" ]]; then
+        oauth_cli_token_is_port_list "$oauth_value" || fail "invalid OAuth callback port list: $oauth_value"
+        oauth_parse_port_list "$oauth_value" '--oauth'
+      fi
+      shift
+      ;;
+    --workspace)
+      if [[ "$#" -lt 2 ]]; then
+        printf 'pi: --workspace requires a path\n' >&2
+        fail 'usage: pi [--workspace PATH] [PI_ARGS...]'
+      fi
+      WORKSPACE="$2"
+      WORKSPACE_OPTION=true
+      shift 2
+      ;;
+    --workspace=*)
+      WORKSPACE="${1#--workspace=}"
+      if [[ -z "$WORKSPACE" ]]; then
+        printf 'pi: --workspace requires a path\n' >&2
+        fail 'usage: pi [--workspace PATH] [PI_ARGS...]'
+      fi
+      WORKSPACE_OPTION=true
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 # Native Pi for --host: the official installer's launcher script, otherwise the
 # first pi on PATH that is not this wrapper under any name.
@@ -781,8 +822,7 @@ if [[ "$RUN_ON_HOST" == true ]]; then
     "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true || "$FORCE_BASH" == true ||
     "$FORCE_ZSH" == true || "$NO_RC_CONFIG" -eq 1 ]]; then
     printf 'pi: --host cannot be combined with container, state, shell, or OAuth options\n' >&2
-    printf 'usage: pi [--workspace PATH] --host [PI_ARGS...]\n' >&2
-    exit 2
+    fail 'usage: pi [--workspace PATH] --host [PI_ARGS...]'
   fi
   if [[ "${1:-}" == "-" ]]; then
     shift
@@ -796,160 +836,143 @@ if [[ "$RUN_ON_HOST" == true ]]; then
   exec "$NATIVE_PI" "$@"
 fi
 
-if [[ "$HELP_REQUESTED" == false && "${1:-}" == "copy" ]]; then
-  COPY_COMMAND=true
-  shift
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --from) COPY_FROM=true; shift ;;
-      --to) COPY_TO=true; shift ;;
-      -s|--sessions) COPY_SESSIONS=true; shift ;;
-      -a|--auth) COPY_AUTH=true; shift ;;
-      -e|--extensions) COPY_EXTENSIONS=true; shift ;;
-      --all) COPY_ALL=true; shift ;;
-      --override) COPY_OVERRIDE=true; shift ;;
-      *)
-        printf 'pi: unsupported copy option: %s\n' "$1" >&2
-        printf 'usage: pi copy [--from] [--to] [-s|--sessions] [-a|--auth] [-e|--extensions] [--all] [--override]\n' >&2
-        exit 2
-        ;;
-    esac
-  done
-fi
-
-if [[ "$COPY_COMMAND" == true && "$REBUILD_IMAGE" == true ]]; then
-  printf 'pi: --rebuild cannot be combined with copy\n' >&2
-  exit 2
-fi
-
-if [[ "$COPY_COMMAND" == true && "$REMOVE_AFTER_RUN" == true ]]; then
-  printf 'pi: --rm cannot be combined with copy\n' >&2
-  exit 2
-fi
-
-if [[ "$COPY_COMMAND" == true &&
-  ( "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true ||
-    "$SEED_STATE" == true || "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true ) ]]; then
-  printf 'pi: copy cannot be combined with launch, state, or OAuth options\n' >&2
-  exit 2
-fi
-
-if [[ "$COPY_FROM" == true && "$COPY_TO" == true ]]; then
-  printf 'pi: --from and --to are mutually exclusive\n' >&2
-  exit 2
-fi
-
-if [[ "$REPLACE_CONTAINER" == true && "$KEEP_EXISTING" == true ]]; then
-  printf 'pi: --replace and --keep-existing are mutually exclusive\n' >&2
-  exit 2
-fi
-
-if [[ "$HELP_REQUESTED" == false && "${1:-}" == "shell" ]]; then
-  SHELL_COMMAND=true
-  shift
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      -r|--root)
-        SHELL_AS_ROOT=true
-        shift
-        ;;
-      *)
-        printf 'pi: unsupported shell option: %s\n' "$1" >&2
-        printf 'usage: pi shell [--root|-r]\n' >&2
-        exit 2
-        ;;
-    esac
-  done
-fi
-
-if [[ "$HELP_REQUESTED" == false && "${1:-}" == "-" ]]; then
+if [[ "${1:-}" == "-" ]]; then
   PASSTHROUGH_MARKER=true
   shift
   if [[ $# -eq 0 ]]; then
     printf 'pi: - requires a Pi command\n' >&2
-    printf 'usage: pi - PI_ARGS...\n' >&2
-    exit 2
+    fail 'usage: pi - PI_ARGS...'
   fi
 fi
 
-if [[ "$SHELL_COMMAND" == true &&
-  ( "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true ||
-    "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true ||
-    "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true ) ]]; then
-  printf 'pi: shell cannot be combined with lifecycle, state, or OAuth options\n' >&2
-  printf 'usage: pi shell [--root|-r]\n' >&2
-  exit 2
+if [[ "$PASSTHROUGH_MARKER" == false && $# -gt 0 ]]; then
+  case "$1" in
+    stop|update|list|remove|shell|copy)
+      COMMAND="$1"
+      shift
+      ;;
+  esac
 fi
 
-if [[ "$OAUTH_CALLBACK" == true && "$HELP_REQUESTED" == false && "$PASSTHROUGH_MARKER" == false &&
-  ( "${1:-}" == "stop" || "${1:-}" == "remove" ) ]]; then
-  printf 'pi: --oauth cannot be combined with %s\n' "$1" >&2
-  exit 2
+case "$COMMAND" in
+  stop|list)
+    [[ $# -eq 0 ]] || fail "usage: pi $COMMAND"
+    ;;
+  remove)
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --all) REMOVE_VOLUMES=true; shift ;;
+        *)
+          printf 'pi: unsupported remove option: %s\n' "$1" >&2
+          fail 'usage: pi remove [--all]'
+          ;;
+      esac
+    done
+    ;;
+  shell)
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -r|--root) SHELL_AS_ROOT=true; shift ;;
+        *)
+          printf 'pi: unsupported shell option: %s\n' "$1" >&2
+          fail 'usage: pi shell [--root|-r]'
+          ;;
+      esac
+    done
+    ;;
+  update)
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --extensions|--models) UPDATE_ARGS+=("$1"); shift ;;
+        *)
+          printf 'pi: unsupported update option: %s\n' "$1" >&2
+          fail 'usage: pi update [--extensions] [--models]'
+          ;;
+      esac
+    done
+    ;;
+  copy)
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --from) COPY_FROM=true; shift ;;
+        --to) COPY_TO=true; shift ;;
+        -s|--sessions) COPY_SESSIONS=true; shift ;;
+        -a|--auth) COPY_AUTH=true; shift ;;
+        -e|--extensions) COPY_EXTENSIONS=true; shift ;;
+        --all) COPY_ALL=true; shift ;;
+        --override) COPY_OVERRIDE=true; shift ;;
+        *)
+          printf 'pi: unsupported copy option: %s\n' "$1" >&2
+          fail 'usage: pi copy [--from] [--to] [-s|--sessions] [-a|--auth] [-e|--extensions] [--all] [--override]'
+          ;;
+      esac
+    done
+    ;;
+esac
+
+# Option and command combinations are refused before the workspace is
+# resolved, so a conflicting invocation fails the same way everywhere.
+[[ ! ( "$FORCE_BASH" == true && "$FORCE_ZSH" == true ) ]] || fail '--bash and --zsh are mutually exclusive'
+[[ ! ( "$REPLACE_CONTAINER" == true && "$KEEP_EXISTING" == true ) ]] || fail '--replace and --keep-existing are mutually exclusive'
+[[ ! ( "$SEED_STATE" == true && "$NEW_STATE" == true ) ]] ||
+  fail '--seed cannot be combined with --new-state; the extra state volume is never a seed'
+[[ ! ( "$LATEST_STATE" == true && "$NEW_STATE" == true ) ]] ||
+  fail '--latest-state cannot be combined with --new-state; the extra state volume is never seeded'
+[[ ! ( "$COPY_FROM" == true && "$COPY_TO" == true ) ]] || fail '--from and --to are mutually exclusive'
+case "$COMMAND" in
+  list)
+    if [[ "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true ||
+      "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true ||
+      "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true || "$WORKSPACE_OPTION" == true ]]; then
+      fail 'usage: pi list'
+    fi
+    ;;
+  copy)
+    [[ "$REBUILD_IMAGE" != true ]] || fail '--rebuild cannot be combined with copy'
+    [[ "$REMOVE_AFTER_RUN" != true ]] || fail '--rm cannot be combined with copy'
+    if [[ "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true ||
+      "$SEED_STATE" == true || "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true ]]; then
+      fail 'copy cannot be combined with launch, state, or OAuth options'
+    fi
+    ;;
+  shell)
+    if [[ "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true ||
+      "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true ||
+      "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true ]]; then
+      printf 'pi: shell cannot be combined with lifecycle, state, or OAuth options\n' >&2
+      fail 'usage: pi shell [--root|-r]'
+    fi
+    ;;
+  stop|remove)
+    [[ "$OAUTH_CALLBACK" != true ]] || fail "--oauth cannot be combined with $COMMAND"
+    [[ "$REMOVE_AFTER_RUN" != true ]] || fail "--rm cannot be combined with $COMMAND; $COMMAND targets the persistent service"
+    [[ "$REBUILD_IMAGE" != true ]] || fail "--rebuild cannot be combined with $COMMAND"
+    if [[ "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true ||
+      "$SEED_STATE" == true || "$LATEST_STATE" == true ]]; then
+      fail "--replace, --keep-existing, --new-state, --seed, and --latest-state cannot be combined with $COMMAND"
+    fi
+    ;;
+  update)
+    if [[ "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true || "$KEEP_EXISTING" == true ]]; then
+      fail '--rebuild, --replace, and --keep-existing cannot be combined with update'
+    fi
+    [[ "$REMOVE_AFTER_RUN" != true ]] || fail '--rm cannot be combined with update; updates require the persistent service'
+    ;;
+esac
+if [[ "$REMOVE_AFTER_RUN" == true ]]; then
+  [[ "$REPLACE_CONTAINER" != true ]] || fail '--rm cannot be combined with --replace'
+  [[ "$KEEP_EXISTING" != true ]] || fail '--rm cannot be combined with --keep-existing'
+  [[ "$SEED_STATE" != true && "$LATEST_STATE" != true ]] || fail '--seed and --latest-state require a persistent workspace stack'
 fi
 
-if [[ "$OAUTH_CALLBACK" == true ]]; then
-  oauth_parse_port_list "${PI_OAUTH_CALLBACK_PORTS:-}" 'PI_OAUTH_CALLBACK_PORTS' || exit $?
-  create_oauth_override
-fi
+create_oauth_override
 
-LIST_COMMAND=false
-if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "list" ]]; then
-  if [[ "$#" -ne 1 || "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true || "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true || "${WORKSPACE_OPTION:-false}" == true ]]; then
-    printf 'usage: pi list\n' >&2
-    exit 2
-  fi
-  LIST_COMMAND=true
-fi
-
-if [[ "$REMOVE_AFTER_RUN" == true && "$REPLACE_CONTAINER" == true ]]; then
-  printf 'pi: --rm cannot be combined with --replace\n' >&2
-  exit 2
-fi
-
-if [[ "$REMOVE_AFTER_RUN" == true && "$KEEP_EXISTING" == true ]]; then
-  printf 'pi: --rm cannot be combined with --keep-existing\n' >&2
-  exit 2
-fi
-
-if [[ "$REMOVE_AFTER_RUN" == true && ( "$SEED_STATE" == true || "$LATEST_STATE" == true ) ]]; then
-  printf 'pi: --seed and --latest-state require a persistent workspace stack\n' >&2
-  exit 2
-fi
-
-if [[ "$SEED_STATE" == true && "$NEW_STATE" == true ]]; then
-  printf 'pi: --seed cannot be combined with --new-state; the extra state volume is never a seed\n' >&2
-  exit 2
-fi
-
-if [[ "$LATEST_STATE" == true && "$NEW_STATE" == true ]]; then
-  printf 'pi: --latest-state cannot be combined with --new-state; the extra state volume is never seeded\n' >&2
-  exit 2
-fi
-
-if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "stop" ]]; then
-  if [[ "$REMOVE_AFTER_RUN" == true ]]; then
-    printf 'pi: --rm cannot be combined with stop; stop targets the persistent service\n' >&2
-    exit 2
-  fi
-  if [[ "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true || "$LATEST_STATE" == true ]]; then
-    printf 'pi: --replace, --keep-existing, --new-state, --seed, and --latest-state cannot be combined with stop\n' >&2
-    exit 2
-  fi
-  if [[ "$REBUILD_IMAGE" == true ]]; then
-    printf 'pi: --rebuild cannot be combined with stop\n' >&2
-    exit 2
-  fi
-
-  if [[ "$#" -ne 1 ]]; then
-    printf 'usage: pi stop\n' >&2
-    exit 2
-  fi
-fi
-
-if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "update" && ( "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true || "$KEEP_EXISTING" == true ) ]]; then
-  printf 'pi: --rebuild, --replace, and --keep-existing cannot be combined with update\n' >&2
-  exit 2
-fi
+canonicalize_workspace() {
+  local selected="$1"
+  [[ "$selected" = /* ]] || selected="$INVOCATION_DIRECTORY/$selected"
+  [[ -d "$selected" ]] || return 1
+  (cd -P -- "$selected" && pwd)
+}
 
 workspace_path_with_missing_components() {
   local path="$1"
@@ -958,7 +981,7 @@ workspace_path_with_missing_components() {
   local parent
 
   if [[ "$path" != /* ]]; then
-    path="$PWD/$path"
+    path="$INVOCATION_DIRECTORY/$path"
   fi
 
   while [[ ! -d "$path" ]]; do
@@ -976,17 +999,15 @@ workspace_path_with_missing_components() {
   printf '%s%s\n' "$path" "$suffix"
 }
 
-if [[ "$LIST_COMMAND" != true ]]; then
-  if [[ ! -d "$WORKSPACE" ]]; then
-    if [[ "$SHELL_COMMAND" == true ]]; then
-      WORKSPACE_MISSING=true
-      WORKSPACE="$(workspace_path_with_missing_components "$WORKSPACE")"
-    else
-      printf 'pi: workspace does not exist: %s\n' "$WORKSPACE" >&2
-      exit 1
-    fi
+if [[ "$COMMAND" != list ]]; then
+  if [[ -d "$WORKSPACE" ]]; then
+    WORKSPACE="$(canonicalize_workspace "$WORKSPACE")"
+  elif [[ "$COMMAND" == shell ]]; then
+    WORKSPACE_MISSING=true
+    WORKSPACE="$(workspace_path_with_missing_components "$WORKSPACE")"
   else
-    WORKSPACE="$(cd -P -- "$WORKSPACE" && pwd)"
+    printf 'pi: workspace does not exist: %s\n' "$WORKSPACE" >&2
+    exit 1
   fi
 fi
 
@@ -1001,12 +1022,6 @@ sanitize_slug() {
   printf '%s' "$value"
 }
 
-workspace_basename="$(basename -- "$WORKSPACE")"
-if [[ "$workspace_basename" == "/" || -z "$workspace_basename" ]]; then
-  workspace_basename="root"
-fi
-WORKSPACE_BASENAME="$(sanitize_slug "$workspace_basename")"
-
 workspace_hash() {
   local digest
   if command -v shasum >/dev/null 2>&1; then
@@ -1019,35 +1034,48 @@ workspace_hash() {
   printf '%s' "$digest"
 }
 
-WORKSPACE_HASH="$(workspace_hash "$WORKSPACE")"
-PROJECT_NAME="pi-agents-pi-$WORKSPACE_BASENAME"
-VOLUME_NAMESPACE="pi-agents-ws-$WORKSPACE_HASH"
 # --new-state runs the workspace against a separate, extra agent-state volume.
 # The extra volume is never seeded, never a seed, and never the latest state.
 EXTRA_AGENT_STATE_PREFIX="pi-agents-new-ws-"
-NORMAL_AGENT_STATE_VOLUME_NAME="${VOLUME_NAMESPACE}_pi-agent-state"
-EXTRA_AGENT_STATE_VOLUME_NAME="${EXTRA_AGENT_STATE_PREFIX}${WORKSPACE_HASH}_pi-agent-state"
-ACTIVE_AGENT_STATE_VOLUME_NAME="$NORMAL_AGENT_STATE_VOLUME_NAME"
-if [[ "$NEW_STATE" == true ]]; then
-  ACTIVE_AGENT_STATE_VOLUME_NAME="$EXTRA_AGENT_STATE_VOLUME_NAME"
+
+set_workspace_identity() {
+  local workspace_basename
+  workspace_basename="$(basename -- "$WORKSPACE")"
+  if [[ "$workspace_basename" == "/" || -z "$workspace_basename" ]]; then
+    workspace_basename="root"
+  fi
+  WORKSPACE_BASENAME="$(sanitize_slug "$workspace_basename")"
+  WORKSPACE_HASH="$(workspace_hash "$WORKSPACE")"
+  PROJECT_NAME="pi-agents-pi-$WORKSPACE_BASENAME"
+  CONTAINER_NAME="pi-agents-pi-$WORKSPACE_BASENAME"
+  VOLUME_NAMESPACE="pi-agents-ws-$WORKSPACE_HASH"
+  NORMAL_AGENT_STATE_VOLUME_NAME="${VOLUME_NAMESPACE}_pi-agent-state"
+  SESSION_STATE_VOLUME_NAME="${VOLUME_NAMESPACE}_pi-sessions"
+  BROWSER_STATE_VOLUME_NAME="${VOLUME_NAMESPACE}_agent-browser-state"
+  EXTRA_AGENT_STATE_VOLUME_NAME="${EXTRA_AGENT_STATE_PREFIX}${WORKSPACE_HASH}_pi-agent-state"
+  ACTIVE_AGENT_STATE_VOLUME_NAME="$NORMAL_AGENT_STATE_VOLUME_NAME"
+  if [[ "$NEW_STATE" == true ]]; then
+    ACTIVE_AGENT_STATE_VOLUME_NAME="$EXTRA_AGENT_STATE_VOLUME_NAME"
+  fi
+}
+
+if [[ "$COMMAND" != list ]]; then
+  set_workspace_identity
+else
+  WORKSPACE_BASENAME=""
+  WORKSPACE_HASH=""
+  PROJECT_NAME=""
+  CONTAINER_NAME=""
+  VOLUME_NAMESPACE=""
+  NORMAL_AGENT_STATE_VOLUME_NAME=""
+  SESSION_STATE_VOLUME_NAME=""
+  BROWSER_STATE_VOLUME_NAME=""
+  EXTRA_AGENT_STATE_VOLUME_NAME=""
+  ACTIVE_AGENT_STATE_VOLUME_NAME=""
 fi
-SESSION_STATE_VOLUME_NAME="${VOLUME_NAMESPACE}_pi-sessions"
-BROWSER_STATE_VOLUME_NAME="${VOLUME_NAMESPACE}_agent-browser-state"
-CONTAINER_NAME="pi-agents-pi-$WORKSPACE_BASENAME"
+
 CONFIG_PATH="${PI_AGENT_CONTAINERS_CONFIG_PATH:-$HOME/.config/pi-agent-containers}"
 STATE_SEED_FILE="$CONFIG_PATH/seed"
-if [[ "$FORCE_BASH" == true && "$FORCE_ZSH" == true ]]; then
-  printf 'pi: --bash and --zsh are mutually exclusive\n' >&2
-  exit 2
-fi
-if [[ "$FORCE_BASH" == true ]]; then
-  HOST_SHELL_NAME=bash
-elif [[ "$FORCE_ZSH" == true ]]; then
-  HOST_SHELL_NAME=zsh
-else
-  HOST_SHELL_NAME="${SHELL:-/bin/bash}"
-  HOST_SHELL_NAME="${HOST_SHELL_NAME##*/}"
-fi
 SHELL_RC_DIRECTORY="$CONFIG_PATH/shell-rc"
 HOST_SHELL_RC_FILE=""
 HOST_SHELL_RC_SOURCE=""
@@ -1095,11 +1123,6 @@ run_compose() {
     "${COMPOSE[@]}" "$@"
 }
 
-fail() {
-  printf 'pi: %s\n' "$*" >&2
-  exit 2
-}
-
 # Helper containers run the configured Pi service image rather than a second
 # image that would have to be pulled separately and could drift from Pi's
 # runtime. The image runs as node, so every helper passes an explicit user.
@@ -1123,23 +1146,6 @@ ensure_helper_image() {
     run_compose build pi || return
   fi
   HELPER_IMAGE_PROJECT="$PROJECT_NAME"
-}
-
-# Only flows that start a host-shell session need a supported shell.
-prepare_host_shell_rc() {
-  case "$HOST_SHELL_NAME" in
-    bash|zsh) ;;
-    *)
-      printf 'pi: unsupported host shell: %s (supported: bash, zsh)\n' "$HOST_SHELL_NAME" >&2
-      exit 2
-      ;;
-  esac
-  [[ "$NO_RC_CONFIG" -eq 0 ]] || return 0
-  mkdir -p -- "$HOST_SHELL_RC_SOURCE"
-  "$ROOT/bin/pi-shell-rc" \
-    --shell "$HOST_SHELL_NAME" \
-    --home "$HOME" \
-    --output "$HOST_SHELL_RC_FILE"
 }
 
 read_seed_pointer() {
@@ -1574,7 +1580,7 @@ repoint_seed_after_removal() {
   fi
 }
 
-list_stacks() (
+list_stacks() {
   local temp_dir
   local ids
   local id
@@ -1597,7 +1603,7 @@ list_stacks() (
   local -a markers
 
   temp_dir="$(mktemp -d)"
-  trap 'rm -rf "$temp_dir"' EXIT
+  TEMPORARY_DIRECTORIES+=("$temp_dir")
   inspect_format="{{.Name}}${delimiter}{{.State.Status}}${delimiter}{{.Created}}${delimiter}{{.State.StartedAt}}${delimiter}{{index .Config.Labels \"com.pi-agents.workspace\"}}${delimiter}{{index .Config.Labels \"com.docker.compose.project\"}}${delimiter}{{range .Mounts}}{{if and (eq .Type \"volume\") (eq .Destination \"/home/node/.pi/agent\")}}{{.Name}}{{end}}{{end}}"
 
   ids="$(docker ps -a --filter 'label=com.pi-agents.workspace' --filter 'label=com.docker.compose.oneoff=False' --format '{{.ID}}')"
@@ -1653,7 +1659,7 @@ list_stacks() (
     printf 'STACK: %s\n  status: %s\n  workspace: %s\n  project: %s\n  created: %s\n  started: %s\n  agent-state: %s\n  active-state: %s\n  extra-state: %s\n  markers: %s\n' \
       "$name" "$status" "$workspace" "$project" "$created" "$started" "$agent_state" "$active_state" "$extra_state" "$marker_text"
   done < <(sort -t "$delimiter" -k1,1 "$temp_dir/records")
-)
+}
 
 # The agent-state volume the workspace container currently mounts, if any.
 mounted_agent_state_volume() {
@@ -2454,50 +2460,22 @@ copy_agent_state() {
     sh -c 'set -eu; for path in /state /sessions; do [ -d "$path" ] || continue; chown -R 1000:1000 "$path"; find "$path" -type d -exec chmod u+rwx {} +; find "$path" -type f -exec chmod u+rw {} +; done'
 }
 
-if [[ "$COPY_COMMAND" == true ]]; then
+if [[ "$COMMAND" == copy ]]; then
   copy_agent_state
   exit $?
 fi
 
-if [[ "$LIST_COMMAND" == true ]]; then
+if [[ "$COMMAND" == list ]]; then
   list_stacks
   exit $?
 fi
 
-if [[ "$SHELL_COMMAND" == true ]]; then
+if [[ "$COMMAND" == shell ]]; then
   attach_shell
   exit $?
 fi
 
-if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "remove" ]]; then
-  if [[ "$REMOVE_AFTER_RUN" == true ]]; then
-    printf 'pi: --rm cannot be combined with remove; remove targets the persistent service\n' >&2
-    exit 2
-  fi
-  if [[ "$REBUILD_IMAGE" == true ]]; then
-    printf 'pi: --rebuild cannot be combined with remove\n' >&2
-    exit 2
-  fi
-  if [[ "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true || "$LATEST_STATE" == true ]]; then
-    printf 'pi: --replace, --keep-existing, --new-state, --seed, and --latest-state cannot be combined with remove\n' >&2
-    exit 2
-  fi
-
-  shift
-  REMOVE_VOLUMES=false
-  for arg in "$@"; do
-    case "$arg" in
-      --all)
-        REMOVE_VOLUMES=true
-        ;;
-      *)
-        printf 'pi: unsupported remove option: %s\n' "$arg" >&2
-        printf 'usage: pi remove [--all]\n' >&2
-        exit 2
-        ;;
-    esac
-  done
-
+if [[ "$COMMAND" == remove ]]; then
   if ! find_exact_workspace_stack; then
     [[ "$REMOVE_VOLUMES" == true ]] || fail "no stack found for workspace: $WORKSPACE"
     remove_orphaned_workspace_volumes
@@ -2524,33 +2502,13 @@ if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "remove" ]]; then
   exit $?
 fi
 
-if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "stop" ]]; then
+if [[ "$COMMAND" == stop ]]; then
   resolve_exact_workspace_stack
   run_compose stop
   exit $?
 fi
 
-if [[ "$PASSTHROUGH_MARKER" == false && "${1:-}" == "update" ]]; then
-  if [[ "$REMOVE_AFTER_RUN" == true ]]; then
-    printf 'pi: --rm cannot be combined with update; updates require the persistent service\n' >&2
-    exit 2
-  fi
-
-  shift
-  UPDATE_ARGS=()
-  for arg in "$@"; do
-    case "$arg" in
-      --extensions|--models)
-        UPDATE_ARGS+=("$arg")
-        ;;
-      *)
-        printf 'pi: unsupported update option: %s\n' "$arg" >&2
-        printf 'usage: pi update [--extensions] [--models]\n' >&2
-        exit 2
-        ;;
-    esac
-  done
-
+if [[ "$COMMAND" == update ]]; then
   prepare_host_shell_rc
   prepare_workspace_container
   validate_oauth_ports

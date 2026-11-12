@@ -305,16 +305,16 @@ expect_conflict 'pi: --rm cannot be combined with copy' --rm copy
 expect_conflict 'pi: --rebuild, --replace, and --keep-existing cannot be combined with update' --rebuild update
 expect_conflict 'pi: --rebuild cannot be combined with stop' --rebuild stop
 expect_conflict 'pi: --rebuild cannot be combined with remove' --rebuild remove
-expect_conflict 'usage: pi list' --rebuild list
+expect_conflict 'pi: usage: pi list' --rebuild list
 expect_conflict 'pi: --rm cannot be combined with update' --rm update
 expect_conflict 'pi: --rm cannot be combined with stop' --rm stop
 expect_conflict 'pi: unsupported update option: --unknown' update --unknown
 expect_conflict 'pi: unsupported remove option: --unknown' remove --unknown
-expect_conflict 'usage: pi stop' stop extra
+expect_conflict 'pi: usage: pi stop' stop extra
 expect_conflict 'pi: unsupported shell option: --unknown' shell --unknown
-assert_output_has 'usage: pi shell [--root|-r]'
+assert_output_has 'pi: usage: pi shell [--root|-r]'
 expect_conflict 'pi: unsupported copy option: --unknown' copy --unknown
-assert_output_has 'usage: pi copy'
+assert_output_has 'pi: usage: pi copy'
 expect_conflict 'pi: - requires a Pi command' -
 expect_conflict 'pi: --workspace requires a path' --workspace
 
@@ -323,7 +323,7 @@ for arguments in 'list extra' '--rm list'; do
   # shellcheck disable=SC2086
   run_pi "$WS_A" $arguments
   assert_status 2
-  assert_eq "$(cat -- "$OUTPUT_LOG")" 'usage: pi list' "pi $arguments output"
+  assert_eq "$(cat -- "$OUTPUT_LOG")" 'pi: usage: pi list' "pi $arguments output"
   assert_no_docker
 done
 
