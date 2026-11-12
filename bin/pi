@@ -2326,11 +2326,11 @@ select_copy_container() {
       "$((index + 1))" "${names[$index]}" "${statuses[$index]}" "${paths[$index]}" "${volumes[$index]}" >&2
   done
   printf 'X) Press Esc to cancel\n' >&2
-  read_picker_choice "${#names[@]}" || return 2
+  read_picker_choice "${#names[@]}" || return 3
   choice="$PICKER_CHOICE"
   printf '\n' >&2
   case "$choice" in
-    $'\e'|x|X) printf 'pi: container selection cancelled\n' >&2; return 2 ;;
+    $'\e'|x|X) printf 'pi: container selection cancelled\n' >&2; return 3 ;;
   esac
   [[ "$choice" =~ ^[0-9]+$ ]] || { printf 'pi: invalid container selection: %s\n' "$choice" >&2; return 2; }
   index=$((choice - 1))

@@ -142,4 +142,18 @@ printf '1' | run_capture copy --auth --all
 grep -Fq -- 'Choice: ' "$OUTPUT_LOG"
 grep -Fq -- 'pi-agents-ws-other_pi-agent-state:/state-source:ro' "$DOCKER_LOG"
 
+# Cancelling the picker exits 3 and copies nothing; invalid choices exit 2.
+for cancel in x X $'\e' ''; do
+  : > "$DOCKER_LOG"
+  status=0
+  printf '%s' "$cancel" | run_capture copy --auth --all || status=$?
+  if [[ "$status" -ne 3 ]] || grep -Fq -- '/state-source' "$DOCKER_LOG"; then
+    printf 'picker cancel %q: expected status 3 without copy, got %s\n%s\n' "$cancel" "$status" "$(cat "$OUTPUT_LOG")" >&2
+    exit 1
+  fi
+done
+status=0
+printf '9' | run_capture copy --auth --all || status=$?
+[[ "$status" -eq 2 ]] || { printf 'invalid picker choice exited %s, expected 2\n' "$status" >&2; exit 1; }
+
 printf 'bin/pi copy tests passed\n'
