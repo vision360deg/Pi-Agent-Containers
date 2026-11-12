@@ -255,16 +255,26 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'pi --oauth 7000,7001'* ]]
 [[ "$DETAILED_HELP" == *'pi install npm:pi-web-access'* ]]
 [[ "$DETAILED_HELP" == *'Wrapper commands take precedence when names collide'* ]]
-[[ "$DETAILED_HELP" == *'pi shell [--root|-r]'* ]]
+[[ "$DETAILED_HELP" == *'pi [--workspace PATH] shell [--root|-r]'* ]]
 [[ "$DETAILED_HELP" == *'Open a shell in the current workspace container'* ]]
 [[ "$DETAILED_HELP" == *'--root'* ]]
 [[ "$DETAILED_HELP" == *'pi shell --root'* ]]
-[[ "$DETAILED_HELP" == *'pi copy [--from] [--to]'* ]]
+[[ "$DETAILED_HELP" == *'pi [--workspace PATH] copy [--from|--to]'* ]]
+[[ "$DETAILED_HELP" == *'[--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]'* ]]
+[[ "$DETAILED_HELP" == *'[--oauth [PORTS...]] --rm [PI_ARGS...]'* ]]
+[[ "$DETAILED_HELP" == *$'--rm cannot be combined with stop, update, remove, list, shell, copy, --replace,\n  --keep-existing, --seed, or --latest-state.'* ]]
+[[ "$DETAILED_HELP" == *'--replace and --keep-existing are mutually exclusive.'* ]]
+[[ "$DETAILED_HELP" == *'--oauth cannot be combined with stop or remove.'* ]]
+[[ "$DETAILED_HELP" == *'--from and --to are mutually exclusive.'* ]]
+[[ "$DETAILED_HELP" == *$'remove,\n  shell, and copy are handled by this wrapper'* ]]
+[[ "$DETAILED_HELP" == *'exits'*'with status 3.'* ]]
+[[ "$DETAILED_HELP" == *'rc mount is reconciled with Compose up'* ]]
+[[ "$DETAILED_HELP" != *'without creating Compose resources'* ]]
 [[ "$DETAILED_HELP" == *'--sessions, -s'* ]]
 [[ "$DETAILED_HELP" == *'--auth, -a'* ]]
 [[ "$DETAILED_HELP" == *'--extensions, -e'* ]]
 [[ "$DETAILED_HELP" == *'--override replaces duplicates automatically.'* ]]
-[[ "$DETAILED_HELP" == *'pi - PI_ARGS...'* ]]
+[[ "$DETAILED_HELP" == *'pi [--workspace PATH] - PI_ARGS...'* ]]
 [[ "$DETAILED_HELP" == *'pi - list'* ]]
 [[ "$DETAILED_HELP" == *'0) Start a new project'* ]]
 [[ "$DETAILED_HELP" == *'X) Press Esc to cancel'* ]]
@@ -315,16 +325,17 @@ run_wrapper_capture --rm --help
 assert_output "$(cat <<'EOF'
 Usage:
   pi [-h|--help]
-  pi [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
-  pi [--bash|--zsh] [--no-rc-config] [--rebuild] --oauth [PORTS...] --rm [PI_ARGS...]
+  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
+     [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]
+  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] --rm [PI_ARGS...]
   pi [--workspace PATH] --host [PI_ARGS...]
-  pi stop
-  pi update [--extensions] [--models]
+  pi [--workspace PATH] stop
+  pi [--workspace PATH] update [--extensions] [--models]
   pi list
-  pi remove [--all]
-  pi shell [--root|-r]
-  pi copy [--from] [--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
-  pi - PI_ARGS...
+  pi [--workspace PATH] remove [--all]
+  pi [--workspace PATH] shell [--root|-r]
+  pi [--workspace PATH] copy [--from|--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
+  pi [--workspace PATH] - PI_ARGS...
 
 Options:
   -h, --help        Show detailed help when used alone.

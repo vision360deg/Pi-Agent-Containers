@@ -285,16 +285,17 @@ print_detailed_help() {
 Containerized Pi wrapper
 
 Usage:
-  pi [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
-  pi [--bash|--zsh] [--no-rc-config] [--rebuild] --oauth [PORTS...] --rm [PI_ARGS...]
+  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
+     [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]
+  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] --rm [PI_ARGS...]
   pi [--workspace PATH] --host [PI_ARGS...]
-  pi stop
-  pi update [--extensions] [--models]
+  pi [--workspace PATH] stop
+  pi [--workspace PATH] update [--extensions] [--models]
   pi list
-  pi remove [--all]
-  pi shell [--root|-r]
-  pi copy [--from] [--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
-  pi - PI_ARGS...
+  pi [--workspace PATH] remove [--all]
+  pi [--workspace PATH] shell [--root|-r]
+  pi [--workspace PATH] copy [--from|--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
+  pi [--workspace PATH] - PI_ARGS...
 
 Description:
   Runs Pi inside a persistent Docker Compose service scoped to the current
@@ -440,7 +441,8 @@ Commands:
       Open the selected interactive Bash or zsh in the current workspace's Pi
       container. If no container matches the current workspace, show a picker
       containing all existing persistent Pi containers. A stopped selection is started
-      before the shell opens. When no current workspace container exists, the picker
+      before the shell opens. A current workspace stack that lacks the generated
+      rc mount is reconciled with Compose up before the shell opens. When no current workspace container exists, the picker
       also offers `0) Start a new project` and ends with `X) Press Esc to cancel`.
       Choosing 0 creates the workspace, starts its persistent Pi service, and opens
       the shell there. A choice is a single key; when the shell and copy pickers
@@ -454,14 +456,16 @@ Commands:
       Copy agent state between existing Pi workspace containers using a
       disposable helper container. By default the current workspace is the
       destination and a picker selects the source. --to makes the current
-      workspace the source and picks the destination; --from picks the source.
+      workspace the source and picks the destination; --from picks the source
+      (the default). --from and --to are mutually exclusive.
       Without a category flag, sessions, provider auth, and extensions are
       copied. Category flags restrict the copy. --all skips item pickers.
       Copies are additive; duplicate items prompt with r=replace, s=skip,
       a=replace all, q=cancel. --override replaces duplicates automatically.
       Every selected item is staged inside the destination before it changes,
       then published by rename; a failed publish restores the earlier items.
-      Cancelling leaves the destination unchanged and exits with status 3.
+      Cancelling a picker or prompt leaves the destination unchanged and exits
+      with status 3.
       Symlinked state paths and overlapping source/destination are refused.
 
 Pi passthrough:
@@ -472,7 +476,7 @@ Pi passthrough:
       Install a Pi package into this workspace's persisted agent state.
 
   Wrapper commands take precedence when names collide: stop, update, list, remove,
-  and shell are handled by this wrapper rather than passed to Pi.
+  shell, and copy are handled by this wrapper rather than passed to Pi.
 
   A leading `-` forces the following arguments through to Pi, even when the
   first argument is also a wrapper command. For example, `pi - list` runs Pi's
@@ -598,7 +602,9 @@ Help behavior:
   `pi --host - --help` shows native Pi's help instead.
 
 Restrictions:
-  --rm cannot be combined with stop, update, remove, --replace, or --keep-existing.
+  --rm cannot be combined with stop, update, remove, list, shell, copy, --replace,
+  --keep-existing, --seed, or --latest-state.
+  --replace and --keep-existing are mutually exclusive.
   --host accepts only --workspace among wrapper options; container, state,
   shell, and OAuth options are rejected. Wrapper commands are not interpreted
   after --host.
@@ -610,8 +616,13 @@ Restrictions:
   remove accepts only the optional --all flag; --all also removes persisted state.
   list accepts no positional arguments and does not change Docker state.
   shell accepts only -r/--root. When a current workspace container exists it
-  reuses or starts it without creating Compose resources. Otherwise it offers
-  0 to create/start the current workspace and X/Escape to cancel.
+  reuses or starts it; a current stack lacking the rc mount is reconciled with
+  Compose up. Otherwise it offers 0 to create/start the current workspace and
+  X/Escape to cancel.
+  copy cannot be combined with --rm, --rebuild, --replace, --keep-existing,
+  --new-state, --seed, --latest-state, or --oauth. --from and --to are mutually
+  exclusive.
+  --oauth cannot be combined with stop or remove.
   --new-state cannot be combined with stop, remove, --seed, or --latest-state.
   --latest-state only affects first initialization of a workspace and warns
   after that workspace already has initialized state. It selects the newest
@@ -629,16 +640,17 @@ print_brief_usage() {
   cat <<'EOF'
 Usage:
   pi [-h|--help]
-  pi [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] [--replace] [--keep-existing] [PI_ARGS...]
-  pi [--bash|--zsh] [--no-rc-config] [--rebuild] --oauth [PORTS...] --rm [PI_ARGS...]
+  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
+     [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]
+  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] --rm [PI_ARGS...]
   pi [--workspace PATH] --host [PI_ARGS...]
-  pi stop
-  pi update [--extensions] [--models]
+  pi [--workspace PATH] stop
+  pi [--workspace PATH] update [--extensions] [--models]
   pi list
-  pi remove [--all]
-  pi shell [--root|-r]
-  pi copy [--from] [--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
-  pi - PI_ARGS...
+  pi [--workspace PATH] remove [--all]
+  pi [--workspace PATH] shell [--root|-r]
+  pi [--workspace PATH] copy [--from|--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
+  pi [--workspace PATH] - PI_ARGS...
 
 Options:
   -h, --help        Show detailed help when used alone.

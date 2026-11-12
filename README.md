@@ -126,13 +126,18 @@ Run `./bin/pi --help` for the complete, authoritative help text.
 ```
 
 `stop` and `remove` act only on the stack labelled with the current workspace
-path and fail when there is none. `remove --all` on a workspace whose stack is
+path and fail when there is none, or when that stack's Compose project also
+holds another workspace's container. `remove --all` on a workspace whose stack is
 already gone lists its leftover state volumes and asks whether to leave them
 (the default), delete all, or delete selected ones.
 
 Persistent mode is the default. It keeps the container and named volumes so a
 later `./bin/pi` can reconnect to the same workspace. `--rm` is the exception:
-it uses a temporary Compose container and removes it when Pi exits.
+it uses a temporary Compose container and removes it when Pi exits. A running
+`--rm` container of the same workspace does not block later launches and is not
+shown by `pi list`. `--rm` cannot be combined with `stop`, `update`, `remove`,
+`list`, `shell`, `copy`, `--replace`, `--keep-existing`, `--seed`, or
+`--latest-state`.
 
 Each workspace's Compose project and persistent container are named
 `pi-agents-pi-<workspace-basename>`. The basename is lowercased and every
@@ -143,16 +148,18 @@ names require, so `~/src/my.project` runs as `pi-agents-pi-my-project`.
 workspace has the same basename, `pi` prompts before renaming the existing
 container to `pi-agents-pi-<first-differing-path-components>-<path-hash>` and
 giving the current workspace its own such name; `--keep-existing` preserves
-the existing container and creates the disambiguated one instead. Every
+the existing container and creates the disambiguated one instead. `--replace`
+and `--keep-existing` are mutually exclusive. Every
 destination container name and Compose project is checked before the first
 rename, and `pi` stops without renaming anything if one belongs to a different
 workspace. A workspace that already has a stack reuses it under its current
 name, and two stacks claiming the same workspace are refused as ambiguous.
 
 Arguments that are not wrapper options or commands are passed through to Pi.
-The wrapper's `stop`, `update`, `list`, `remove`, and `shell` commands take
-precedence over Pi commands with the same names. `pi shell` reuses the current
-workspace container when possible; otherwise it offers a picker for existing
+The wrapper's `stop`, `update`, `list`, `remove`, `shell`, and `copy` commands
+take precedence over Pi commands with the same names. `pi shell` reuses the
+current workspace container when possible, starting it if stopped and
+reconciling it with Compose `up` when it lacks the generated rc mount; otherwise it offers a picker for existing
 persistent Pi containers and starts a stopped selection before opening the shell.
 Use `pi shell --root` or `pi shell -r` for a root shell.
 
@@ -243,15 +250,17 @@ The copy is transactional per run. Every selected item, including each
 duplicate decision, is staged in a temporary directory inside the destination
 before the destination changes. Staged items are then published by rename,
 each previous item kept as a backup until all items are in place; a failure or
-interruption while publishing restores the previous items. Cancelling (`q`)
-exits with status 3 and leaves the destination unchanged. Symlinked state
+interruption while publishing restores the previous items. Cancelling a picker
+or a duplicate prompt (`q`) exits with status 3 and leaves the destination unchanged. Symlinked state
 paths on either side, and overlapping source/destination directories, are
 refused.
 
 By default, `pi copy` treats the current workspace as the destination and lets
 you pick the source. `pi copy --to` treats the current workspace as the source
-and lets you pick the destination. `--from` explicitly selects the source;
-using both `--from` and `--to` lets you pick both endpoints.
+and lets you pick the destination. `--from` explicitly selects the source (the
+default); `--from` and `--to` are mutually exclusive. `copy` refuses `--rm`,
+`--rebuild`, `--replace`, `--keep-existing`, `--new-state`, `--seed`,
+`--latest-state`, and `--oauth`.
 
 The category flags are `--sessions`/`-s`, `--auth`/`-a`, and
 `--extensions`/`-e`. Without category flags, all categories are copied. Without
@@ -403,7 +412,8 @@ export PI_OAUTH_CALLBACK_PORTS="7000,7001"
 Only one running stack can reserve a given host port. Before starting, the
 wrapper checks each selected port with `lsof` (or `nc` when `lsof` is missing)
 and refuses one that something else already listens on. Ports the workspace's
-own running stack already publishes are reused; a `--rm` run cannot share them.
+own running stack already publishes are reused; a `--rm` run cannot share them. `--oauth`
+cannot be combined with `stop` or `remove`.
 Changing OAuth mappings can cause Compose to recreate the container; Pi's
 persisted state volumes keep authentication and settings intact. Run
 `./bin/pi` without `--oauth` afterward to reconcile the stack without host
@@ -461,6 +471,8 @@ These logs are an inspectable live audit stream. The complete durable session
 records remain in the workspace-specific `pi-sessions` Docker volume at
 `/home/node/.pi/agent/sessions/*.jsonl` inside the container.
 
+The forwarder runs alongside the service's main process (`sleep infinity`) in a restart loop, so a forwarder exit never stops the container or attached Pi sessions. If a session stream dies, the forwarder exits rather than resuming from a stale offset, which could duplicate records; on restart it follows existing sessions from their current end, so history is not replayed. Records written in the second before a restart can be missing from the Docker log but stay in the session volume. In `pretty` format, lines that are not JSON objects (for example a truncated record) are passed through verbatim.
+
 To select another log representation, set these Compose environment variables
 before recreating the workspace container:
 
@@ -477,9 +489,10 @@ docker compose --project-name <workspace-project> ps
 docker volume ls --filter name=pi-agents
 ```
 
-The wrapper's `list`, `stop`, and `remove` commands operate on the current
-workspace. They do not affect another workspace unless you explicitly target
-that workspace with `--workspace`.
+The wrapper's `stop`, `remove`, `shell`, and `copy` commands operate on the
+current workspace. They do not affect another workspace unless you explicitly
+target that workspace with `--workspace`. `list` shows every persistent stack
+and does not accept `--workspace`.
 
 ## Configuration
 
@@ -509,14 +522,7 @@ Build the image and run the shell regression tests:
 
 ```bash
 docker compose build pi
-bash tests/bin-pi-update.sh
-bash tests/bin-pi-host.sh
-bash tests/bin-pi-list.sh
-bash tests/bin-pi-lineage.sh
-bash tests/bin-pi-seed-recovery.sh
-bash tests/bin-pi-state.sh
-bash tests/bin-pi-workspace.sh
-bash tests/compose-oauth.sh
+for t in tests/*.sh; do bash "$t"; done
 ```
 
 Validate both Compose configurations without starting services:
