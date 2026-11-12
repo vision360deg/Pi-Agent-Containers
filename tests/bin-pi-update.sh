@@ -1,233 +1,72 @@
 #!/usr/bin/env bash
+# pi update: pull and no-cache rebuild, --extensions, and --models.
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.bash"
+source "$ROOT/tests/lib/launcher.bash"
 
-ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+WS=$(make_workspace "$TEST_HOME/projects/alpha")
+PROJECT=pi-agents-pi-alpha
+COMPOSE_FILES="--project-name $PROJECT --project-directory $ROOT --file $ROOT/compose.yml --file $ROOT/compose.shell-rc.yml"
+LOGGED_PI='exec pi pi-shell-launch pi-session-log --forward-output'
 
-FAKE_BIN="$TMP_DIR/bin"
-mkdir -p "$FAKE_BIN" "$TMP_DIR/workspace" "$TMP_DIR/cli-workspace" "$TMP_DIR/home"
-: > "$TMP_DIR/home/.bash_profile"
-: > "$TMP_DIR/home/.bashrc"
-: > "$TMP_DIR/home/.zshenv"
-: > "$TMP_DIR/home/.zprofile"
-: > "$TMP_DIR/home/.zshrc"
-: > "$TMP_DIR/home/.zlogin"
-WORKSPACE="$(cd -P -- "$TMP_DIR/workspace" && pwd)"
-CLI_WORKSPACE="$(cd -P -- "$TMP_DIR/cli-workspace" && pwd)"
-DOCKER_LOG="$TMP_DIR/docker.log"
-OUTPUT_LOG="$TMP_DIR/output.log"
-export DOCKER_LOG
-
-cat > "$FAKE_BIN/docker" <<'FAKE_DOCKER'
-#!/usr/bin/env bash
-set -euo pipefail
-log_docker_command() {
-  local logged_command="$*"
-  logged_command=${logged_command//$'\n'/\\n}
-  printf '%s\n' "$logged_command" >> "$DOCKER_LOG"
-}
-if [[ "${1:-}" == "volume" ]]; then
-  if [[ "${2:-}" == "ls" ]]; then
-    exit 0
-  fi
-  if [[ "${2:-}" == "create" ]]; then
-    exit 0
-  fi
-  if [[ "${2:-}" == "inspect" && "$*" == *com.pi-agents.managed* ]]; then
-    exit 0
-  fi
-  exit 1
-fi
-if [[ "${1:-}" == "ps" ]]; then
-  # stop and remove look up this workspace's own stack; report one.
-  if [[ "$*" == *'label=com.pi-agents.workspace='* ]]; then
-    stack_workspace="$*"
-    stack_workspace="${stack_workspace#*label=com.pi-agents.workspace=}"
-    printf '%s\n' "${stack_workspace%% --*}" > "$DOCKER_LOG.stack"
-    printf 'stack-id\tpi-agents-pi-workspace\tpi-agents-pi-workspace\n'
-  fi
-  exit 0
-fi
-if [[ "${1:-}" == "inspect" && "$*" == *com.pi-agents.managed* ]]; then
-  printf '/pi-agents-pi-workspace\037true\037%s\037pi-agents-pi-workspace\037pi\037False\n' "$(cat "$DOCKER_LOG.stack")"
-  exit 0
-fi
-# Identity and helper-image lookups are not part of the asserted sequence.
-if [[ "${1:-}" == "container" && "${2:-}" == "inspect" ]]; then
-  exit 1
-fi
-if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
-  exit 0
-fi
-if [[ "${1:-}" == "compose" && "$*" == *' config --images pi' ]]; then
-  exit 0
-fi
-if [[ "${1:-}" == "run" ]]; then
-  log_docker_command "$@"
-  exit 0
-fi
-log_docker_command "$@"
-if [[ "${1:-}" == "compose" ]]; then
-  compose_args=("$@")
-  for ((index = 1; index < ${#compose_args[@]} - 1; index++)); do
-    if [[ "${compose_args[$index]}" == "--file" ]]; then
-      override_file="${compose_args[$((index + 1))]}"
-      case "$override_file" in
-        */compose.yml|*/compose.oauth.yml|*/compose.shell-rc.yml) ;;
-        *)
-          printf 'OAUTH_OVERRIDE_CONTENT\n' >> "$DOCKER_LOG"
-          cat "$override_file" >> "$DOCKER_LOG"
-          ;;
-      esac
-    fi
-  done
-fi
-if [[ -v PI_WORKSPACE ]]; then
-  printf 'PI_WORKSPACE=%s\n' "$PI_WORKSPACE" >> "$DOCKER_LOG"
-fi
-unset PI_WORKSPACE
-FAKE_DOCKER
-chmod +x "$FAKE_BIN/docker"
-
-cat > "$FAKE_BIN/lsof" <<'FAKE_LSOF'
-#!/usr/bin/env bash
-# No OAuth callback port has a listener.
-exit 1
-FAKE_LSOF
-chmod +x "$FAKE_BIN/lsof"
-
-run_wrapper() {
-  : > "$DOCKER_LOG"
-  (
-    cd "$TMP_DIR/workspace"
-    env -u PI_WORKSPACE PI_AGENT_CONTAINERS_CONFIG_PATH="$TMP_DIR/state-registry" HOME="$TMP_DIR/home" PATH="$FAKE_BIN:$PATH" "$ROOT/bin/pi" "$@"
-  )
+# The Compose subcommands (first two words) and helper containers the last run
+# started, in order; read-only `compose config` lookups are left out.
+docker_actions() {
+  local line
+  while IFS= read -r line; do
+    case $line in
+      'docker compose '*)
+        line=$(sed -E 's/^docker compose (--(project-name|project-directory|file) [^ ]+ )+//' <<< "$line")
+        [[ $line == config* ]] || printf 'compose %s\n' "$(cut -d' ' -f1-2 <<< "$line")"
+        ;;
+      'docker run '*) printf 'run\n' ;;
+    esac
+  done < "$DOCKER_LOG"
 }
 
-assert_log() {
-  expected="$1"
-  actual="$(cat "$DOCKER_LOG")"
-  if [[ "$actual" != "$expected" ]]; then
-    printf 'expected:\n%s\nactual:\n%s\n' "$expected" "$actual" >&2
-    exit 1
-  fi
+assert_actions() {
+  assert_eq "$(docker_actions)" "$1" 'docker actions'
 }
 
-assert_log_has_line() {
-  expected="$1"
-  if ! grep -Fqx -- "$expected" "$DOCKER_LOG"; then
-    printf 'missing log line:\n%s\nactual:\n%s\n' "$expected" "$(cat "$DOCKER_LOG")" >&2
-    exit 1
-  fi
+# Every Compose call carries this workspace.
+assert_workspace_propagated() {
+  local calls
+  calls=$(grep -c '^docker compose ' "$DOCKER_LOG" || true)
+  assert_file_count "$DOCKER_LOG" "workspace=$1 agent=" "$calls"
 }
 
-assert_log_has_fragment() {
-  expected="$1"
-  candidates=("$expected")
-  if [[ "$expected" == *"--file $ROOT/compose.yml "* ]]; then
-    candidates+=("${expected/--file $ROOT\/compose.yml /--file $ROOT\/compose.yml --file $ROOT\/compose.shell-rc.yml }")
-  fi
-  if [[ "$expected" == *"--file $ROOT/compose.oauth.yml "* ]]; then
-    candidates+=("${expected/--file $ROOT\/compose.oauth.yml /--file $ROOT\/compose.oauth.yml --file $ROOT\/compose.shell-rc.yml }")
-  fi
-  for candidate in "${candidates[@]}"; do
-    if grep -Fq -- "$candidate" "$DOCKER_LOG"; then
-      return 0
-    fi
-  done
-  printf 'missing log fragment:\n%s\nactual:\n%s\n' "$expected" "$(cat "$DOCKER_LOG")" >&2
-  exit 1
+fresh_stack() {
+  reset_docker
+  fake_image "$PROJECT"
 }
 
-assert_log_lacks_fragment() {
-  unexpected="$1"
-  if grep -Fq -- "$unexpected" "$DOCKER_LOG"; then
-    printf 'unexpected log fragment:\n%s\nactual:\n%s\n' "$unexpected" "$(cat "$DOCKER_LOG")" >&2
-    exit 1
-  fi
-}
+# Plain update pulls and rebuilds without cache, initializes new state,
+# repairs it, recreates the service, and installs the browser extension.
+fresh_stack
+run_pi "$WS" update
+assert_status 0
+assert_actions $'compose build --pull\nrun\nrun\ncompose up --detach\ncompose exec -T\ncompose exec pi'
+assert_log_has "$COMPOSE_FILES build --pull --no-cache pi"
+assert_log_has "$COMPOSE_FILES up --detach --force-recreate pi"
+assert_log_lacks ' up --build '
+assert_log_has "$COMPOSE_FILES $LOGGED_PI install npm:pi-agent-browser-native"
+assert_workspace_propagated "$WS"
+volume_has_file "$(agent_volume "$WS")" .container-initialized || fail 'update must initialize new state'
 
-assert_log_line_count() {
-  expected="$1"
-  actual="$(wc -l < "$DOCKER_LOG")"
-  if [[ "$actual" -ne "$expected" ]]; then
-    printf 'expected %s log lines, got %s:\n%s\n' "$expected" "$actual" "$(cat "$DOCKER_LOG")" >&2
-    exit 1
-  fi
-}
+# --extensions, --models, and both run Pi's own update through the logged
+# launcher in the started service, without rebuilding or recreating it.
+for arguments in --extensions --models '--extensions --models'; do
+  fresh_stack
+  # shellcheck disable=SC2086
+  run_pi "$WS" update $arguments
+  assert_status 0
+  assert_actions $'run\nrun\ncompose up --detach\ncompose exec -T\ncompose exec pi\ncompose exec pi'
+  assert_log_has "$COMPOSE_FILES up --detach pi"
+  assert_log_lacks ' up --build '
+  assert_log_lacks ' build '
+  assert_log_has "$COMPOSE_FILES $LOGGED_PI install npm:pi-agent-browser-native"
+  assert_log_has "$COMPOSE_FILES $LOGGED_PI update $arguments"
+  assert_workspace_propagated "$WS"
+done
 
-run_wrapper_capture() {
-  : > "$DOCKER_LOG"
-  : > "$OUTPUT_LOG"
-  (
-    cd "$TMP_DIR/workspace"
-    env -u PI_WORKSPACE PI_AGENT_CONTAINERS_CONFIG_PATH="$TMP_DIR/state-registry" HOME="$TMP_DIR/home" PATH="$FAKE_BIN:$PATH" "$ROOT/bin/pi" "$@"
-  ) >"$OUTPUT_LOG" 2>&1
-}
-
-assert_output() {
-  expected="$1"
-  actual="$(cat "$OUTPUT_LOG")"
-  if [[ "$actual" != "$expected" ]]; then
-    printf 'expected output:\n%s\nactual output:\n%s\n' "$expected" "$actual" >&2
-    exit 1
-  fi
-}
-
-run_wrapper_with_workspace() {
-  local workspace="$1"
-  shift
-  : > "$DOCKER_LOG"
-  (
-    cd "$TMP_DIR/workspace"
-    env PI_WORKSPACE="$workspace" PI_AGENT_CONTAINERS_CONFIG_PATH="$TMP_DIR/state-registry" HOME="$TMP_DIR/home" PATH="$FAKE_BIN:$PATH" "$ROOT/bin/pi" "$@"
-  )
-}
-
-assert_persistent_logged_exec() {
-  expected_exec="$1"
-  expect_shell_alias_setup="${2:-false}"
-  # The run lines include marking the new agent state initialized.
-  expected_line_count=10
-  expected_workspace_count=4
-  if [[ "$expect_shell_alias_setup" == true ]]; then
-    expected_line_count=12
-    expected_workspace_count=5
-  fi
-  assert_log_line_count "$expected_line_count"
-  assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach pi"
-  assert_log_lacks_fragment ' up --build '
-  assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
-  assert_log_has_fragment "$expected_exec"
-  if [[ "$expect_shell_alias_setup" == true ]]; then
-    assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec -T pi sh -c"
-    assert_log_has_fragment 'pi-agents managed host shell aliases'
-  fi
-
-  workspace_line="PI_WORKSPACE=$WORKSPACE"
-  workspace_count="$(grep -Fxc -- "$workspace_line" "$DOCKER_LOG" || true)"
-  if [[ "$workspace_count" -ne "$expected_workspace_count" ]]; then
-    printf 'expected %s workspace propagation lines, got %s:\n%s\n' "$expected_workspace_count" "$workspace_count" "$(cat "$DOCKER_LOG")" >&2
-    exit 1
-  fi
-}
-
-run_wrapper update
-assert_log_line_count 10
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml build --pull --no-cache pi"
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach --force-recreate pi"
-assert_log_lacks_fragment ' up --build '
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
-assert_log_has_line "PI_WORKSPACE=$WORKSPACE"
-
-run_wrapper update --extensions
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output update --extensions"
-
-run_wrapper update --models
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output update --models"
-
-run_wrapper update --extensions --models
-assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output update --extensions --models"
-
-printf 'bin/pi wrapper tests passed\n'
+pass
