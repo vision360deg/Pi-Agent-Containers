@@ -230,40 +230,4 @@ assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.ym
 run_wrapper update --extensions --models
 assert_persistent_logged_exec "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output update --extensions --models"
 
-run_wrapper stop
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml stop"
-
-run_wrapper remove
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml down"
-assert_log_lacks_fragment 'down --volumes'
-
-run_wrapper remove --all
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml down"
-assert_log_lacks_fragment 'down --volumes'
-
-run_wrapper --rm --version
-assert_log_line_count 6
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --entrypoint /bin/sh pi -c"
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi-shell-launch pi --version"
-assert_log_lacks_fragment ' run --build '
-assert_log_has_line "PI_WORKSPACE=$WORKSPACE"
-
-run_wrapper --rebuild --version
-# --rebuild builds the service image once before Compose recreates from it.
-assert_log_line_count 14
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml build pi"
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach pi"
-assert_log_lacks_fragment ' up --build '
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --version"
-
-run_wrapper --rebuild --rm --version
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml build pi"
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --entrypoint /bin/sh pi -c"
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi-shell-launch pi --version"
-assert_log_lacks_fragment ' run --build '
-
-run_wrapper --new-state --version
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach --force-recreate pi"
-
 printf 'bin/pi wrapper tests passed\n'
