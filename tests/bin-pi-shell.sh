@@ -225,6 +225,25 @@ first_line() { grep -nF -- "$1" "$DOCKER_LOG" | head -n 1 | cut -d: -f1; }
 (( $(first_line 'state-initialization complete') < $(first_line ' up --detach pi') ))
 (( $(first_line 'chown -R 1000:1000 "$path"') < $(first_line ' up --detach pi') ))
 
+# With ten or more containers the picker waits for Enter after a leading 1-9,
+# so a slowly typed 10 selects item 10 rather than item 1; 0 and Escape stay
+# single keys.
+FAKE_CONTAINERS=''
+for index in 1 2 3 4 5 6 7 8 9 10; do
+  FAKE_CONTAINERS+="c$index-id"$'\t'"pi-agents-pi-c$index"$'\tUp 1 minute\trunning\t'"/many/c$index"$'\n'
+done
+{ printf 1; sleep 0.3; printf '0\n'; } | run_wrapper shell
+grep -Fq 'Choice (number, then Enter): ' "$OUTPUT_LOG"
+assert_log_has "docker exec -it $SHELL_LAUNCH_ENV pi-agents-pi-c10 pi-shell-launch"
+{ printf 3; sleep 0.3; printf '\n'; } | run_wrapper shell
+assert_log_has "docker exec -it $SHELL_LAUNCH_ENV pi-agents-pi-c3 pi-shell-launch"
+if printf '\033' | run_wrapper shell; then
+  printf 'Escape cancellation unexpectedly succeeded\n' >&2
+  exit 1
+fi
+grep -Fq 'container selection cancelled' "$OUTPUT_LOG"
+grep -Fq 'Choice: ' "$OUTPUT_LOG" && { printf 'short prompt shown for a long list\n' >&2; exit 1; }
+
 if printf '\033' | run_wrapper --workspace "$CANCEL_WORKSPACE" shell; then
   printf 'Escape cancellation unexpectedly succeeded\n' >&2
   exit 1

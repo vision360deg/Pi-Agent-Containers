@@ -159,6 +159,8 @@ Use `pi shell --root` or `pi shell -r` for a root shell.
 When no current workspace container exists, `pi shell` offers `0) Start a new
 project`; choosing it creates the directory if needed, starts the persistent
 service, and opens the shell. The picker ends with `X) Press Esc to cancel`.
+Choices are single keys; when the `pi shell` or `pi copy` picker lists ten or
+more containers, a choice starting with 1-9 is a number confirmed with Enter.
 
 ### Host shell configuration
 

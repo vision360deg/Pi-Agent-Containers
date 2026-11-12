@@ -443,7 +443,9 @@ Commands:
       before the shell opens. When no current workspace container exists, the picker
       also offers `0) Start a new project` and ends with `X) Press Esc to cancel`.
       Choosing 0 creates the workspace, starts its persistent Pi service, and opens
-      the shell there.
+      the shell there. A choice is a single key; when the shell and copy pickers
+      list ten or more containers, a choice starting with 1-9 is a number
+      confirmed with Enter (prompt: Choice (number, then Enter)).
 
       -r, --root
           Open the shell as Docker user 0 (root) instead of the image's node user.
@@ -2044,6 +2046,27 @@ remove_orphaned_workspace_volumes() {
   return "$status"
 }
 
+# Reads a picker choice into PICKER_CHOICE. A single key selects at once and
+# briefly drains input buffered after it, such as the rest of a pasted line.
+# With ten or more numbered entries, a leading 1-9 could begin a longer number,
+# so the rest of the line is read up to Enter; 0, Esc, and x stay single keys.
+read_picker_choice() {
+  local count="$1" rest=''
+  PICKER_CHOICE=''
+  if (( count >= 10 )); then
+    printf 'Choice (number, then Enter): ' >&2
+  else
+    printf 'Choice: ' >&2
+  fi
+  IFS= read -r -n 1 PICKER_CHOICE || return 1
+  if (( count >= 10 )) && [[ "$PICKER_CHOICE" == [1-9] ]]; then
+    IFS= read -r rest || true
+  else
+    IFS= read -r -t 0.05 -n 1024 rest || true
+  fi
+  PICKER_CHOICE+="$rest"
+}
+
 list_shell_containers() {
   docker ps -a \
     --filter 'label=com.pi-agents.workspace' \
@@ -2104,16 +2127,11 @@ select_shell_container() {
       "${SHELL_STATUSES[$index]}" "${SHELL_PATHS[$index]}" >&2
   done
   printf 'X) Press Esc to cancel\n' >&2
-  printf 'Choice: ' >&2
-  if ! IFS= read -r -n 1 choice; then
+  if ! read_picker_choice "${#SHELL_NAMES[@]}"; then
     printf 'pi: container selection cancelled\n' >&2
     return 2
   fi
-  if [[ "$choice" =~ ^[0-9]$ ]]; then
-    local remaining_choice=""
-    IFS= read -r -t 0.05 -n 1024 remaining_choice <&0 || true
-    choice+="$remaining_choice"
-  fi
+  choice="$PICKER_CHOICE"
 
   case "$choice" in
     $'\e'|x|X)
@@ -2291,11 +2309,9 @@ select_copy_container() {
     printf '%s) %s\n   status: %s\n   workspace: %s\n   agent-state: %s\n' \
       "$((index + 1))" "${names[$index]}" "${statuses[$index]}" "${paths[$index]}" "${volumes[$index]}" >&2
   done
-  printf 'X) Press Esc to cancel\nChoice: ' >&2
-  IFS= read -r -n 1 choice || return 2
-  local trailing_choice=''
-  IFS= read -r -t 0.05 -n 1024 trailing_choice <&0 || true
-  choice+="$trailing_choice"
+  printf 'X) Press Esc to cancel\n' >&2
+  read_picker_choice "${#names[@]}" || return 2
+  choice="$PICKER_CHOICE"
   printf '\n' >&2
   case "$choice" in
     $'\e'|x|X) printf 'pi: container selection cancelled\n' >&2; return 2 ;;

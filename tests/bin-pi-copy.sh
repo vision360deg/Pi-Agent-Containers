@@ -23,6 +23,10 @@ case "${1:-}" in
   ps)
     printf 'current-id\tpi-agents-pi-current\tUp 1 minute\trunning\t%s\n' "$FAKE_CURRENT_WORKSPACE"
     printf 'other-id\tpi-agents-pi-other\tExited (0) 1 hour ago\texited\t%s\n' "$FAKE_OTHER_WORKSPACE"
+    # FAKE_EXTRA_CONTAINERS adds that many more stacks to the picker.
+    for ((index = 1; index <= ${FAKE_EXTRA_CONTAINERS:-0}; index++)); do
+      printf 'extra-%s-id\tpi-agents-pi-extra-%s\tExited (0) 1 hour ago\texited\t/extra-%s\n' "$index" "$index" "$index"
+    done
     ;;
   inspect)
     if [[ "$*" == *'/home/node/.pi/agent/sessions'* ]]; then
@@ -37,6 +41,7 @@ case "${1:-}" in
     case "${@: -1}" in
       pi-agents-pi-current) printf 'pi-agents-ws-current_pi-agent-state\n' ;;
       pi-agents-pi-other) printf 'pi-agents-ws-other_pi-agent-state\n' ;;
+      pi-agents-pi-extra-*) name="${@: -1}"; printf 'pi-agents-ws-extra-%s_pi-agent-state\n' "${name##*-}" ;;
       *) exit 1 ;;
     esac
     ;;
@@ -123,5 +128,18 @@ if grep -Fq -- '_pi-sessions:/' "$DOCKER_LOG"; then
   printf 'auth-only copy mounted session volumes:\n%s\n' "$(cat "$DOCKER_LOG")" >&2
   exit 1
 fi
+
+# With ten or more entries the picker waits for Enter after a leading 1-9,
+# so a slowly typed 10 selects item 10 rather than item 1.
+: > "$DOCKER_LOG"
+{ printf 1; sleep 0.3; printf '0\n'; } | FAKE_EXTRA_CONTAINERS=10 run_capture copy --auth --all
+grep -Fq -- 'Choice (number, then Enter): ' "$OUTPUT_LOG"
+grep -Fq -- 'pi-agents-ws-extra-9_pi-agent-state:/state-source:ro' "$DOCKER_LOG"
+
+# Shorter lists keep single-key selection.
+: > "$DOCKER_LOG"
+printf '1' | run_capture copy --auth --all
+grep -Fq -- 'Choice: ' "$OUTPUT_LOG"
+grep -Fq -- 'pi-agents-ws-other_pi-agent-state:/state-source:ro' "$DOCKER_LOG"
 
 printf 'bin/pi copy tests passed\n'
