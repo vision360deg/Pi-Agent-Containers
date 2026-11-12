@@ -153,6 +153,17 @@ assert_log_lacks 'docker compose'
 run_wrapper shell -r
 assert_log_has "docker exec -it --user 0 $SHELL_LAUNCH_ENV pi-agents-pi-current pi-shell-launch"
 
+# A current stack renamed by a basename collision is still the current
+# workspace's stack: --rebuild recreates it under its real project.
+RENAMED='pi-agents-pi-current-0123456789ab'
+FAKE_CONTAINERS=$'renamed-id\t'"$RENAMED"$'\tUp 4 minutes\trunning\t'"$CURRENT_PATH"
+if ! run_wrapper --rebuild shell; then
+  printf 'pi --rebuild shell rejected the renamed current stack:\n%s\n' "$(cat "$OUTPUT_LOG")" >&2
+  exit 1
+fi
+assert_log_has "docker compose --project-name $RENAMED"
+assert_log_has "docker exec -it $SHELL_LAUNCH_ENV $RENAMED pi-shell-launch"
+
 # Multiple containers for the current workspace require an explicit choice.
 FAKE_CONTAINERS=$'first-id\tpi-agents-pi-first\tUp 5 minutes\trunning\t'"$CURRENT_PATH"$'\nsecond-id\tpi-agents-pi-second\tUp 2 minutes\trunning\t'"$CURRENT_PATH"
 printf '2\n' | run_wrapper shell

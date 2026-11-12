@@ -2193,8 +2193,21 @@ attach_shell() {
     SHELL_SELECTED_STATE=running
   fi
 
+  # The current workspace's stack may carry a disambiguated name, so decide
+  # by workspace path and adopt its real container and project.
+  local selected_is_current=false
+  if [[ "$SHELL_START_NEW_PROJECT" == true ]]; then
+    selected_is_current=true
+  elif [[ "${SHELL_SELECTED_PATH:-}" == "$WORKSPACE" ]]; then
+    selected_is_current=true
+    inspect_workspace_container "$SHELL_SELECTED_NAME" "$WORKSPACE" || return $?
+    CONTAINER_NAME="$SHELL_SELECTED_NAME"
+    PROJECT_NAME="$INSPECTED_PROJECT"
+    build_compose
+  fi
+
   if [[ "$REBUILD_IMAGE" == true && "$SHELL_START_NEW_PROJECT" != true ]]; then
-    if [[ "$SHELL_SELECTED_NAME" != "$CONTAINER_NAME" ]]; then
+    if [[ "$selected_is_current" != true ]]; then
       printf 'pi: --rebuild can only build the current workspace image; run `pi --rebuild shell` from the selected workspace\n' >&2
       return 2
     fi
@@ -2207,7 +2220,7 @@ attach_shell() {
   # current workspace service before attaching normally so the launcher can
   # read the generated rc file. Containers selected from another workspace
   # retain their existing mounts and are not recreated under this project.
-  if [[ "$NO_RC_CONFIG" -eq 0 && "$SHELL_SELECTED_NAME" == "$CONTAINER_NAME" ]] &&
+  if [[ "$NO_RC_CONFIG" -eq 0 && "$selected_is_current" == true ]] &&
     ! shell_container_has_host_rc_mount "$SHELL_SELECTED_NAME"; then
     start_persistent_service
     SHELL_SELECTED_STATE=running
@@ -2227,7 +2240,7 @@ attach_shell() {
   fi
 
   if ! shell_container_has_launcher "$SHELL_SELECTED_NAME"; then
-    if [[ "$SHELL_SELECTED_NAME" != "$CONTAINER_NAME" ]]; then
+    if [[ "$selected_is_current" != true ]]; then
       printf 'pi: selected container lacks pi-shell-launch; run `pi update` or `pi --rebuild` from its workspace first\n' >&2
       return 2
     fi
