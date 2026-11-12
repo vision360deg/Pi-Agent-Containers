@@ -1,421 +1,259 @@
 #!/usr/bin/env bash
+# Host shell selection, rc generation and mounting, --no-rc-config, and Pi's alias wiring.
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.bash"
+source "$ROOT/tests/lib/launcher.bash"
 
-ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
-
-FAKE_BIN="$TMP_DIR/bin"
-WORKSPACE="$TMP_DIR/workspace"
-HOST_HOME="$TMP_DIR/home"
-DOCKER_LOG="$TMP_DIR/docker.log"
-OUTPUT_LOG="$TMP_DIR/output.log"
-FAKE_REBUILT_MARKER="$TMP_DIR/image-rebuilt"
-mkdir -p "$FAKE_BIN" "$WORKSPACE" "$HOST_HOME"
-mkdir -p "$HOST_HOME/.pi/agent"
-printf '%s\n' '{"quietStartup":true,"shellCommandPrefix":"printf custom-prefix"}' > "$HOST_HOME/.pi/agent/settings.json"
-export DOCKER_LOG FAKE_REBUILT_MARKER
-
-cat > "$FAKE_BIN/docker" <<'FAKE_DOCKER'
-#!/usr/bin/env bash
-set -euo pipefail
-
-printf 'docker %s\n' "$*" >> "$DOCKER_LOG"
-
-if [[ "${1:-}" == compose ]]; then
-  if [[ " $* " == *' --build '* || " $* " == *' build pi '* ]]; then
-    : > "$FAKE_REBUILT_MARKER"
-  fi
-  if [[ "$*" == *'exec -T pi test -x /usr/local/bin/pi-shell-launch'* &&
-    "${FAKE_NO_LAUNCHER-}" == 1 && ! -e "$FAKE_REBUILT_MARKER" ]]; then
-    exit 1
-  fi
-  if [[ " $* " == *' run '* && "$*" == *'pi-shell-launch'* &&
-    "${FAKE_NO_LAUNCHER-}" == 1 && ! -e "$FAKE_REBUILT_MARKER" ]]; then
-    printf 'pi: image lacks pi-shell-launch; run pi update or use --rebuild\n' >&2
-    exit 2
-  fi
-  if [[ " $* " == *' exec -T pi sh -c '* ]]; then
-    docker_args=("$@")
-    setup_script=''
-    for ((index = 0; index < ${#docker_args[@]}; index++)); do
-      if (( index > 0 && index + 1 < ${#docker_args[@]} )) &&
-        [[ "${docker_args[index]}" == -c && "${docker_args[index-1]}" == sh ]]; then
-        setup_script=${docker_args[index+1]}
-        break
-      fi
-    done
-    [[ -n "$setup_script" ]] || { printf 'missing settings setup script\n' >&2; exit 99; }
-    bash -c "$setup_script"
-    exit $?
-  fi
-  if [[ " $* " == *' run --rm --entrypoint /bin/sh pi -c '* ]]; then
-    docker_args=("$@")
-    setup_script=''
-    for ((index = 0; index < ${#docker_args[@]}; index++)); do
-      if (( index > 0 && index + 3 < ${#docker_args[@]} )) &&
-        [[ "${docker_args[index]}" == -c && "${docker_args[index-1]}" == pi ]]; then
-        setup_script=${docker_args[index+3]}
-        break
-      fi
-    done
-    if [[ -n "$setup_script" ]]; then
-      bash -c "$setup_script"
-      exit $?
-    fi
-  fi
-  printf 'PI_HOST_SHELL=%s\n' "${PI_HOST_SHELL-<unset>}" >> "$DOCKER_LOG"
-  printf 'PI_HOST_RC_SOURCE=%s\n' "${PI_HOST_RC_SOURCE-<unset>}" >> "$DOCKER_LOG"
-  printf 'PI_HOST_RC_FILE=%s\n' "${PI_HOST_RC_FILE-<unset>}" >> "$DOCKER_LOG"
-  printf 'PI_NO_RC_CONFIG=%s\n' "${PI_NO_RC_CONFIG-<unset>}" >> "$DOCKER_LOG"
-  exit 0
-fi
-
-# FAKE_CONTAINERS rows are ID, name, status, state, workspace.
-container_workspace() {
-  local id name status state path
-  while IFS=$'\t' read -r id name status state path; do
-    [[ -n "$name" && "$name" == "$1" ]] && { printf '%s' "$path"; return 0; }
-  done <<< "${FAKE_CONTAINERS-}"
-  return 1
-}
-
-if [[ "${1:-}" == ps ]]; then
-  if [[ "$*" == *'label=com.pi-agents.workspace-basename='* ]]; then
-    while IFS=$'\t' read -r id name status state path; do
-      [[ -n "$id" ]] || continue
-      printf '%s\t%s\t%s\t%s\n' "$id" "$name" "$status" "$path"
-    done <<< "${FAKE_CONTAINERS-}"
-    exit 0
-  fi
-  [[ "$*" == *'label=com.docker.compose.project='* ]] && exit 0
-  printf '%s\n' "${FAKE_CONTAINERS-}"
-  exit 0
-fi
-
-if [[ "${1:-}" == container && "${2:-}" == inspect ]]; then
-  container_workspace "$3" >/dev/null
-  exit $?
-fi
-
-if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then
-  exit 0
-fi
-
-if [[ "${1:-}" == inspect ]]; then
-  if [[ "$*" == *com.pi-agents.managed* ]]; then
-    name="${@: -1}"
-    path="$(container_workspace "$name")" || exit 1
-    printf '/%s\037true\037%s\037%s\037pi\037False\n' "$name" "$path" "$name"
-    exit 0
-  fi
-  if [[ "${FAKE_NO_RC_MOUNT-}" == 1 ]]; then
-    exit 0
-  fi
-  printf 'mounted\n'
-  exit 0
-fi
-
-if [[ "${1:-}" == exec && "$*" == *'test -x /usr/local/bin/pi-shell-launch'* ]]; then
-  [[ "${FAKE_NO_LAUNCHER-}" != 1 || -e "$FAKE_REBUILT_MARKER" ]]
-  exit $?
-fi
-
-if [[ "${1:-}" == volume ]]; then
-  case "${2:-}" in
-    inspect) [[ "$*" == *com.pi-agents.managed* ]] && exit 0; exit 1 ;;
-    ls|create) exit 0 ;;
-  esac
-fi
-
-case "${1:-}" in
-  exec|run|start) exit 0 ;;
-esac
-
-printf 'unexpected Docker command: %s\n' "$*" >&2
-exit 99
-FAKE_DOCKER
-chmod +x "$FAKE_BIN/docker"
-
-run_wrapper() {
-  local host_shell="$1"
-  local state_path="$2"
-  local invocation_home="${FAKE_HOME:-$HOST_HOME}"
-  shift 2
-  : > "$DOCKER_LOG"
-  : > "$OUTPUT_LOG"
-  rm -f "$FAKE_REBUILT_MARKER"
-  (
-    cd "$WORKSPACE"
-    env -u PI_WORKSPACE \
-      SHELL="$host_shell" \
-      PI_AGENT_CONTAINERS_CONFIG_PATH="$state_path" \
-      HOME="$invocation_home" \
-      FAKE_CONTAINERS="${FAKE_CONTAINERS-}" \
-      FAKE_NO_RC_MOUNT="${FAKE_NO_RC_MOUNT-}" \
-      FAKE_NO_LAUNCHER="${FAKE_NO_LAUNCHER-}" \
-      FAKE_REBUILT_MARKER="$FAKE_REBUILT_MARKER" \
-      PATH="$FAKE_BIN:$PATH" \
-      "$ROOT/bin/pi" "$@"
-  ) >"$OUTPUT_LOG" 2>&1
-}
-
-assert_log_has() {
-  local expected="$1"
-  if ! grep -Fq -- "$expected" "$DOCKER_LOG"; then
-    printf 'missing Docker log text:\n%s\nactual:\n%s\n' "$expected" "$(cat "$DOCKER_LOG")" >&2
-    exit 1
-  fi
-}
-
-assert_log_has_line() {
-  local expected="$1"
-  if ! grep -Fqx -- "$expected" "$DOCKER_LOG"; then
-    printf 'missing Docker log line:\n%s\nactual:\n%s\n' "$expected" "$(cat "$DOCKER_LOG")" >&2
-    exit 1
-  fi
-}
-
-assert_log_lacks() {
-  local unexpected="$1"
-  if grep -Fq -- "$unexpected" "$DOCKER_LOG"; then
-    printf 'unexpected Docker log text:\n%s\nactual:\n%s\n' "$unexpected" "$(cat "$DOCKER_LOG")" >&2
-    exit 1
-  fi
-}
+WS=$(make_workspace "$TEST_HOME/projects/alpha")
+NAME=pi-agents-pi-alpha
+AGENT=$(agent_volume "$WS")
+RC_SOURCE=$CONFIG_DIR/shell-rc/pi-agents-ws-$(workspace_hash "$WS")
+SETTINGS=$FAKE_DOCKER_STATE/volume-data/$AGENT/settings.json
+EXEC_PREFIX='docker exec -it'
+EXEC_ENV='--env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc'
 
 assert_no_docker() {
-  if [[ -s "$DOCKER_LOG" ]]; then
-    printf 'expected no Docker calls, got:\n%s\n' "$(cat "$DOCKER_LOG")" >&2
-    exit 1
-  fi
+  [[ ! -s $DOCKER_LOG ]] || fail "docker must not run"$'\n'"$(show_run)"
 }
 
-assert_status_2() {
-  local description="$1"
-  shift
-  if "$@"; then
-    printf '%s unexpectedly succeeded\n' "$description" >&2
-    exit 1
-  else
-    local status=$?
-    if [[ "$status" -ne 2 ]]; then
-      printf '%s returned status %s, expected 2\n' "$description" "$status" >&2
-      exit 1
-    fi
-  fi
+# Pi settings in the workspace's agent state that predate the wrapper's aliases.
+existing_settings() {
+  fake_volume "$AGENT" "$WS" agent 2026-01-01T00:00:00Z
+  fake_volume_file "$AGENT" settings.json "$1"
 }
 
-printf 'export FROM_PROFILE=yes\nalias ll="printf host-ll"\n' > "$HOST_HOME/.profile"
-printf 'source ~/.profile\nexport FROM_ZSHRC=yes\n' > "$HOST_HOME/.zshrc"
-printf 'source ~/.profile\nexport FROM_BASH_PROFILE=yes\n' > "$HOST_HOME/.bash_profile"
-printf 'export FROM_BASHRC=yes\n' > "$HOST_HOME/.bashrc"
+existing_stack() {
+  reset_docker
+  fake_image "$NAME"
+  fake_state "$WS" 2026-01-01T00:00:00Z
+  fake_container "$NAME" "$WS" running "$@"
+}
+
+# stale_image: the service image and its container lack pi-shell-launch.
+stale_image() {
+  fake_image "$NAME" stale
+  [[ ! -e $FAKE_DOCKER_STATE/containers/$NAME ]] || fake_record "$FAKE_DOCKER_STATE/containers/$NAME" image-id=stale
+}
+
+current_image() {
+  fake_image "$NAME"
+  [[ ! -e $FAKE_DOCKER_STATE/containers/$NAME ]] || fake_record "$FAKE_DOCKER_STATE/containers/$NAME" image-id=current
+}
+
+# expect_alias PREFIX RC_FILE TEXT: Pi's shell command prefix expands the host
+# ll alias from RC_FILE, printing TEXT, and loads no aliases without rc config.
+expect_alias() {
+  local output
+  output=$(PI_NO_RC_CONFIG=0 PI_HOST_RC_FILE=$2 /bin/bash -c "$1"$'\nll' 2>&1) || true
+  [[ $output == *"$3"* ]] || fail "Pi shellCommandPrefix failed to expand the host ll alias:"$'\n'"$output"
+  if output=$(PI_NO_RC_CONFIG=1 PI_HOST_RC_FILE=$2 /bin/bash -c "$1"$'\nll' 2>&1); then
+    fail 'no-rc command prefix unexpectedly expanded the host alias'
+  fi
+  [[ $output != *"$3"* ]] || fail 'no-rc command prefix unexpectedly loaded host aliases'
+}
+
+printf 'export FROM_PROFILE=yes\nalias ll="printf host-ll"\n' > "$TEST_HOME/.profile"
+printf 'source ~/.profile\nexport FROM_ZSHRC=yes\n' > "$TEST_HOME/.zshrc"
+printf 'source ~/.profile\nexport FROM_BASH_PROFILE=yes\n' > "$TEST_HOME/.bash_profile"
+printf 'export FROM_BASHRC=yes\n' > "$TEST_HOME/.bashrc"
 
 # Default selection follows the basename of SHELL and prepares a stable
-# per-workspace rc file.
-DEFAULT_STATE="$TMP_DIR/default-state"
-run_wrapper /usr/local/bin/zsh "$DEFAULT_STATE" --version
-zsh_rc_dirs=("$DEFAULT_STATE"/shell-rc/*)
-[[ "${#zsh_rc_dirs[@]}" -eq 1 && -d "${zsh_rc_dirs[0]}" ]]
-zsh_rc_file="${zsh_rc_dirs[0]}/rc"
-[[ -f "$zsh_rc_file" ]]
-grep -Fq 'export FROM_PROFILE=yes' "$zsh_rc_file"
-grep -Fq 'export FROM_ZSHRC=yes' "$zsh_rc_file"
-SHELL_COMMAND_PREFIX=$(jq -r '.shellCommandPrefix' "$HOST_HOME/.pi/agent/settings.json")
-[[ "$SHELL_COMMAND_PREFIX" == *'printf custom-prefix'* ]]
-[[ "$SHELL_COMMAND_PREFIX" == *'shopt -s expand_aliases'* ]]
-[[ "$SHELL_COMMAND_PREFIX" == *'pi-agents managed host shell aliases'* ]]
+# per-workspace rc file; Pi's own shell commands get the host aliases while
+# custom settings are kept.
+reset_docker
+fake_image "$NAME"
+existing_settings '{"quietStartup":true,"shellCommandPrefix":"printf custom-prefix"}'
+EXTRA_ENV=(SHELL=/usr/local/bin/zsh)
+run_pi "$WS" --version
+assert_status 0
+rc_dirs=("$CONFIG_DIR"/shell-rc/*)
+[[ ${#rc_dirs[@]} -eq 1 && ${rc_dirs[0]} == "$RC_SOURCE" && -f $RC_SOURCE/rc ]] || fail "expected one rc directory: ${rc_dirs[*]}"
+assert_file_has "$RC_SOURCE/rc" 'export FROM_PROFILE=yes'
+assert_file_has "$RC_SOURCE/rc" 'export FROM_ZSHRC=yes'
+SHELL_COMMAND_PREFIX=$(jq -r '.shellCommandPrefix' "$SETTINGS")
+[[ $SHELL_COMMAND_PREFIX == *'printf custom-prefix'* ]] || fail 'custom shellCommandPrefix was lost'
+[[ $SHELL_COMMAND_PREFIX == *'shopt -s expand_aliases'* ]] || fail 'alias expansion is not enabled'
+[[ $SHELL_COMMAND_PREFIX == *'pi-agents managed host shell aliases'* ]] || fail 'managed alias marker is missing'
 assert_log_has 'grep -E'
-ALIAS_OUTPUT=$(PI_NO_RC_CONFIG=0 PI_HOST_RC_FILE="$zsh_rc_file" \
-  /bin/bash -c "${SHELL_COMMAND_PREFIX}"$'\nll' 2>&1)
-[[ "$ALIAS_OUTPUT" == *'host-ll'* ]] || {
-  printf 'Pi shellCommandPrefix failed to expand the host ll alias:\n%s\n' "$ALIAS_OUTPUT" >&2
-  exit 1
-}
-if PI_NO_RC_CONFIG=1 PI_HOST_RC_FILE="$zsh_rc_file" \
-  /bin/bash -c "${SHELL_COMMAND_PREFIX}"$'\nll' > "$TMP_DIR/no-rc-alias.out" 2>&1; then
-  printf 'no-rc command prefix unexpectedly expanded the host alias\n' >&2
-  exit 1
-fi
-if grep -Fq 'host-ll' "$TMP_DIR/no-rc-alias.out"; then
-  printf 'no-rc command prefix unexpectedly loaded host aliases\n' >&2
-  exit 1
-fi
-[[ $(jq -r '.shellCommandPrefix' "$HOST_HOME/.pi/agent/settings.json" | grep -Fc 'pi-agents managed host shell aliases') -eq 1 ]]
-assert_log_has_line 'PI_HOST_SHELL=zsh'
-assert_log_has_line "PI_HOST_RC_SOURCE=${zsh_rc_dirs[0]}"
-assert_log_has_line 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc'
-assert_log_has_line 'PI_NO_RC_CONFIG=0'
+expect_alias "$SHELL_COMMAND_PREFIX" "$RC_SOURCE/rc" host-ll
+assert_eq "$(jq -r '.shellCommandPrefix' "$SETTINGS" | grep -Fc 'pi-agents managed host shell aliases')" 1 'managed alias blocks'
+assert_log_has "shell=zsh rc-source=$RC_SOURCE rc-file=/tmp/pi-host-shellrc/rc no-rc=0"
 assert_log_has 'compose.shell-rc.yml'
 assert_log_has 'up --detach pi'
 assert_log_lacks '--build'
+assert_eq "$(container_field "$NAME" mount./tmp/pi-host-shellrc)" "$RC_SOURCE" 'rc mount source'
 assert_log_has 'exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native'
 assert_log_has 'exec pi pi-shell-launch pi-session-log --version'
 
-if FAKE_NO_LAUNCHER=1 run_wrapper /usr/local/bin/zsh "$DEFAULT_STATE" --version; then
-  printf 'persistent launch with stale image unexpectedly succeeded\n' >&2
-  exit 1
-else
-  status=$?
-  [[ "$status" -eq 2 ]]
-fi
-grep -Fq 'image lacks pi-shell-launch' "$OUTPUT_LOG"
-grep -Fq 'pi update' "$OUTPUT_LOG"
+# A stale image is reported without an implicit rebuild.
+stale_image
+run_pi "$WS" --version
+assert_status 2
+assert_output_has 'image lacks pi-shell-launch'
+assert_output_has 'pi update'
 assert_log_lacks 'up --build'
 assert_log_lacks 'install npm:pi-agent-browser-native'
+current_image
 
 # Explicit overrides win over SHELL and rewrite the same rc source file, so an
 # already-running container's read-only mount sees the selected shell's config.
-run_wrapper /bin/zsh "$DEFAULT_STATE" --bash --version
-bash_rc_dirs=("$DEFAULT_STATE"/shell-rc/*)
-[[ "${#bash_rc_dirs[@]}" -eq 1 && "${bash_rc_dirs[0]}" == "${zsh_rc_dirs[0]}" ]]
-grep -Fq 'export FROM_BASH_PROFILE=yes' "$zsh_rc_file"
-grep -Fq 'export FROM_BASHRC=yes' "$zsh_rc_file"
-grep -Fq 'alias ll="printf host-ll"' "$zsh_rc_file"
-ALIAS_OUTPUT=$(PI_NO_RC_CONFIG=0 PI_HOST_RC_FILE="$zsh_rc_file" \
-  /bin/bash -c "${SHELL_COMMAND_PREFIX}"$'\nll' 2>&1)
-[[ "$ALIAS_OUTPUT" == *'host-ll'* ]] || fail 'Bash host startup chain did not supply ll to Pi commands'
-assert_log_has_line 'PI_HOST_SHELL=bash'
-assert_log_has_line "PI_HOST_RC_SOURCE=${zsh_rc_dirs[0]}"
+EXTRA_ENV=(SHELL=/bin/zsh)
+run_pi "$WS" --bash --version
+assert_status 0
+rc_dirs=("$CONFIG_DIR"/shell-rc/*)
+[[ ${#rc_dirs[@]} -eq 1 && ${rc_dirs[0]} == "$RC_SOURCE" ]] || fail "expected the same rc directory: ${rc_dirs[*]}"
+assert_file_has "$RC_SOURCE/rc" 'export FROM_BASH_PROFILE=yes'
+assert_file_has "$RC_SOURCE/rc" 'export FROM_BASHRC=yes'
+assert_file_has "$RC_SOURCE/rc" 'alias ll="printf host-ll"'
+expect_alias "$SHELL_COMMAND_PREFIX" "$RC_SOURCE/rc" host-ll
+assert_log_has "shell=bash rc-source=$RC_SOURCE rc-file="
 
-ZSH_STATE="$TMP_DIR/zsh-state"
-run_wrapper /bin/bash "$ZSH_STATE" --zsh --version
-assert_log_has_line 'PI_HOST_SHELL=zsh'
+EXTRA_ENV=(SHELL=/bin/bash)
+run_pi "$WS" --zsh --version
+assert_status 0
+assert_log_has 'shell=zsh rc-source='
 
-REBUILD_STATE="$TMP_DIR/rebuild-state"
-run_wrapper /bin/bash "$REBUILD_STATE" --rebuild --version
 # --rebuild builds the service image once; Compose then recreates from it.
+run_pi "$WS" --rebuild --version
+assert_status 0
 assert_log_has ' build pi'
 assert_log_has 'up --detach pi'
 assert_log_lacks 'up --build'
 assert_log_lacks '--no-cache'
 assert_log_lacks ' --pull '
 
+# Repeated launches keep a single managed alias block.
+assert_eq "$(jq -r '.shellCommandPrefix' "$SETTINGS" | grep -Fc 'pi-agents managed host shell aliases')" 1 'managed alias blocks'
+
 # No-rc mode selects the shell without generating or mounting an rc file.
-NO_RC_STATE="$TMP_DIR/no-rc-state"
-run_wrapper /bin/zsh "$NO_RC_STATE" --no-rc-config --version
-[[ ! -e "$NO_RC_STATE/shell-rc" ]]
-assert_log_has_line 'PI_HOST_SHELL=zsh'
-assert_log_has_line 'PI_HOST_RC_SOURCE='
-assert_log_has_line 'PI_NO_RC_CONFIG=1'
-if grep -Fq 'compose.shell-rc.yml' "$DOCKER_LOG"; then
-  printf 'no-rc mode unexpectedly enabled the rc Compose override\n' >&2
-  exit 1
-fi
+reset_docker
+fake_image "$NAME"
+EXTRA_ENV=(SHELL=/bin/zsh)
+run_pi "$WS" --no-rc-config --version
+assert_status 0
+[[ ! -e $CONFIG_DIR/shell-rc ]] || fail 'no-rc mode generated an rc file'
+assert_log_has 'shell=zsh rc-source= rc-file=/tmp/pi-host-shellrc/rc no-rc=1'
+assert_log_lacks 'compose.shell-rc.yml'
 assert_log_has 'exec pi pi-shell-launch pi-session-log --version'
 assert_log_lacks 'exec -T pi sh -c'
+EXTRA_ENV=()
 
-# Disposable Pi and extension installation both use the shell launcher.
-RM_STATE="$TMP_DIR/rm-state"
-RM_HOME="$TMP_DIR/rm-home"
-mkdir -p "$RM_HOME/.pi/agent"
-printf '%s\n' '{"shellCommandPrefix":"printf rm-custom-prefix"}' > "$RM_HOME/.pi/agent/settings.json"
+# Disposable Pi and extension installation both use the shell launcher, and
+# the one-off configures host aliases in the agent state.
+RM_HOME=$TMP_DIR/rm-home
+mkdir -p "$RM_HOME"
 printf 'alias ll="printf rm-host-ll"\n' > "$RM_HOME/.profile"
 printf 'source ~/.profile\n' > "$RM_HOME/.bash_profile"
-FAKE_HOME="$RM_HOME" run_wrapper /bin/bash "$RM_STATE" --rm --version
+reset_docker
+fake_image "$NAME"
+existing_settings '{"shellCommandPrefix":"printf rm-custom-prefix"}'
+EXTRA_ENV=(HOME="$RM_HOME")
+run_pi "$WS" --rm --version
+assert_status 0
 assert_log_has 'run --rm --entrypoint /bin/sh pi -c'
 assert_log_has 'pi-agents managed host shell aliases'
 assert_log_has '[ ! -x /usr/local/bin/pi-shell-launch ]'
 assert_log_has 'run pi update or use --rebuild'
 assert_log_has 'run --rm --service-ports pi pi-shell-launch pi --version'
 assert_log_lacks 'run --build'
-compose_run_count="$(grep -Ec '^docker compose .* run --' "$DOCKER_LOG" || true)"
-[[ "$compose_run_count" -eq 2 ]]
-[[ "$(jq -r '.shellCommandPrefix' "$RM_HOME/.pi/agent/settings.json")" == *'rm-custom-prefix'* ]]
-RM_PREFIX=$(jq -r '.shellCommandPrefix' "$RM_HOME/.pi/agent/settings.json")
-rm_rc_dirs=("$RM_STATE"/shell-rc/*)
-RM_ALIAS_OUTPUT=$(PI_NO_RC_CONFIG=0 PI_HOST_RC_FILE="${rm_rc_dirs[0]}/rc" \
-  /bin/bash -c "${RM_PREFIX}"$'\nll' 2>&1)
-[[ "$RM_ALIAS_OUTPUT" == *'rm-host-ll'* ]] || fail 'one-off Pi launch did not configure host aliases'
+assert_eq "$(grep -Ec '^docker compose .* run --' "$DOCKER_LOG" || true)" 2 'compose run count'
+RM_PREFIX=$(jq -r '.shellCommandPrefix' "$SETTINGS")
+[[ $RM_PREFIX == *'rm-custom-prefix'* ]] || fail 'custom shellCommandPrefix was lost by the one-off'
+expect_alias "$RM_PREFIX" "$RC_SOURCE/rc" rm-host-ll
 
-if FAKE_NO_LAUNCHER=1 run_wrapper /bin/bash "$RM_STATE" --rm --version; then
-  printf 'disposable launch with stale image unexpectedly succeeded\n' >&2
-  exit 1
-else
-  status=$?
-  [[ "$status" -eq 2 ]]
-fi
-grep -Fq 'image lacks pi-shell-launch' "$OUTPUT_LOG"
-grep -Fq 'pi update' "$OUTPUT_LOG"
+stale_image
+run_pi "$WS" --rm --version
+assert_status 2
+assert_output_has 'image lacks pi-shell-launch'
+assert_output_has 'pi update'
 assert_log_lacks 'run --build'
 assert_log_lacks 'build pi'
 
-FAKE_NO_LAUNCHER=1 run_wrapper /bin/bash "$RM_STATE" --rebuild --rm --version
+run_pi "$WS" --rebuild --rm --version
+assert_status 0
 assert_log_has 'build pi'
 assert_log_has 'run --rm --service-ports pi pi-shell-launch pi --version'
 assert_log_lacks 'run --build'
 assert_log_lacks '--no-cache'
-compose_run_count="$(grep -Ec '^docker compose .* run --' "$DOCKER_LOG" || true)"
-[[ "$compose_run_count" -eq 2 ]]
+assert_eq "$(grep -Ec '^docker compose .* run --' "$DOCKER_LOG" || true)" 2 'compose run count'
+EXTRA_ENV=()
 
-# Existing-container shell attachment uses the helper and preserves root ordering.
-WORKSPACE_PATH="$(cd -P -- "$WORKSPACE" && pwd)"
-FAKE_CONTAINERS=$'current-id\tpi-agents-pi-workspace\tUp 1 minute\trunning\t'"$WORKSPACE_PATH"
-SHELL_STATE="$TMP_DIR/shell-state"
-run_wrapper /bin/zsh "$SHELL_STATE" shell
-assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
+# Existing-container shell attachment uses the launcher and keeps the selected
+# shell and rc settings in its environment.
+existing_stack
+EXTRA_ENV=(SHELL=/bin/zsh)
+run_pi "$WS" shell
+assert_status 0
+assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI_NO_RC_CONFIG=0 $NAME pi-shell-launch"
 
-run_wrapper /bin/zsh "$SHELL_STATE" --rebuild shell
+run_pi "$WS" --rebuild shell
+assert_status 0
 assert_log_has ' build pi'
 assert_log_has 'up --detach --force-recreate pi'
-assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
+assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI_NO_RC_CONFIG=0 $NAME pi-shell-launch"
 
 # Normal shell attachment reconciles a current container previously created
 # with --no-rc-config before trying to source the generated rc.
-FAKE_NO_RC_MOUNT=1 run_wrapper /bin/zsh "$SHELL_STATE" shell
+existing_stack -mount./tmp/pi-host-shellrc
+run_pi "$WS" shell
+assert_status 0
 assert_log_has 'compose.shell-rc.yml'
 assert_log_has 'up --detach pi'
-assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
+assert_eq "$(container_field "$NAME" mount./tmp/pi-host-shellrc)" "$RC_SOURCE" 'reconciled rc mount source'
+assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI_NO_RC_CONFIG=0 $NAME pi-shell-launch"
 
 # A stale current image is diagnosed without an implicit rebuild.
-if FAKE_NO_LAUNCHER=1 run_wrapper /bin/zsh "$SHELL_STATE" shell; then
-  printf 'shell attachment with stale image unexpectedly succeeded\n' >&2
-  exit 1
-else
-  status=$?
-  [[ "$status" -eq 2 ]]
-fi
-grep -Fq 'image lacks pi-shell-launch' "$OUTPUT_LOG"
-grep -Fq 'pi update' "$OUTPUT_LOG"
+stale_image
+run_pi "$WS" shell
+assert_status 2
+assert_output_has 'image lacks pi-shell-launch'
+assert_output_has 'pi update'
 assert_log_lacks 'up --build'
+assert_log_lacks ' build '
 
 # Explicit rebuilding repairs the current workspace image before attaching.
-FAKE_NO_LAUNCHER=1 run_wrapper /bin/zsh "$SHELL_STATE" --rebuild shell
+run_pi "$WS" --rebuild shell
+assert_status 0
 assert_log_has ' build pi'
 assert_log_has 'up --detach --force-recreate pi'
-assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
+assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI_NO_RC_CONFIG=0 $NAME pi-shell-launch"
 
-run_wrapper /bin/zsh "$SHELL_STATE" shell --root
-assert_log_has 'docker exec -it --user 0 --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
+run_pi "$WS" shell --root
+assert_status 0
+assert_log_has "$EXEC_PREFIX --user 0 --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI_NO_RC_CONFIG=0 $NAME pi-shell-launch"
 
-run_wrapper /bin/bash "$SHELL_STATE" --no-rc-config shell
-assert_log_has 'docker exec -it --env PI_HOST_SHELL=bash --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=1 pi-agents-pi-workspace pi-shell-launch'
+EXTRA_ENV=(SHELL=/bin/bash)
+run_pi "$WS" --no-rc-config shell
+assert_status 0
+assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=bash $EXEC_ENV --env PI_NO_RC_CONFIG=1 $NAME pi-shell-launch"
+EXTRA_ENV=()
 
 # Invalid selection fails before any Docker command.
-INVALID_STATE="$TMP_DIR/invalid-state"
-assert_status_2 'mutually exclusive shell overrides' run_wrapper /bin/bash "$INVALID_STATE" --bash --zsh --version
+run_pi "$WS" --bash --zsh --version
+assert_status 2
 assert_no_docker
-grep -Fq -- '--bash and --zsh are mutually exclusive' "$OUTPUT_LOG"
+assert_output_has '--bash and --zsh are mutually exclusive'
 
-assert_status_2 'unsupported host shell' run_wrapper /usr/bin/fish "$INVALID_STATE" --version
+EXTRA_ENV=(SHELL=/usr/bin/fish)
+run_pi "$WS" --version
+assert_status 2
 assert_no_docker
-grep -Fq 'unsupported host shell: fish' "$OUTPUT_LOG"
+assert_output_has 'unsupported host shell: fish'
 
 # Commands that never start a host-shell session ignore an unsupported SHELL.
 for command in list stop remove copy; do
-  run_wrapper /usr/bin/fish "$INVALID_STATE" "$command" </dev/null || true
-  if grep -Fq 'unsupported host shell' "$OUTPUT_LOG" || [[ ! -s "$DOCKER_LOG" ]]; then
-    printf 'pi %s with SHELL=fish did not reach Docker:\n%s\n' "$command" "$(cat "$OUTPUT_LOG")" >&2
-    exit 1
-  fi
+  run_pi "$WS" "$command"
+  assert_output_lacks 'unsupported host shell'
+  [[ -s $DOCKER_LOG ]] || fail "pi $command with SHELL=fish did not reach Docker"$'\n'"$(show_run)"
 done
+EXTRA_ENV=()
 
 # Read-only inventory does not generate startup configuration.
-FAKE_CONTAINERS=''
-LIST_STATE="$TMP_DIR/list-state"
-run_wrapper /bin/zsh "$LIST_STATE" list
-[[ ! -e "$LIST_STATE/shell-rc" ]]
+reset_docker
+EXTRA_ENV=(SHELL=/bin/zsh)
+run_pi "$WS" list
+assert_status 0
+[[ ! -e $CONFIG_DIR/shell-rc ]] || fail 'list generated an rc file'
+EXTRA_ENV=()
 
-[[ $(jq -r '.shellCommandPrefix' "$HOST_HOME/.pi/agent/settings.json" | grep -Fc 'pi-agents managed host shell aliases') -eq 1 ]]
-
-printf 'bin/pi host shell tests passed\n'
+pass
