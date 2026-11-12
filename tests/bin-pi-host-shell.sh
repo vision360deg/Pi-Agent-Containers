@@ -192,6 +192,17 @@ assert_log_has ' build pi'
 assert_log_has 'up --detach --force-recreate pi'
 assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI_NO_RC_CONFIG=0 $NAME pi-shell-launch"
 
+# A running current stack that already mounts the rc is attached as is: a stack
+# started with --oauth keeps its published ports and attached Pi sessions.
+existing_stack
+printf 'port=%s\n' 127.0.0.1:1455:1455/tcp ::1:1455:1455/tcp >> "$FAKE_DOCKER_STATE/containers/$NAME"
+run_pi "$WS" shell
+assert_status 0
+assert_log_lacks ' up '
+assert_eq "$(container_field "$NAME" port | LC_ALL=C sort)" $'127.0.0.1:1455:1455/tcp\n::1:1455:1455/tcp' 'published OAuth ports'
+assert_eq "$(container_field "$NAME" created)" 2026-01-01T00:00:00Z 'container must not be recreated'
+assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI_NO_RC_CONFIG=0 $NAME pi-shell-launch"
+
 # Normal shell attachment reconciles a current container previously created
 # with --no-rc-config before trying to source the generated rc.
 existing_stack -mount./tmp/pi-host-shellrc
