@@ -1,0 +1,486 @@
+#!/usr/bin/env bash
+# Stateful fake Docker CLI for bin/pi tests.
+#
+# State lives under $FAKE_DOCKER_STATE:
+#   containers/NAME    key=value records (id, name, state, status, image-id, label.*, mount.*, port)
+#   volumes/NAME       key=value records (name, created, label.*)
+#   volume-data/NAME/  files "inside" a volume (initialization markers, auth, settings)
+#   images/IMAGE       present when the image has been built; holds its build id,
+#                      "stale" for an image that lacks pi-shell-launch
+#   homes/VOLUME/      the home directory of a container whose agent state is VOLUME
+# Every invocation is appended to $DOCKER_LOG as one line.
+set -euo pipefail
+shopt -s nullglob
+shopt -u patsub_replacement 2>/dev/null || true
+
+: "${FAKE_DOCKER_STATE:?}" "${DOCKER_LOG:?}"
+CONTAINERS=$FAKE_DOCKER_STATE/containers
+VOLUMES=$FAKE_DOCKER_STATE/volumes
+DATA=$FAKE_DOCKER_STATE/volume-data
+IMAGES=$FAKE_DOCKER_STATE/images
+HOMES=$FAKE_DOCKER_STATE/homes
+mkdir -p "$CONTAINERS" "$VOLUMES" "$DATA" "$IMAGES" "$HOMES"
+
+invocation=$*
+printf 'docker %s\n' "${invocation//$'\n'/ }" >> "$DOCKER_LOG"
+
+declare -A R=()
+PORTS=()
+FILTERS=()
+
+load_record() {
+  local line
+  R=(); PORTS=()
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -n $line ]] || continue
+    if [[ $line == port=* ]]; then PORTS+=("${line#port=}"); else R[${line%%=*}]=${line#*=}; fi
+  done < "$1"
+}
+
+save_record() {
+  local key port
+  {
+    for key in "${!R[@]}"; do printf '%s=%s\n' "$key" "${R[$key]}"; done
+    for port in "${PORTS[@]}"; do printf 'port=%s\n' "$port"; done
+  } > "$1"
+}
+
+next_timestamp() {
+  local clock=0 file=$FAKE_DOCKER_STATE/clock
+  [[ ! -s $file ]] || clock=$(<"$file")
+  clock=$((clock + 1))
+  printf '%s\n' "$clock" > "$file"
+  printf '2026-02-01T10:%02d:%02dZ' "$((clock / 60))" "$((clock % 60))"
+}
+
+matches_filters() {
+  local filter key value
+  for filter in "${FILTERS[@]}"; do
+    filter=${filter#label=}
+    if [[ $filter == *=* ]]; then
+      key=${filter%%=*}; value=${filter#*=}
+      [[ ${R[label.$key]+set} && ${R[label.$key]} == "$value" ]] || return 1
+    else
+      [[ ${R[label.$filter]+set} ]] || return 1
+    fi
+  done
+}
+
+render() {
+  local out=$1 kind=$2 value
+  local ps_label='\{\{\.Label "([^"]+)"\}\}'
+  local index_label='\{\{index \.(Config\.)?Labels "([^"]+)"\}\}'
+  local mount='\{\{range \.Mounts\}\}\{\{if (eq \.Destination|and \(eq \.Type "volume"\) \(eq \.Destination) "([^"]+)"\)?\}\}\{\{\.(Name|Source)\}\}\{\{end\}\}\{\{end\}\}'
+  while [[ $out =~ $mount ]]; do
+    value=${R[mount.${BASH_REMATCH[2]}]:-}
+    out=${out/"${BASH_REMATCH[0]}"/"$value"}
+  done
+  out=${out//'\t'/$'\t'}
+  out=${out//'{{.ID}}'/${R[id]:-}}
+  out=${out//'{{.Names}}'/${R[name]:-}}
+  out=${out//'{{.Status}}'/${R[status]:-}}
+  out=${out//'{{.State}}'/${R[state]:-}}
+  out=${out//'{{.State.Status}}'/${R[state]:-}}
+  out=${out//'{{.State.StartedAt}}'/${R[started]:-0001-01-01T00:00:00Z}}
+  out=${out//'{{.Created}}'/${R[created]:-}}
+  out=${out//'{{.CreatedAt}}'/${R[created]:-}}
+  if [[ $kind == container ]]; then out=${out//'{{.Name}}'/"/${R[name]:-}"}; else out=${out//'{{.Name}}'/${R[name]:-}}; fi
+  while [[ $out =~ $ps_label ]]; do
+    value=${R[label.${BASH_REMATCH[1]}]:-}
+    out=${out/"${BASH_REMATCH[0]}"/"$value"}
+  done
+  while [[ $out =~ $index_label ]]; do
+    if [[ ${R[label.${BASH_REMATCH[2]}]+set} ]]; then value=${R[label.${BASH_REMATCH[2]}]}; else value='<no value>'; fi
+    out=${out/"${BASH_REMATCH[0]}"/"$value"}
+  done
+  # Docker rejects templates it cannot parse, such as escaped quotes.
+  [[ $out != *'{{'* ]] || { printf 'template parsing error: %s\n' "$1" >&2; exit 1; }
+  printf '%s\n' "$out"
+}
+
+find_container() {
+  local file
+  if [[ -e $CONTAINERS/$1 ]]; then printf '%s' "$CONTAINERS/$1"; return 0; fi
+  for file in "$CONTAINERS"/*; do
+    load_record "$file"
+    [[ ${R[id]:-} != "$1" ]] || { printf '%s' "$file"; return 0; }
+  done
+  return 1
+}
+
+no_such_object() {
+  printf 'Error: No such object: %s\n' "$1" >&2
+  exit 1
+}
+
+# Whether the loaded container runs an image that has pi-shell-launch.
+container_has_launcher() {
+  [[ ${R[image-id]:-} != stale ]]
+}
+
+# run_in_home VOLUME SCRIPT: run SCRIPT as a container whose agent state is VOLUME.
+run_in_home() {
+  local home=$HOMES/$1
+  mkdir -p -- "$DATA/$1" "$home/.pi"
+  [[ -L $home/.pi/agent ]] || ln -s -- "$DATA/$1" "$home/.pi/agent"
+  HOME=$home sh -c "$2"
+}
+
+docker_ps() {
+  local all=false format='' file
+  while (($#)); do
+    case $1 in
+      -a) all=true; shift ;;
+      --filter) FILTERS+=("$2"); shift 2 ;;
+      --format) format=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  for file in "$CONTAINERS"/*; do
+    load_record "$file"
+    [[ $all == true || ${R[state]:-} == running ]] || continue
+    matches_filters || continue
+    render "$format" container
+  done
+}
+
+docker_inspect() {
+  local format='' name file port
+  local -a names=()
+  while (($#)); do
+    case $1 in
+      --format) format=$2; shift 2 ;;
+      --) shift ;;
+      *) names+=("$1"); shift ;;
+    esac
+  done
+  for name in "${names[@]}"; do
+    file=$(find_container "$name") || no_such_object "$name"
+    load_record "$file"
+    case $format in
+      *PortBindings*|*NetworkSettings.Ports*) for port in "${PORTS[@]}"; do printf '%s\n' "$port"; done ;;
+      '') printf '[{"Name":"/%s"}]\n' "${R[name]}" ;;
+      *) render "$format" container ;;
+    esac
+  done
+}
+
+docker_volume() {
+  local action=$1 format='' name file label
+  local -a labels=()
+  shift
+  case $action in
+    create)
+      while (($#)); do
+        case $1 in --label) labels+=("$2"); shift 2 ;; *) name=$1; shift ;; esac
+      done
+      file=$VOLUMES/$name
+      if [[ ! -e $file ]]; then
+        R=([name]=$name [created]=$(next_timestamp)); PORTS=()
+        for label in "${labels[@]}"; do R[label.${label%%=*}]=${label#*=}; done
+        save_record "$file"
+      fi
+      printf '%s\n' "$name"
+      ;;
+    inspect)
+      while (($#)); do case $1 in --format) format=$2; shift 2 ;; *) name=$1; shift ;; esac; done
+      [[ -e $VOLUMES/$name ]] || no_such_object "$name"
+      load_record "$VOLUMES/$name"
+      if [[ -n $format ]]; then render "$format" volume; else printf '[{"Name":"%s"}]\n' "$name"; fi
+      ;;
+    ls)
+      while (($#)); do
+        case $1 in --filter) FILTERS+=("$2"); shift 2 ;; --format) format=$2; shift 2 ;; *) shift ;; esac
+      done
+      for file in "$VOLUMES"/*; do
+        load_record "$file"
+        matches_filters || continue
+        render "$format" volume
+      done
+      ;;
+    rm)
+      for name in "$@"; do
+        [[ ${FAKE_VOLUME_RM_FAIL:-} != "$name" ]] || { printf 'Error: volume is in use: %s\n' "$name" >&2; exit 1; }
+        [[ -e $VOLUMES/$name ]] || no_such_object "$name"
+        rm -rf -- "$VOLUMES/$name" "$DATA/$name" "$HOMES/$name"
+        printf '%s\n' "$name"
+      done
+      ;;
+    *) printf 'fake docker: unsupported volume command: %s\n' "$action" >&2; exit 1 ;;
+  esac
+}
+
+compose_containers() {
+  local project=$1 file
+  for file in "$CONTAINERS"/*; do
+    load_record "$file"
+    [[ ${R[label.com.docker.compose.project]:-} == "$project" ]] || continue
+    printf '%s\n' "$file"
+  done
+}
+
+# The service container of a project, loaded into R; fails when there is none.
+load_service_container() {
+  local file
+  file=$(compose_containers "$1" | head -n 1)
+  [[ -n $file ]] || { printf 'service "pi" is not running\n' >&2; return 1; }
+  load_record "$file"
+}
+
+# What Compose compares to decide whether an existing container is outdated.
+config_signature() {
+  local key
+  for key in "${!R[@]}"; do
+    case $key in mount.*|label.com.pi-agents.*|image-id) printf '%s=%s\n' "$key" "${R[$key]}" ;; esac
+  done | LC_ALL=C sort
+  printf 'port=%s\n' "${PORTS[@]}"
+}
+
+compose_up() {
+  local project=$1 force=false name file argument compose_file line existing='' image=$IMAGES/$1-pi
+  # Compose reports "[::1]:P:P" with the bracket-free HostIp "::1".
+  local port_pattern='"(127\.0\.0\.1|\[::1\]):([0-9]+):([0-9]+)"' host_ip
+  shift
+  for argument in "$@"; do [[ $argument != --force-recreate ]] || force=true; done
+  name=${PI_CONTAINER_NAME:?}
+  file=$CONTAINERS/$name
+  # Compose builds a missing service image before creating the container.
+  [[ -e $image ]] || printf 'built-%s\n' "$(next_timestamp)" > "$image"
+  if [[ -e $file ]]; then
+    load_record "$file"
+    [[ ${R[label.com.docker.compose.project]:-} == "$project" ]] || {
+      printf 'Error: container name "/%s" is already in use\n' "$name" >&2; exit 1;
+    }
+    existing=$(config_signature)
+  fi
+  R=(); PORTS=()
+  R[id]=id-$name; R[name]=$name; R[state]=running; R[status]='Up 1 second'
+  R[image]=$project-pi; R[image-id]=$(<"$image")
+  R[label.com.pi-agents.managed]=true
+  R[label.com.pi-agents.workspace]=${PI_WORKSPACE:-}
+  R[label.com.pi-agents.workspace-basename]=${PI_WORKSPACE_BASENAME:-}
+  R[label.com.docker.compose.project]=$project
+  R[label.com.docker.compose.service]=pi
+  R[label.com.docker.compose.oneoff]=False
+  R[mount./home/node/.pi/agent]=${PI_AGENT_STATE_VOLUME_NAME:-}
+  R[mount./home/node/.pi/agent/sessions]=${PI_SESSION_STATE_VOLUME_NAME:-}
+  R[mount./home/node/.agent-browser]=${PI_BROWSER_STATE_VOLUME_NAME:-}
+  for compose_file in "${COMPOSE_FILES[@]}"; do
+    case $compose_file in
+      *shell-rc.yml) R[mount./tmp/pi-host-shellrc]=${PI_HOST_RC_SOURCE:-} ;;
+      *oauth*)
+        while IFS= read -r line; do
+          if [[ $line =~ $port_pattern ]]; then
+            host_ip=${BASH_REMATCH[1]#\[}; host_ip=${host_ip%\]}
+            PORTS+=("$host_ip:${BASH_REMATCH[2]}:${BASH_REMATCH[3]}/tcp")
+          fi
+        done < "$compose_file"
+        ;;
+    esac
+  done
+  # An up-to-date container is only started; a changed one is recreated.
+  if [[ $force == false && -n $existing && $existing == "$(config_signature)" ]]; then
+    load_record "$file"
+    R[state]=running; R[status]='Up 1 second'
+    save_record "$file"
+    return 0
+  fi
+  R[created]=$(next_timestamp); R[started]=${R[created]}
+  save_record "$file"
+}
+
+compose_exec() {
+  local project=$1
+  shift
+  while [[ ${1:-} == -* ]]; do shift; done
+  shift # service
+  load_service_container "$project" || exit 1
+  case "$*" in
+    'test -x /usr/local/bin/pi-shell-launch') container_has_launcher || exit 1 ;;
+    'sh -c '*) run_in_home "${R[mount./home/node/.pi/agent]}" "$3" ;;
+    *) ;;
+  esac
+}
+
+compose_run() {
+  local project=$1
+  shift
+  if [[ $* == '--rm --entrypoint /bin/sh pi -c '* ]]; then
+    # The entrypoint script refuses a stale image, then runs the alias setup.
+    if [[ $(cat -- "$IMAGES/$project-pi" 2>/dev/null) == stale ]]; then
+      printf '%s\n' 'pi: image lacks pi-shell-launch; run pi update or use --rebuild' >&2
+      exit 2
+    fi
+    [[ -z ${8:-} ]] || run_in_home "${PI_AGENT_STATE_VOLUME_NAME:?}" "$8"
+    return 0
+  fi
+  exit "${FAKE_COMPOSE_RUN_STATUS:-0}"
+}
+
+docker_compose() {
+  local project='' directory='' action file line
+  COMPOSE_FILES=()
+  while (($#)); do
+    case $1 in
+      --project-name) project=$2; shift 2 ;;
+      --project-directory) directory=$2; shift 2 ;;
+      -f|--file) COMPOSE_FILES+=("$2"); shift 2 ;;
+      *) break ;;
+    esac
+  done
+  # Compose rejects project names outside [a-z0-9][a-z0-9_-]*.
+  [[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || {
+    printf 'invalid project name "%s": must consist only of lowercase alphanumeric characters, hyphens, and underscores as well as start with a letter or number\n' "$project" >&2
+    exit 1
+  }
+  printf 'compose-env project=%s container=%s network=%s workspace=%s agent=%s sessions=%s browser=%s shell=%s rc-source=%s rc-file=%s no-rc=%s\n' \
+    "$project" "${PI_CONTAINER_NAME:-}" "${PI_WORKSPACE_PROJECT:-}" "${PI_WORKSPACE:-}" \
+    "${PI_AGENT_STATE_VOLUME_NAME:-}" "${PI_SESSION_STATE_VOLUME_NAME:-}" "${PI_BROWSER_STATE_VOLUME_NAME:-}" \
+    "${PI_HOST_SHELL:-}" "${PI_HOST_RC_SOURCE:-}" "${PI_HOST_RC_FILE:-}" "${PI_NO_RC_CONFIG:-}" >> "$DOCKER_LOG"
+  # Generated override files live outside the project; record what Compose read.
+  for file in "${COMPOSE_FILES[@]}"; do
+    [[ -n $directory && $file != "$directory"/* ]] || continue
+    printf 'compose-override %s\n' "$file" >> "$DOCKER_LOG"
+    while IFS= read -r line; do printf 'compose-override-content %s\n' "$line"; done < "$file" >> "$DOCKER_LOG"
+  done
+  action=$1; shift
+  case $action in
+    config) printf '%s-pi\n' "$project" ;;
+    build) printf 'built-%s\n' "$(next_timestamp)" > "$IMAGES/$project-pi" ;;
+    up) compose_up "$project" "$@" ;;
+    start|stop)
+      while IFS= read -r file; do
+        [[ -n $file ]] || continue
+        load_record "$file"
+        if [[ $action == start ]]; then R[state]=running; R[status]='Up 1 second'; else R[state]=exited; R[status]='Exited (0) 1 second ago'; fi
+        save_record "$file"
+      done < <(compose_containers "$project")
+      ;;
+    down)
+      while IFS= read -r file; do [[ -z $file ]] || rm -f -- "$file"; done < <(compose_containers "$project")
+      ;;
+    exec) compose_exec "$project" "$@" ;;
+    run) compose_run "$project" "$@" ;;
+    *) printf 'fake docker: unsupported compose command: %s\n' "$action" >&2; exit 1 ;;
+  esac
+}
+
+# copy_entries SOURCE TARGET [EXCLUDED_NAME...]: copy a volume's top-level
+# entries except initialization markers and the excluded names.
+copy_entries() {
+  local source=$1 target=$2 file name excluded
+  shift 2
+  mkdir -p -- "$DATA/$target"
+  for file in "$DATA/$source"/* "$DATA/$source"/.[!.]*; do
+    name=${file##*/}
+    case $name in .container-initialized|.container-initialization*) continue ;; esac
+    for excluded in "$@"; do [[ $name != "$excluded" ]] || continue 2; done
+    cp -R -- "$file" "$DATA/$target/"
+  done
+}
+
+docker_run() {
+  local spec destination script state file auth
+  local -A mounts=()
+  while (($#)); do
+    case $1 in
+      --rm|-i|-t|-it) shift ;;
+      --user) shift 2 ;;
+      -v) spec=$2; destination=${spec#*:}; destination=${destination%%:*}; mounts[$destination]=${spec%%:*}; shift 2 ;;
+      *) break ;;
+    esac
+  done
+  shift # image
+  script="$*"
+  state=${mounts[/state]:-}
+  case $script in
+    *'exit 11'*)
+      [[ -z ${FAKE_INIT_PROBE_STATUS:-} ]] || exit "$FAKE_INIT_PROBE_STATUS"
+      [[ ! -e $DATA/$state/.container-initialized ]] || exit 0
+      [[ ! -e $DATA/$state/.container-initialization-pending ]] || exit 10
+      exit 11
+      ;;
+    *state-initialization*)
+      mkdir -p -- "$DATA/$state"
+      if [[ ${*: -2:1} == complete ]]; then
+        printf 'complete\n' > "$DATA/$state/.container-initialized"
+        rm -f -- "$DATA/$state/.container-initialization-pending"
+      else
+        printf '%s\n' "${*: -1}" > "$DATA/$state/.container-initialization-pending"
+      fi
+      ;;
+    'cat /state/.container-initialization-pending') cat -- "$DATA/$state/.container-initialization-pending" ;;
+    *'exit 42'*)
+      [[ -z ${FAKE_AUTH_PROBE_STATUS:-} ]] || exit "$FAKE_AUTH_PROBE_STATUS"
+      auth=$(tr -d '[:space:]' < "$DATA/$state/auth.json" 2>/dev/null || true)
+      [[ -z $auth || $auth == '{}' ]] || exit 0
+      ! grep -Eq '"(defaultProvider|defaultModel)"' "$DATA/$state/settings.json" 2>/dev/null || exit 0
+      exit 42
+      ;;
+    *pi-state-copy*)
+      copy_entries "${mounts[/state-source]}" "${mounts[/state-target]}" sessions
+      if [[ -n ${mounts[/state-source/sessions]:-} ]]; then
+        copy_entries "${mounts[/state-source/sessions]}" "${mounts[/state-target/sessions]}"
+      fi
+      exit "${FAKE_STATE_COPY_STATUS:-0}"
+      ;;
+    *'find /state-source'*) copy_entries "${mounts[/state-source]}" "${mounts[/state-target]}" sessions ;;
+    *) ;;
+  esac
+}
+
+docker_exec() {
+  local file
+  while (($#)); do
+    case $1 in
+      -i|-t|-it|-T) shift ;;
+      --user|--env|-e|-u) shift 2 ;;
+      *) break ;;
+    esac
+  done
+  file=$(find_container "$1") || no_such_object "$1"
+  load_record "$file"
+  [[ ${R[state]:-} == running ]] || { printf 'Error: container %s is not running\n' "$1" >&2; exit 1; }
+  shift
+  case "$*" in
+    'test -x /usr/local/bin/pi-shell-launch') container_has_launcher || exit 1 ;;
+    *) ;;
+  esac
+}
+
+command=${1:-}
+shift || true
+case $command in
+  ps) docker_ps "$@" ;;
+  inspect) docker_inspect "$@" ;;
+  container)
+    [[ ${1:-} == inspect ]] || { printf 'fake docker: unsupported container command\n' >&2; exit 1; }
+    shift
+    docker_inspect "$@"
+    ;;
+  image)
+    [[ ${1:-} == inspect ]] || { printf 'fake docker: unsupported image command\n' >&2; exit 1; }
+    [[ -e $IMAGES/$2 ]] || no_such_object "$2"
+    printf '[{}]\n'
+    ;;
+  rename)
+    [[ ! -e $CONTAINERS/$2 ]] || { printf 'Error: container name "/%s" is already in use\n' "$2" >&2; exit 1; }
+    file=$(find_container "$1") || no_such_object "$1"
+    load_record "$file"
+    R[name]=$2
+    rm -f -- "$file"
+    save_record "$CONTAINERS/$2"
+    ;;
+  start)
+    file=$(find_container "$1") || no_such_object "$1"
+    load_record "$file"
+    R[state]=running; R[status]='Up 1 second'
+    save_record "$file"
+    printf '%s\n' "$1"
+    ;;
+  volume) docker_volume "$@" ;;
+  compose) docker_compose "$@" ;;
+  run) docker_run "$@" ;;
+  exec) docker_exec "$@" ;;
+  *) printf 'fake docker: unexpected command: %s\n' "$invocation" >&2; exit 1 ;;
+esac
