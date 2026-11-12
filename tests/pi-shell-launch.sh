@@ -88,6 +88,14 @@ assert_contains "$TMP/log" 'arg=--norc'
 assert_contains "$TMP/log" 'arg=-i'
 if grep -Fq "arg=$TMP/rc" "$TMP/log"; then fail 'bash no-rc mode must not use the rc file'; fi
 
+# Without PI_HOST_RC_FILE the launcher uses the rc file the shell-rc Compose
+# override mounts (inside /tmp/pi-host-shellrc), not the mount directory. The
+# fake shells only record arguments, so nothing outside $TMP is touched.
+(unset PI_HOST_RC_FILE; PI_HOST_SHELL=bash PI_NO_RC_CONFIG=0 run_launcher)
+assert_contains "$TMP/log" 'arg=/tmp/pi-host-shellrc/rc'
+(unset PI_HOST_RC_FILE; PI_HOST_SHELL=zsh PI_NO_RC_CONFIG=0 run_launcher)
+assert_contains "$TMP/log" 'zshrc=/tmp/pi-host-shellrc/rc'
+
 : > "$TMP/rc"
 PI_HOST_SHELL=bash PI_HOST_RC_FILE="$TMP/rc" PI_NO_RC_CONFIG=0 \
   gtimeout 5 /bin/bash "$LAUNCHER" /usr/bin/printf 'bash-real-launch' >"$TMP/bash-real.out" 2>"$TMP/bash-real.err" \

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 shell=${PI_HOST_SHELL:-bash}
-rc_file=${PI_HOST_RC_FILE:-/tmp/pi-host-shellrc}
+rc_file=${PI_HOST_RC_FILE:-/tmp/pi-host-shellrc/rc}
 no_rc_config=${PI_NO_RC_CONFIG:-0}
 
 case $shell in
