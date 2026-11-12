@@ -598,4 +598,18 @@ assert_guard 'pi: --rebuild cannot be combined with copy' --rebuild copy
 assert_guard 'pi: --rm cannot be combined with copy' --rm copy
 assert_guard 'pi: --from and --to are mutually exclusive' copy --from --to
 
+# stop and remove refuse a stack whose Compose project also holds another
+# workspace's container, before any compose stop or down.
+export FAKE_CONTAINERS=$'id-1\tpi-agents-pi-workspace\tUp 2 minutes\t'$PATH_1
+export FAKE_ONEOFF_CONTAINERS="pi-agents-pi-workspace-run-1"$'\t'"$PATH_2"$'\tpi-agents-pi-workspace'
+for command in stop remove; do
+  status=0
+  run_wrapper "$PATH_1" "$command" || status=$?
+  [[ "$status" -ne 0 ]] || { printf 'pi %s on a shared project succeeded\n' "$command" >&2; exit 1; }
+  assert_output_has 'pi: workspace Compose project is shared with another stack'
+  assert_log_lacks ' stop'
+  assert_log_lacks ' down'
+done
+unset FAKE_ONEOFF_CONTAINERS
+
 printf 'bin/pi workspace tests passed\n'

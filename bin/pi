@@ -1986,6 +1986,7 @@ resolve_exact_workspace_stack() {
     PROJECT_NAME="$INSPECTED_PROJECT"
   done <<< "$rows"
   (( count == 1 )) || return 1
+  assert_project_available "$PROJECT_NAME" "$WORKSPACE" || fail 'workspace Compose project is shared with another stack'
   build_compose
 }
 
