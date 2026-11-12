@@ -294,6 +294,28 @@ if grep -Fq -- "$FOURTH_VOLUME" "$OUTPUT_LOG"; then
   printf 'extra state volume proposed as seed\n' >&2
   exit 1
 fi
+# Every managed normal state volume is listed with its creation time before
+# the warning and proposal.
+EXPECTED_CANDIDATES="Managed Pi state volumes:
+  $SECOND_VOLUME  (2026-08-02T12:00:00Z)
+  $FIRST_VOLUME  (2026-08-01T12:00:00Z)
+  $THIRD_VOLUME  (2026-08-03T12:00:00Z)
+  $FIFTH_VOLUME  (2026-08-05T12:00:00Z)
+  $SIXTH_VOLUME  (2026-08-06T12:00:00Z)
+pi: warning: the seed pointer was not found."
+if [[ "$(cat "$OUTPUT_LOG")" != *"$EXPECTED_CANDIDATES"* ]]; then
+  printf 'missing-seed prompt did not list the candidates first:\n%s\n' "$(cat "$OUTPUT_LOG")" >&2
+  exit 1
+fi
+
+# The prompt also accepts yes/YES, and still runs with --latest-state.
+for answer in yes YES; do
+  rm -f "$RECOVERY_REGISTRY/seed"
+  printf '%s\n' "$answer" | run_wrapper_with_registry "$RECOVERY_REGISTRY" "$WORKSPACE_G" --latest-state
+  grep -Fq -- 'seed pointer was not found' "$OUTPUT_LOG"
+  [[ "$(cat "$RECOVERY_REGISTRY/seed")" == "$FIRST_VOLUME" ]]
+done
+rm -f "$RECOVERY_REGISTRY/seed"
 
 printf 'y\n' | run_wrapper_with_registry "$RECOVERY_REGISTRY" "$WORKSPACE_G"
 RECOVERED_VOLUME="$(target_volume)"

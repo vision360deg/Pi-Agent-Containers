@@ -516,10 +516,11 @@ Workspace:
   The first stack becomes the seed. Later stacks copy the seed by default.
   Docker volume creation metadata identifies the latest-created state for
   --latest-state. Use --seed to promote a workspace to the seed. If the seed
-  pointer is missing while managed state volumes exist, pi warns, proposes the
-  oldest managed state volume as the seed, and asks for confirmation before
-  initializing a new workspace. Launching an already-initialized workspace
-  leaves a missing pointer unset unless --seed is given.
+  pointer is missing while managed state volumes exist, pi lists them with
+  their creation times, warns, proposes the oldest managed state volume as the
+  seed, and asks for confirmation (y or yes) before initializing a new
+  workspace, even with --latest-state. Launching an already-initialized
+  workspace leaves a missing pointer unset unless --seed is given.
 
   Existing running and stopped containers are both considered during collision
   checks. Containers created before the com.pi-agents.managed label existed
@@ -1259,16 +1260,26 @@ bootstrap_seed_pointer() {
   fi
 }
 
+print_managed_state_volume_candidates() {
+  local candidate created
+  printf 'Managed Pi state volumes:\n' >&2
+  while IFS= read -r candidate; do
+    created="$(state_volume_created_at "$candidate" || true)"
+    printf '  %s  (%s)\n' "$candidate" "${created:-unknown creation time}" >&2
+  done < <(list_managed_state_volumes)
+}
+
 confirm_missing_seed_pointer() {
   local candidate="$1"
   local answer="n"
 
+  print_managed_state_volume_candidates
   printf 'pi: warning: the seed pointer was not found.\n' >&2
   printf 'pi: the oldest managed agent-state volume is:\n  %s\n' "$candidate" >&2
   printf 'pi: use it as the seed for this new workspace? [y/N] ' >&2
   if IFS= read -r answer; then
     case "$answer" in
-      y|Y)
+      y|Y|yes|YES)
         write_state_pointer "$STATE_SEED_FILE" "$candidate"
         return 0
         ;;

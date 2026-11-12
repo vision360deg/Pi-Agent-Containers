@@ -274,7 +274,7 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'durable JSONL source.'* ]]
 [[ "$DETAILED_HELP" == *'Wrapper-managed package and model'* ]]
 [[ "$DETAILED_HELP" == *'so ~/src/my.project becomes pi-agents-pi-my-project.'* ]]
-[[ "$DETAILED_HELP" == *$'initializing a new workspace. Launching an already-initialized workspace\n  leaves a missing pointer unset unless --seed is given.'* ]]
+[[ "$DETAILED_HELP" == *$'pointer is missing while managed state volumes exist, pi lists them with\n  their creation times, warns, proposes the oldest managed state volume as the\n  seed, and asks for confirmation (y or yes) before initializing a new\n  workspace, even with --latest-state. Launching an already-initialized\n  workspace leaves a missing pointer unset unless --seed is given.'* ]]
 [[ "$DETAILED_HELP" == *'update output is mirrored there too.'* ]]
 [[ "$DETAILED_HELP" == *'PI_SESSION_LOG_FORMAT=raw'* ]]
 [[ "$DETAILED_HELP" == *'PI_SESSION_LOG_COLOR=never'* ]]
