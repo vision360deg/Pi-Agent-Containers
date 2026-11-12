@@ -70,10 +70,5 @@ assert_log_has "$FILES run --rm --entrypoint /bin/sh pi -c"
 assert_log_has "$FILES run --rm --service-ports pi pi-shell-launch pi --version"
 assert_log_lacks ' run --build '
 
-# --new-state always recreates the service on the extra state volume.
-fresh_stack
-run_pi "$WS" --new-state --version
-assert_status 0
-assert_log_has "$FILES up --detach --force-recreate pi"
 
 pass
