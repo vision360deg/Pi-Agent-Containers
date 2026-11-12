@@ -30,8 +30,25 @@ container_workspace() {
   return 1
 }
 
+# FAKE_ONEOFF_CONTAINERS rows are name, workspace, project for `docker compose
+# run` containers, which share their project with the persistent stack.
+oneoff_record() {
+  local name path project
+  while IFS=$'\t' read -r name path project; do
+    [[ -n "$name" && "$name" == "$1" ]] && { printf '%s\t%s\n' "$path" "$project"; return 0; }
+  done <<< "${FAKE_ONEOFF_CONTAINERS-}"
+  return 1
+}
+
 if [[ "${1:-}" == "ps" ]]; then
-  if [[ "$*" == *'label=com.pi-agents.workspace-basename='* && -n "${FAKE_CONTAINERS-}" ]]; then
+  if [[ "$*" == *'label=com.docker.compose.project='* ]]; then
+    wanted="$*"
+    wanted="${wanted#*label=com.docker.compose.project=}"
+    wanted="${wanted%% --*}"
+    while IFS=$'\t' read -r name path project; do
+      [[ -n "$name" && "$project" == "$wanted" ]] && printf '%s\n' "$name"
+    done <<< "${FAKE_ONEOFF_CONTAINERS-}"
+  elif [[ "$*" == *'label=com.pi-agents.workspace-basename='* && -n "${FAKE_CONTAINERS-}" ]]; then
     printf '%s\n' "$FAKE_CONTAINERS"
   elif [[ "$*" == *'label=com.pi-agents.workspace='* ]]; then
     # Exact-workspace lookup: ID, name, project for rows with that workspace.
@@ -74,6 +91,11 @@ if [[ "${1:-}" == "inspect" ]]; then
     printf '%s\n' "${FAKE_PORT_BINDINGS-}"
   elif [[ "$*" == *com.pi-agents.managed* ]]; then
     name="${@: -1}"
+    if record="$(oneoff_record "$name")"; then
+      IFS=$'\t' read -r path project <<< "$record"
+      printf '/%s\037true\037%s\037%s\037pi\037True\n' "$name" "$path" "$project"
+      exit 0
+    fi
     path="$(container_workspace "$name")" || exit 1
     printf '/%s\037%s\037%s\037%s\037pi\037False\n' "$name" "${FAKE_MANAGED_LABEL-true}" "$path" "${FAKE_PROJECT:-$name}"
   else
@@ -314,6 +336,33 @@ if run_wrapper "$PATH_1"; then
 fi
 grep -Fq "multiple managed stacks found for workspace: $PATH_1" "$OUTPUT_LOG"
 assert_log_lacks ' up '
+
+# `pi --rm` one-off containers live in the workspace's own project, so a
+# running or leftover one-off of the same workspace does not block launches.
+export FAKE_CONTAINERS=$'id-1\tpi-agents-pi-workspace\tUp 2 minutes\t'$PATH_1
+export FAKE_ONEOFF_CONTAINERS=$'pi-agents-pi-workspace-pi-run-0123abcd\t'"$PATH_1"$'\tpi-agents-pi-workspace'
+run_wrapper "$PATH_1"
+assert_log_has 'up --detach pi'
+assert_output_lacks 'occupied'
+run_wrapper "$PATH_1" --rm
+assert_log_has 'run --rm --service-ports pi'
+assert_output_lacks 'occupied'
+unset FAKE_CONTAINERS
+run_wrapper "$PATH_1"
+assert_log_has 'up --detach pi'
+
+# A one-off belonging to another workspace still marks the project occupied.
+export FAKE_ONEOFF_CONTAINERS=$'pi-agents-pi-workspace-pi-run-0123abcd\t'"$PATH_2"$'\tpi-agents-pi-workspace'
+for arguments in '' --rm; do
+  if run_wrapper "$PATH_1" $arguments; then
+    printf 'foreign one-off container did not block pi %s\n' "$arguments" >&2
+    exit 1
+  fi
+  assert_output_has 'workspace Compose project is occupied: pi-agents-pi-workspace'
+  assert_log_lacks ' up '
+  assert_log_lacks 'run --rm --service-ports'
+done
+unset FAKE_ONEOFF_CONTAINERS
 
 # Containers created before the managed label existed are still reused.
 export FAKE_CONTAINERS=$'id-1\tpi-agents-pi-workspace\tUp 2 minutes\t'$PATH_1

@@ -1779,8 +1779,10 @@ prompt_collision() {
 
 # Containers created before the managed label existed are identified by their
 # workspace label alone; any container carrying the label must be managed.
+# Only persistent service containers match unless allow-oneoff is true, which
+# also accepts `docker compose run` one-offs such as `pi --rm` containers.
 inspect_workspace_container() {
-  local name="$1" expected_workspace="$2" expected_project="${3:-}"
+  local name="$1" expected_workspace="$2" expected_project="${3:-}" allow_oneoff="${4:-false}"
   local record actual_name managed workspace project service oneoff
   local delimiter=$'\037'
   record="$(docker inspect --format "{{.Name}}${delimiter}{{index .Config.Labels \"com.pi-agents.managed\"}}${delimiter}{{index .Config.Labels \"com.pi-agents.workspace\"}}${delimiter}{{index .Config.Labels \"com.docker.compose.project\"}}${delimiter}{{index .Config.Labels \"com.docker.compose.service\"}}${delimiter}{{index .Config.Labels \"com.docker.compose.oneoff\"}}" "$name" 2>/dev/null)" || return 2
@@ -1788,7 +1790,7 @@ inspect_workspace_container() {
   [[ "$managed" != '<no value>' ]] || managed=''
   if [[ "$actual_name" != "/$name" || ( -n "$managed" && "$managed" != true ) ||
     "$workspace" != "$expected_workspace" || -z "$project" || "$project" == '<no value>' ||
-    "$service" != pi || "$oneoff" != False ]]; then
+    "$service" != pi ]] || ! [[ "$oneoff" == False || ( "$allow_oneoff" == true && "$oneoff" == True ) ]]; then
     printf 'pi: container identity does not match workspace: %s\n' "$name" >&2
     return 2
   fi
@@ -1799,13 +1801,14 @@ inspect_workspace_container() {
   INSPECTED_PROJECT="$project"
 }
 
-# A Compose project may only contain containers owned by the same workspace.
+# A Compose project may only contain containers owned by the same workspace:
+# its persistent service and its own `pi --rm` one-offs.
 assert_project_available() {
   local project="$1" workspace="$2" rows name
   rows="$(docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.Names}}')" || return 2
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
-    inspect_workspace_container "$name" "$workspace" "$project" || return 2
+    inspect_workspace_container "$name" "$workspace" "$project" true || return 2
   done <<< "$rows"
 }
 
