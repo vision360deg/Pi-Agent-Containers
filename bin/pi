@@ -2162,9 +2162,10 @@ attach_shell() {
     WORKSPACE_MISSING=false
     prepare_workspace_container
     prepare_state_lineage
-    start_persistent_service
+    ensure_workspace_volumes
     initialize_agent_state
     repair_state_permissions
+    start_persistent_service
     install_browser_extension
     record_state_lineage
     SHELL_SELECTED_NAME="$CONTAINER_NAME"
@@ -2503,20 +2504,23 @@ if [[ "$PI_PASSTHROUGH_MARKER" == false && "${1:-}" == "update" ]]; then
   prepare_workspace_container
   validate_oauth_ports
   prepare_state_lineage
+  # State volumes are created, seeded, and repaired before the service starts
+  # so Pi never runs against unseeded or unrepaired state.
+  ensure_workspace_volumes
   if [[ "${#UPDATE_ARGS[@]}" -eq 0 ]]; then
     run_compose build --pull --no-cache pi
-    FORCE_RECREATE=true
-    start_persistent_service
     initialize_agent_state
     repair_state_permissions
+    FORCE_RECREATE=true
+    start_persistent_service
     install_browser_extension
     record_state_lineage
     exit $?
   fi
 
-  start_persistent_service
   initialize_agent_state
   repair_state_permissions
+  start_persistent_service
   install_browser_extension
   record_state_lineage
   run_logged_pi() {
@@ -2559,9 +2563,12 @@ run_logged_pi() {
   run_compose exec pi pi-shell-launch pi-session-log "$@"
 }
 
-start_persistent_service
+# State volumes are created, seeded, and repaired before the service starts;
+# exec-based setup then runs inside the started service.
+ensure_workspace_volumes
 initialize_agent_state
 repair_state_permissions
+start_persistent_service
 configure_pi_shell_aliases
 install_browser_extension
 record_state_lineage

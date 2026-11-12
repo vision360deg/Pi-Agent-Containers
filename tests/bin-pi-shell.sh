@@ -218,6 +218,12 @@ assert_log_has 'docker volume create'
 assert_log_has 'docker run'
 assert_log_has 'exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native'
 assert_log_has "docker exec -it $SHELL_LAUNCH_ENV pi-agents-pi-new-project pi-shell-launch"
+# The new project's state volumes are created, initialized, and repaired
+# before the service starts.
+first_line() { grep -nF -- "$1" "$DOCKER_LOG" | head -n 1 | cut -d: -f1; }
+(( $(first_line 'docker volume create') < $(first_line 'docker run ') ))
+(( $(first_line 'state-initialization complete') < $(first_line ' up --detach pi') ))
+(( $(first_line 'chown -R 1000:1000 "$path"') < $(first_line ' up --detach pi') ))
 
 if printf '\033' | run_wrapper --workspace "$CANCEL_WORKSPACE" shell; then
   printf 'Escape cancellation unexpectedly succeeded\n' >&2

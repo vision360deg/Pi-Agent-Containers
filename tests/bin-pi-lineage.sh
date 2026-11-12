@@ -14,7 +14,9 @@ WORKSPACE_D="$TMP_DIR/workspace-d"
 WORKSPACE_E="$TMP_DIR/workspace-e"
 WORKSPACE_F="$TMP_DIR/workspace-f"
 WORKSPACE_G="$TMP_DIR/workspace-g"
-mkdir -p "$FAKE_BIN" "$REGISTRY" "$TMP_DIR/home" "$WORKSPACE_A" "$WORKSPACE_B" "$WORKSPACE_C" "$WORKSPACE_D" "$WORKSPACE_E" "$WORKSPACE_F" "$WORKSPACE_G"
+WORKSPACE_H="$TMP_DIR/workspace-h"
+WORKSPACE_I="$TMP_DIR/workspace-i"
+mkdir -p "$FAKE_BIN" "$REGISTRY" "$TMP_DIR/home" "$WORKSPACE_A" "$WORKSPACE_B" "$WORKSPACE_C" "$WORKSPACE_D" "$WORKSPACE_E" "$WORKSPACE_F" "$WORKSPACE_G" "$WORKSPACE_H" "$WORKSPACE_I"
 DOCKER_LOG="$TMP_DIR/docker.log"
 OUTPUT_LOG="$TMP_DIR/output.log"
 VOLUMES_FILE="$TMP_DIR/volumes"
@@ -132,7 +134,7 @@ run_wrapper_with_registry() {
       FAKE_TARGET_HAS_USEFUL_STATE="${FAKE_TARGET_HAS_USEFUL_STATE-false}" \
       FAKE_STATE_MARKER="${FAKE_STATE_MARKER-none}" \
       FAKE_PENDING_SOURCE="${FAKE_PENDING_SOURCE-}" \
-      PATH="$FAKE_BIN:$PATH" "$ROOT/bin/pi" "$@" --version
+      PATH="$FAKE_BIN:$PATH" "$ROOT/bin/pi" "$@" ${WRAPPER_SUFFIX---version}
   ) >"$OUTPUT_LOG" 2>&1
 }
 
@@ -143,6 +145,17 @@ target_volume() {
 assert_source() {
   local expected="$1"
   grep -Fq -- "$expected:/state-source:ro" "$DOCKER_LOG"
+}
+
+# The first log line containing $1 precedes the first containing $2.
+assert_log_order() {
+  local first second
+  first="$(grep -nF -- "$1" "$DOCKER_LOG" | head -n 1 | cut -d: -f1)"
+  second="$(grep -nF -- "$2" "$DOCKER_LOG" | head -n 1 | cut -d: -f1)"
+  if [[ -z "$first" || -z "$second" || "$first" -ge "$second" ]]; then
+    printf 'expected %s before %s:\n%s\n' "$1" "$2" "$(cat "$DOCKER_LOG")" >&2
+    exit 1
+  fi
 }
 
 assert_no_source_copy() {
@@ -350,6 +363,28 @@ run_wrapper_with_registry "$UNSET_REGISTRY" "$WORKSPACE_F" --seed < /dev/null
 [[ "$(cat "$UNSET_REGISTRY/seed")" == "$SIXTH_VOLUME" ]]
 FAKE_STATE_MARKER=none
 FAKE_TARGET_VOLUME_EXISTS=false
+
+# State is created with labels, seeded and repaired before the service starts,
+# for both a persistent launch and `pi update`.
+ORDER_REGISTRY="$TMP_DIR/order-registry"
+mkdir -p "$ORDER_REGISTRY"
+FAKE_VOLUMES="$FIRST_VOLUME"
+for workspace_and_command in "$WORKSPACE_H|" "$WORKSPACE_I|update"; do
+  printf '%s\n' "$FIRST_VOLUME" > "$ORDER_REGISTRY/seed"
+  workspace="${workspace_and_command%%|*}"
+  command="${workspace_and_command#*|}"
+  if [[ -n "$command" ]]; then
+    WRAPPER_SUFFIX='' run_wrapper_with_registry "$ORDER_REGISTRY" "$workspace" "$command"
+  else
+    run_wrapper_with_registry "$ORDER_REGISTRY" "$workspace"
+  fi
+  assert_source "$FIRST_VOLUME"
+  assert_log_order 'docker volume create' 'docker run '
+  assert_log_order "$FIRST_VOLUME:/state-source:ro" ' up '
+  assert_log_order 'state-initialization complete' ' up '
+  assert_log_order 'chown -R 1000:1000 "$path"' ' up '
+  assert_log_order ' up ' 'install npm:pi-agent-browser-native'
+done
 
 # Running a workspace on its extra volume never records it as the seed.
 EMPTY_REGISTRY="$TMP_DIR/empty-registry"
