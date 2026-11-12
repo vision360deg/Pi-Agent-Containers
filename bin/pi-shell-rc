@@ -493,7 +493,8 @@ resolve_file() {
         unconditionally_sourced[$path]=1
       fi
       if [[ -n $prefix || -n $suffix ]]; then
-        printf '%s{\n' "$prefix"
+        # `:` keeps the group valid when the sourced file has no commands.
+        printf '%s{ :\n' "$prefix"
         resolve_file "$path" "$child_conditional"
         printf '}%s\n' "$suffix"
       else

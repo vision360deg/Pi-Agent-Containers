@@ -2,6 +2,7 @@ services:
   pi:
     container_name: "${PI_CONTAINER_NAME:-pi-agents-pi}"
     labels:
+      com.pi-agents.managed: "true"
       com.pi-agents.workspace: "${PI_WORKSPACE:-}"
       com.pi-agents.workspace-basename: "${PI_WORKSPACE_BASENAME:-}"
     build:

@@ -30,8 +30,15 @@ if [[ "${1:-}" == "ps" ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
+  exit 0
+fi
+
 if [[ "${1:-}" == "volume" && "${2:-}" == "inspect" ]]; then
   volume="${@: -1}"
+  if [[ "$*" == *'com.pi-agents.managed'* ]]; then
+    exit 0
+  fi
   if [[ "$*" == *'CreatedAt'* ]]; then
     while IFS='|' read -r known_volume created_at; do
       if [[ "$known_volume" == "$volume" ]]; then
@@ -66,9 +73,20 @@ if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
 fi
 
 if [[ "${1:-}" == "run" ]]; then
-  if [[ "$*" == *':/state:ro'* ]]; then
-    [[ "${FAKE_TARGET_HAS_USEFUL_STATE-false}" == true ]]
-    exit $?
+  if [[ "$*" == *'exit 11'* ]]; then
+    case "${FAKE_STATE_MARKER-none}" in
+      complete) exit 0 ;;
+      pending) exit 10 ;;
+      *) exit 11 ;;
+    esac
+  fi
+  if [[ "$*" == *'exit 42'* ]]; then
+    [[ "${FAKE_TARGET_HAS_USEFUL_STATE-false}" == true ]] && exit 0
+    exit 42
+  fi
+  if [[ "$*" == *'cat /state/.container-initialization-pending'* ]]; then
+    printf '%s\n' "${FAKE_PENDING_SOURCE-}"
+    exit 0
   fi
   exit 0
 fi
@@ -112,6 +130,8 @@ run_wrapper_with_registry() {
       FAKE_TARGET_VOLUME_NAME="${FAKE_TARGET_VOLUME_NAME-}" \
       FAKE_TARGET_VOLUME_EXISTS="${FAKE_TARGET_VOLUME_EXISTS-false}" \
       FAKE_TARGET_HAS_USEFUL_STATE="${FAKE_TARGET_HAS_USEFUL_STATE-false}" \
+      FAKE_STATE_MARKER="${FAKE_STATE_MARKER-none}" \
+      FAKE_PENDING_SOURCE="${FAKE_PENDING_SOURCE-}" \
       PATH="$FAKE_BIN:$PATH" "$ROOT/bin/pi" "$@" --version
   ) >"$OUTPUT_LOG" 2>&1
 }
@@ -126,7 +146,7 @@ assert_source() {
 }
 
 assert_no_source_copy() {
-  if grep -Fq -- ':state-source:ro' "$DOCKER_LOG"; then
+  if grep -Fq -- ':/state-source:ro' "$DOCKER_LOG"; then
     printf 'unexpected state source copy:\n%s\n' "$(cat "$DOCKER_LOG")" >&2
     exit 1
   fi
@@ -159,17 +179,33 @@ $SECOND_VOLUME
 $THIRD_VOLUME"
 run_wrapper "$WORKSPACE_D" --new-state
 FOURTH_VOLUME="$(target_volume)"
+[[ "$FOURTH_VOLUME" == pi-agents-new-ws-*_pi-agent-state ]]
 assert_no_source_copy
+grep -Fq -- "--label com.pi-agents.state-kind=agent-extra --label com.pi-agents.workspace=$(cd -P "$WORKSPACE_D" && pwd)" "$DOCKER_LOG"
+grep -Fq -- 'state-initialization complete' "$DOCKER_LOG"
+[[ "$(cat "$REGISTRY/seed")" == "$FIRST_VOLUME" ]]
 FAKE_VOLUME_CREATED_ATS="$FAKE_VOLUME_CREATED_ATS
 $FOURTH_VOLUME|2026-08-04T12:00:00Z"
 
+# The extra volume is never seeded, even when --latest-state is also given.
 FAKE_VOLUMES="$FIRST_VOLUME
 $SECOND_VOLUME
 $THIRD_VOLUME
 $FOURTH_VOLUME"
+run_wrapper "$WORKSPACE_D" --new-state --latest-state
+[[ "$(target_volume)" == "$FOURTH_VOLUME" ]]
+assert_no_source_copy
+grep -Fq -- '--latest-state has no effect with --new-state' "$OUTPUT_LOG"
+[[ "$(cat "$REGISTRY/seed")" == "$FIRST_VOLUME" ]]
+
+# The newest volume is the extra one, but --latest-state skips it.
 run_wrapper "$WORKSPACE_E" --latest-state
 FIFTH_VOLUME="$(target_volume)"
-assert_source "$FOURTH_VOLUME"
+assert_source "$THIRD_VOLUME"
+if grep -Fq -- "$FOURTH_VOLUME:/state-source:ro" "$DOCKER_LOG"; then
+  printf 'extra state volume used as --latest-state source\n' >&2
+  exit 1
+fi
 FAKE_VOLUME_CREATED_ATS="$FAKE_VOLUME_CREATED_ATS
 $FIFTH_VOLUME|2026-08-05T12:00:00Z"
 
@@ -193,6 +229,39 @@ FAKE_TARGET_HAS_USEFUL_STATE=true
 run_wrapper "$WORKSPACE_F" --latest-state
 assert_no_source_copy
 grep -Fq -- '--latest-state has no effect' "$OUTPUT_LOG"
+# A pre-marker volume holding auth or model settings is migrated in place.
+grep -Fq -- 'state-initialization complete' "$DOCKER_LOG"
+
+# Initialized volumes are recognized by their marker alone.
+FAKE_STATE_MARKER=complete
+FAKE_TARGET_HAS_USEFUL_STATE=false
+run_wrapper "$WORKSPACE_F"
+assert_no_source_copy
+if grep -Fq -- 'state-initialization' "$DOCKER_LOG"; then
+  printf 'initialized state was marked again:\n%s\n' "$(cat "$DOCKER_LOG")" >&2
+  exit 1
+fi
+
+# An interrupted seed resumes from the source recorded in the pending marker,
+# even though the seed pointer now names a different volume.
+FAKE_STATE_MARKER=pending
+FAKE_PENDING_SOURCE="$SECOND_VOLUME"
+run_wrapper "$WORKSPACE_F"
+assert_source "$SECOND_VOLUME"
+grep -Fq -- "state-initialization pending $SECOND_VOLUME" "$DOCKER_LOG"
+grep -Fq -- 'state-initialization complete' "$DOCKER_LOG"
+
+# A pending seed whose recorded source vanished is refused, not restarted.
+FAKE_PENDING_SOURCE=pi-agents-ws-gone_pi-agent-state
+if run_wrapper "$WORKSPACE_F"; then
+  printf 'pending seed with a missing source unexpectedly succeeded\n' >&2
+  exit 1
+fi
+grep -Fq -- 'pending agent-state initialization source is unavailable' "$OUTPUT_LOG"
+assert_no_source_copy
+grep -Fq -- ' up ' "$DOCKER_LOG" && { printf 'stack started despite unavailable pending source\n' >&2; exit 1; }
+FAKE_STATE_MARKER=none
+FAKE_PENDING_SOURCE=''
 
 RECOVERY_REGISTRY="$TMP_DIR/recovery-registry"
 mkdir -p "$RECOVERY_REGISTRY"
@@ -204,16 +273,33 @@ $THIRD_VOLUME
 $FOURTH_VOLUME
 $FIFTH_VOLUME
 $SIXTH_VOLUME"
+# A legacy seed pointer naming an extra state volume is discarded, and the
+# extra volume is not proposed even though it is the oldest.
+printf '%s\n' "$FOURTH_VOLUME" > "$RECOVERY_REGISTRY/seed"
+FAKE_VOLUME_CREATED_ATS="$FOURTH_VOLUME|2026-07-01T12:00:00Z
+$FAKE_VOLUME_CREATED_ATS"
 if printf 'n\n' | run_wrapper_with_registry "$RECOVERY_REGISTRY" "$WORKSPACE_G"; then
   printf 'missing-seed confirmation unexpectedly succeeded\n' >&2
   exit 1
 fi
 grep -Fq -- 'seed pointer was not found' "$OUTPUT_LOG"
 grep -Fq -- "$FIRST_VOLUME" "$OUTPUT_LOG"
+if grep -Fq -- "$FOURTH_VOLUME" "$OUTPUT_LOG"; then
+  printf 'extra state volume proposed as seed\n' >&2
+  exit 1
+fi
 
 printf 'y\n' | run_wrapper_with_registry "$RECOVERY_REGISTRY" "$WORKSPACE_G"
 RECOVERED_VOLUME="$(target_volume)"
 assert_source "$FIRST_VOLUME"
 [[ "$(cat "$RECOVERY_REGISTRY/seed")" == "$FIRST_VOLUME" ]]
+
+# Running a workspace on its extra volume never records it as the seed.
+EMPTY_REGISTRY="$TMP_DIR/empty-registry"
+mkdir -p "$EMPTY_REGISTRY"
+FAKE_VOLUMES=''
+run_wrapper_with_registry "$EMPTY_REGISTRY" "$WORKSPACE_G" --new-state
+[[ "$(target_volume)" == pi-agents-new-ws-*_pi-agent-state ]]
+[[ ! -s "$EMPTY_REGISTRY/seed" ]]
 
 printf 'bin/pi state-lineage tests passed\n'

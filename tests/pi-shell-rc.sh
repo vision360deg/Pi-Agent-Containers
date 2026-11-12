@@ -477,6 +477,18 @@ if grep -Fq 'OUTSIDE_HOME_SOURCE=1' "$OUTSIDE_SOURCE_OUTPUT"; then
 fi
 assert_contains "$TMP/outside-source.err" "unresolved source"
 
+EMPTY_GUARD_HOME=$TMP/empty-guard-home
+mkdir -p "$EMPTY_GUARD_HOME"
+printf '# comment only\n' > "$EMPTY_GUARD_HOME/.empty"
+cat > "$EMPTY_GUARD_HOME/.bashrc" <<'EOF'
+[ -s "$HOME/.empty" ] && source "$HOME/.empty"
+export EMPTY_GUARD_AFTER=1
+EOF
+EMPTY_GUARD_OUTPUT=$TMP/empty-guard.rc
+bash "$RESOLVER" --shell bash --home "$EMPTY_GUARD_HOME" --output "$EMPTY_GUARD_OUTPUT" 2>"$TMP/empty-guard.err"
+bash -n "$EMPTY_GUARD_OUTPUT" || fail "guarded source of an empty file must produce valid Bash"
+assert_once "$EMPTY_GUARD_OUTPUT" 'export EMPTY_GUARD_AFTER=1'
+
 if bash "$RESOLVER" --shell fish --home "$HOME_ROOT" --output "$TMP/invalid.rc"; then
   fail "unsupported shell should return status 2"
 elif [[ $? -ne 2 ]]; then

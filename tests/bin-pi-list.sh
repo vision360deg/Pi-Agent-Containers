@@ -11,6 +11,15 @@ DOCKER_LOG="$TMP_DIR/docker.log"
 OUTPUT_LOG="$TMP_DIR/output.log"
 export DOCKER_LOG
 
+workspace_hash() {
+  printf '%s' "$1" | shasum -a 256 | awk '{print substr($1, 1, 12)}'
+}
+# Alpha has an unused extra state volume; delta runs on its legacy extra
+# volume, which still carries the normal agent kind label.
+ALPHA_EXTRA="pi-agents-new-ws-$(workspace_hash /tmp/workspaces/alpha)_pi-agent-state"
+DELTA_EXTRA="pi-agents-new-ws-$(workspace_hash /tmp/workspaces/delta)_pi-agent-state"
+export ALPHA_EXTRA DELTA_EXTRA
+
 cat > "$FAKE_BIN/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -27,7 +36,7 @@ if [[ "${1:-}" == "ps" ]]; then
   if [[ "${FAKE_EMPTY-false}" == true ]]; then
     exit 0
   fi
-  printf 'zeta-id\nunresolvable-id\nno-agent-state-id\nalpha-id\n'
+  printf 'zeta-id\nunresolvable-id\nno-agent-state-id\ndelta-id\nalpha-id\n'
   exit 0
 fi
 
@@ -44,6 +53,9 @@ if [[ "${1:-}" == "inspect" ]]; then
   case "$container" in
     alpha-id)
       printf '/pi-agents-pi-alpha\037running\0372026-08-08T08:00:00.000000000Z\0372026-08-08T09:15:00.000000000Z\037/tmp/workspaces/alpha\037\037pi-agents-ws-alpha_pi-agent-state\n'
+      ;;
+    delta-id)
+      printf '/pi-agents-pi-delta\037running\0372026-08-08T07:00:00.000000000Z\0372026-08-08T07:30:00.000000000Z\037/tmp/workspaces/delta\037pi-agents-pi-delta\037%s\n' "$DELTA_EXTRA"
       ;;
     no-agent-state-id)
       printf '/pi-agents-pi-no-agent-state\037paused\0372026-08-08T09:00:00.000000000Z\0372026-08-08T09:30:00.000000000Z\037/tmp/workspaces/no-agent-state\037pi-agents-pi-no-agent-state\037\n'
@@ -70,7 +82,7 @@ if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
     printf 'incorrect docker volume ls invocation: %s\n' "$*" >&2
     exit 98
   fi
-  printf 'pi-agents-ws-alpha_pi-agent-state\npi-agents-ws-zeta_pi-agent-state\n'
+  printf 'pi-agents-ws-alpha_pi-agent-state\npi-agents-ws-zeta_pi-agent-state\n%s\n' "$DELTA_EXTRA"
   exit 0
 fi
 
@@ -90,6 +102,15 @@ if [[ "${1:-}" == "volume" && "${2:-}" == "inspect" ]]; then
       ;;
     pi-agents-ws-zeta_pi-agent-state)
       [[ "$#" -eq 5 ]] && printf '2026-08-08T13:30:00Z\n'
+      ;;
+    "$ALPHA_EXTRA")
+      [[ "$#" -eq 5 ]] && printf '2026-08-09T12:30:00Z\n'
+      ;;
+    "$DELTA_EXTRA")
+      [[ "$#" -eq 5 ]] && printf '2026-08-09T13:30:00Z\n'
+      ;;
+    pi-agents-new-ws-*)
+      exit 1
       ;;
     pi-agents-ws-unresolvable_pi-agent-state)
       exit 1
@@ -159,17 +180,44 @@ assert_read_only_docker_calls() {
   done < "$DOCKER_LOG"
 }
 
+stack_block() {
+  printf 'STACK: %s\n  status: %s\n  workspace: %s\n  project: %s\n  created: %s\n  started: %s\n  agent-state: %s\n  active-state: %s\n  extra-state: %s\n  markers: %s\n' "$@"
+}
+
+expected_list() {
+  local alpha_markers="$1" zeta_markers="$2"
+  stack_block pi-agents-pi-alpha running /tmp/workspaces/alpha '' \
+    2026-08-08T08:00:00.000000000Z 2026-08-08T09:15:00.000000000Z \
+    pi-agents-ws-alpha_pi-agent-state normal "$ALPHA_EXTRA" "$alpha_markers"
+  stack_block pi-agents-pi-delta running /tmp/workspaces/delta pi-agents-pi-delta \
+    2026-08-08T07:00:00.000000000Z 2026-08-08T07:30:00.000000000Z \
+    "$DELTA_EXTRA" extra "$DELTA_EXTRA" -
+  stack_block pi-agents-pi-no-agent-state paused /tmp/workspaces/no-agent-state pi-agents-pi-no-agent-state \
+    2026-08-08T09:00:00.000000000Z 2026-08-08T09:30:00.000000000Z none none none -
+  stack_block pi-agents-pi-unresolvable created /tmp/workspaces/unresolvable pi-agents-pi-unresolvable \
+    2026-08-08T09:30:00.000000000Z never none none none -
+  stack_block pi-agents-pi-zeta exited /tmp/workspaces/zeta pi-agents-pi-zeta \
+    2026-08-08T10:00:00.000000000Z never pi-agents-ws-zeta_pi-agent-state normal none "$zeta_markers"
+}
+
 mkdir -p "$TMP_DIR/state-registry"
 printf '%s\n' 'pi-agents-ws-alpha_pi-agent-state' > "$TMP_DIR/state-registry/seed"
 run_wrapper list
 
-expected_alpha_seed=$'STACK: pi-agents-pi-alpha\n  status: running\n  workspace: /tmp/workspaces/alpha\n  project: \n  created: 2026-08-08T08:00:00.000000000Z\n  started: 2026-08-08T09:15:00.000000000Z\n  agent-state: pi-agents-ws-alpha_pi-agent-state\n  markers: seed\nSTACK: pi-agents-pi-no-agent-state\n  status: paused\n  workspace: /tmp/workspaces/no-agent-state\n  project: pi-agents-pi-no-agent-state\n  created: 2026-08-08T09:00:00.000000000Z\n  started: 2026-08-08T09:30:00.000000000Z\n  agent-state: none\n  markers: -\nSTACK: pi-agents-pi-unresolvable\n  status: created\n  workspace: /tmp/workspaces/unresolvable\n  project: pi-agents-pi-unresolvable\n  created: 2026-08-08T09:30:00.000000000Z\n  started: never\n  agent-state: none\n  markers: -\nSTACK: pi-agents-pi-zeta\n  status: exited\n  workspace: /tmp/workspaces/zeta\n  project: pi-agents-pi-zeta\n  created: 2026-08-08T10:00:00.000000000Z\n  started: never\n  agent-state: pi-agents-ws-zeta_pi-agent-state\n  markers: latest'
+# Delta's extra volume is newer than every normal volume yet is never latest.
+expected_alpha_seed="$(expected_list seed latest)"
 assert_output "$expected_alpha_seed"
 assert_read_only_docker_calls
 
 printf '%s\n' 'pi-agents-ws-zeta_pi-agent-state' > "$TMP_DIR/state-registry/seed"
 run_wrapper list
-assert_output $'STACK: pi-agents-pi-alpha\n  status: running\n  workspace: /tmp/workspaces/alpha\n  project: \n  created: 2026-08-08T08:00:00.000000000Z\n  started: 2026-08-08T09:15:00.000000000Z\n  agent-state: pi-agents-ws-alpha_pi-agent-state\n  markers: -\nSTACK: pi-agents-pi-no-agent-state\n  status: paused\n  workspace: /tmp/workspaces/no-agent-state\n  project: pi-agents-pi-no-agent-state\n  created: 2026-08-08T09:00:00.000000000Z\n  started: 2026-08-08T09:30:00.000000000Z\n  agent-state: none\n  markers: -\nSTACK: pi-agents-pi-unresolvable\n  status: created\n  workspace: /tmp/workspaces/unresolvable\n  project: pi-agents-pi-unresolvable\n  created: 2026-08-08T09:30:00.000000000Z\n  started: never\n  agent-state: none\n  markers: -\nSTACK: pi-agents-pi-zeta\n  status: exited\n  workspace: /tmp/workspaces/zeta\n  project: pi-agents-pi-zeta\n  created: 2026-08-08T10:00:00.000000000Z\n  started: never\n  agent-state: pi-agents-ws-zeta_pi-agent-state\n  markers: seed, latest'
+assert_output "$(expected_list - 'seed, latest')"
+assert_read_only_docker_calls
+
+# A legacy seed pointer naming an extra volume is not shown as the seed.
+printf '%s\n' "$DELTA_EXTRA" > "$TMP_DIR/state-registry/seed"
+run_wrapper list
+assert_output "$(expected_list - latest)"
 assert_read_only_docker_calls
 
 printf '%s\n' 'pi-agents-ws-alpha_pi-agent-state' > "$TMP_DIR/state-registry/seed"

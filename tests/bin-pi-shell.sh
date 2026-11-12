@@ -22,7 +22,28 @@ set -euo pipefail
 
 printf 'docker %s\n' "$*" >> "$DOCKER_LOG"
 
+# FAKE_CONTAINERS rows are ID, name, status, state, workspace.
+container_workspace() {
+  local id name status state path
+  while IFS=$'\t' read -r id name status state path; do
+    [[ -n "$name" && "$name" == "$1" ]] && { printf '%s' "$path"; return 0; }
+  done <<< "${FAKE_CONTAINERS-}"
+  return 1
+}
+
 if [[ "${1:-}" == "ps" ]]; then
+  if [[ "$*" == *'label=com.pi-agents.workspace-basename='* ]]; then
+    basename_filter="${*#*label=com.pi-agents.workspace-basename=}"
+    basename_filter="${basename_filter%% *}"
+    while IFS=$'\t' read -r id name status state path; do
+      [[ -n "$id" && "${path##*/}" == "$basename_filter" ]] || continue
+      printf '%s\t%s\t%s\t%s\n' "$id" "$name" "$status" "$path"
+    done <<< "${FAKE_CONTAINERS-}"
+    exit 0
+  fi
+  if [[ "$*" == *'label=com.docker.compose.project='* ]]; then
+    exit 0
+  fi
   if [[ "$*" == *'--filter label=com.docker.compose.oneoff=False'* ]]; then
     if [[ "$*" != *'--filter label=com.pi-agents.workspace'* ]]; then
       printf 'shell discovery did not use the Pi workspace label: %s\n' "$*" >&2
@@ -33,7 +54,28 @@ if [[ "${1:-}" == "ps" ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == "container" && "${2:-}" == "inspect" ]]; then
+  # FAKE_MOUNTED_AGENT_STATE is the agent-state volume the container mounts.
+  if [[ "$*" == *'/home/node/.pi/agent'* ]]; then
+    [[ -n "${FAKE_MOUNTED_AGENT_STATE-}" ]] || exit 1
+    printf '%s\n' "$FAKE_MOUNTED_AGENT_STATE"
+    exit 0
+  fi
+  container_workspace "$3" >/dev/null
+  exit $?
+fi
+
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
+  exit 0
+fi
+
 if [[ "${1:-}" == "inspect" ]]; then
+  if [[ "$*" == *com.pi-agents.managed* ]]; then
+    name="${@: -1}"
+    path="$(container_workspace "$name")" || exit 1
+    printf '/%s\037true\037%s\037%s\037pi\037False\n' "$name" "$path" "$name"
+    exit 0
+  fi
   printf 'mounted\n'
   exit 0
 fi
@@ -45,6 +87,9 @@ fi
 if [[ "${1:-}" == "volume" ]]; then
   case "${2:-}" in
     inspect)
+      [[ "$*" == *com.pi-agents.managed* ]] && exit 0
+      # FAKE_EXISTING_VOLUMES lists volumes that already exist.
+      grep -Fqx -- "${@: -1}" <<< "${FAKE_EXISTING_VOLUMES-}" && exit 0
       exit 1
       ;;
     ls|create)
@@ -119,15 +164,45 @@ FAKE_CONTAINERS=$'stopped-id\tpi-agents-pi-stopped\tExited (0) 2 hours ago\texit
 run_wrapper shell
 assert_log_has 'docker start pi-agents-pi-stopped'
 assert_log_has "docker exec -it $SHELL_LAUNCH_ENV pi-agents-pi-stopped pi-shell-launch"
+grep -Fq 'extra state volume' "$OUTPUT_LOG" && { printf 'unexpected extra-state warning\n' >&2; exit 1; }
 
-# Without a current match, the picker can select another stopped container and
-# root mode adds Docker's user override.
+# Starting the current stack warns about an extra state volume, reporting
+# whether the started container runs on it.
+state_hash="$(printf '%s' "$CURRENT_PATH" | shasum -a 256 | awk '{print substr($1, 1, 12)}')"
+CURRENT_EXTRA="pi-agents-new-ws-${state_hash}_pi-agent-state"
+CURRENT_NORMAL="pi-agents-ws-${state_hash}_pi-agent-state"
+FAKE_EXISTING_VOLUMES="$CURRENT_EXTRA" FAKE_MOUNTED_AGENT_STATE="$CURRENT_EXTRA" run_wrapper shell
+assert_log_has 'docker start pi-agents-pi-stopped'
+grep -Fq "pi: warning: using the extra state volume $CURRENT_EXTRA; the normal state volume $CURRENT_NORMAL is untouched" "$OUTPUT_LOG"
+
+FAKE_EXISTING_VOLUMES="$CURRENT_EXTRA" FAKE_MOUNTED_AGENT_STATE="$CURRENT_NORMAL" run_wrapper shell
+grep -Fq "pi: warning: an extra state volume $CURRENT_EXTRA exists and is not in use" "$OUTPUT_LOG"
+
+# Reusing an already running container does not start the stack or warn.
+FAKE_CONTAINERS=$'current-id\tpi-agents-pi-current\tUp 4 minutes\trunning\t'"$CURRENT_PATH"
+FAKE_EXISTING_VOLUMES="$CURRENT_EXTRA" FAKE_MOUNTED_AGENT_STATE="$CURRENT_EXTRA" run_wrapper shell
+grep -Fq 'extra state volume' "$OUTPUT_LOG" && { printf 'unexpected extra-state warning\n' >&2; exit 1; }
+
+# Without a current match, the picker numbers containers after the
+# `0) Start a new project` entry; the displayed number selects that container.
+# Root mode adds Docker's user override.
 FAKE_CONTAINERS=$'other-id\tpi-agents-pi-other\tExited (0) 1 hour ago\texited\t'"$OTHER_PATH"$'\nsecond-id\tpi-agents-pi-second\tUp 1 minute\trunning\t'"$STOPPED_PATH"
-printf '2\n' | run_wrapper shell --root
+printf '1\n' | run_wrapper shell --root
 assert_log_has 'docker start pi-agents-pi-other'
 assert_log_has "docker exec -it --user 0 $SHELL_LAUNCH_ENV pi-agents-pi-other pi-shell-launch"
 grep -Fq 'Choose a Pi container:' "$OUTPUT_LOG"
+grep -Fq '0) Start a new project' "$OUTPUT_LOG"
 grep -Fq '1) pi-agents-pi-other' "$OUTPUT_LOG"
+
+printf '2\n' | run_wrapper shell
+assert_log_lacks 'docker start'
+assert_log_has "docker exec -it $SHELL_LAUNCH_ENV pi-agents-pi-second pi-shell-launch"
+
+if printf '3\n' | run_wrapper shell; then
+  printf 'out-of-range shell selection unexpectedly succeeded\n' >&2
+  exit 1
+fi
+grep -Fq 'invalid container selection: 3' "$OUTPUT_LOG"
 
 # A missing workspace offers project creation and Escape cancellation.
 FAKE_CONTAINERS=$'existing-id\tpi-agents-pi-existing\tUp 1 minute\trunning\t'"$OTHER_PATH"

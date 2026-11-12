@@ -71,12 +71,44 @@ if [[ "${1:-}" == compose ]]; then
   exit 0
 fi
 
+# FAKE_CONTAINERS rows are ID, name, status, state, workspace.
+container_workspace() {
+  local id name status state path
+  while IFS=$'\t' read -r id name status state path; do
+    [[ -n "$name" && "$name" == "$1" ]] && { printf '%s' "$path"; return 0; }
+  done <<< "${FAKE_CONTAINERS-}"
+  return 1
+}
+
 if [[ "${1:-}" == ps ]]; then
+  if [[ "$*" == *'label=com.pi-agents.workspace-basename='* ]]; then
+    while IFS=$'\t' read -r id name status state path; do
+      [[ -n "$id" ]] || continue
+      printf '%s\t%s\t%s\t%s\n' "$id" "$name" "$status" "$path"
+    done <<< "${FAKE_CONTAINERS-}"
+    exit 0
+  fi
+  [[ "$*" == *'label=com.docker.compose.project='* ]] && exit 0
   printf '%s\n' "${FAKE_CONTAINERS-}"
   exit 0
 fi
 
+if [[ "${1:-}" == container && "${2:-}" == inspect ]]; then
+  container_workspace "$3" >/dev/null
+  exit $?
+fi
+
+if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then
+  exit 0
+fi
+
 if [[ "${1:-}" == inspect ]]; then
+  if [[ "$*" == *com.pi-agents.managed* ]]; then
+    name="${@: -1}"
+    path="$(container_workspace "$name")" || exit 1
+    printf '/%s\037true\037%s\037%s\037pi\037False\n' "$name" "$path" "$name"
+    exit 0
+  fi
   if [[ "${FAKE_NO_RC_MOUNT-}" == 1 ]]; then
     exit 0
   fi
@@ -91,7 +123,7 @@ fi
 
 if [[ "${1:-}" == volume ]]; then
   case "${2:-}" in
-    inspect) exit 1 ;;
+    inspect) [[ "$*" == *com.pi-agents.managed* ]] && exit 0; exit 1 ;;
     ls|create) exit 0 ;;
   esac
 fi
@@ -252,7 +284,10 @@ assert_log_has_line 'PI_HOST_SHELL=zsh'
 
 REBUILD_STATE="$TMP_DIR/rebuild-state"
 run_wrapper /bin/bash "$REBUILD_STATE" --rebuild --version
-assert_log_has 'up --build --detach pi'
+# --rebuild builds the service image once; Compose then recreates from it.
+assert_log_has ' build pi'
+assert_log_has 'up --detach pi'
+assert_log_lacks 'up --build'
 assert_log_lacks '--no-cache'
 assert_log_lacks ' --pull '
 
@@ -321,7 +356,8 @@ run_wrapper /bin/zsh "$SHELL_STATE" shell
 assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
 
 run_wrapper /bin/zsh "$SHELL_STATE" --rebuild shell
-assert_log_has 'up --build --detach --force-recreate pi'
+assert_log_has ' build pi'
+assert_log_has 'up --detach --force-recreate pi'
 assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
 
 # Normal shell attachment reconciles a current container previously created
@@ -345,7 +381,8 @@ assert_log_lacks 'up --build'
 
 # Explicit rebuilding repairs the current workspace image before attaching.
 FAKE_NO_LAUNCHER=1 run_wrapper /bin/zsh "$SHELL_STATE" --rebuild shell
-assert_log_has 'up --build --detach --force-recreate pi'
+assert_log_has ' build pi'
+assert_log_has 'up --detach --force-recreate pi'
 assert_log_has 'docker exec -it --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc --env PI_NO_RC_CONFIG=0 pi-agents-pi-workspace pi-shell-launch'
 
 run_wrapper /bin/zsh "$SHELL_STATE" shell --root

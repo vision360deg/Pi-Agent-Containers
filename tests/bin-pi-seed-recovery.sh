@@ -53,6 +53,8 @@ if [[ "${1:-}" == "volume" && "${2:-}" == "inspect" ]]; then
 fi
 
 if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
+  # No volume carries this workspace's label; the others belong elsewhere.
+  [[ "$*" != *'label=com.pi-agents.workspace='* ]] || exit 0
   cat "$STATE_VOLUMES"
   exit 0
 fi
@@ -81,9 +83,10 @@ exit 1
 FAKE_DOCKER
 chmod +x "$FAKE_BIN/docker"
 
+# The workspace has no stack, so remove --all offers its leftover volumes.
 (
   cd "$WORKSPACE"
-  env -u PI_WORKSPACE \
+  printf 'a\n' | env -u PI_WORKSPACE \
     PI_AGENT_CONTAINERS_CONFIG_PATH="$REGISTRY" \
     HOME="$HOME_ROOT" \
     FAKE_TARGET_VOLUME_EXISTS=true \

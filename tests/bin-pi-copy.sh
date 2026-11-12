@@ -25,13 +25,29 @@ case "${1:-}" in
     printf 'other-id\tpi-agents-pi-other\tExited (0) 1 hour ago\texited\t%s\n' "$FAKE_OTHER_WORKSPACE"
     ;;
   inspect)
+    if [[ "$*" == *'/home/node/.pi/agent/sessions'* ]]; then
+      [[ "${FAKE_NO_SESSION_MOUNT-}" == 1 ]] && exit 0
+      case "${@: -1}" in
+        pi-agents-pi-current) printf 'pi-agents-ws-current_pi-sessions\n' ;;
+        pi-agents-pi-other) printf 'pi-agents-ws-other_pi-sessions\n' ;;
+        *) exit 1 ;;
+      esac
+      exit 0
+    fi
     case "${@: -1}" in
       pi-agents-pi-current) printf 'pi-agents-ws-current_pi-agent-state\n' ;;
       pi-agents-pi-other) printf 'pi-agents-ws-other_pi-agent-state\n' ;;
       *) exit 1 ;;
     esac
     ;;
-  volume|compose|run) exit 0 ;;
+  volume)
+    if [[ "${2:-}" == ls && "$*" == *'state-kind=sessions'* && -n "${FAKE_LABELLED_SESSIONS_WORKSPACE-}" &&
+      "$*" == *"com.pi-agents.workspace=$FAKE_LABELLED_SESSIONS_WORKSPACE "* ]]; then
+      printf 'pi-agents-ws-labelled_pi-sessions\n'
+    fi
+    exit 0
+    ;;
+  compose|run) exit 0 ;;
   *) exit 0 ;;
 esac
 FAKE_DOCKER
@@ -74,11 +90,38 @@ fi
 grep -Fq -- 'docker run --rm -i --user 0' "$DOCKER_LOG"
 grep -Fq -- 'pi-agents-ws-other_pi-agent-state:/state-source:ro' "$DOCKER_LOG"
 grep -Fq -- 'pi-agents-ws-current_pi-agent-state:/state-target' "$DOCKER_LOG"
+# Sessions live in a separate volume; legacy unlabelled volumes are found
+# through each container's sessions mount, and the target's is repaired.
+grep -Fq -- 'pi-agents-ws-other_pi-sessions:/state-source/sessions:ro' "$DOCKER_LOG"
+grep -Fq -- 'pi-agents-ws-current_pi-sessions:/state-target/sessions' "$DOCKER_LOG"
+grep -Fq -- 'pi-agents-ws-current_pi-sessions:/sessions' "$DOCKER_LOG"
 
+# A labelled session volume is located by its workspace label.
 : > "$DOCKER_LOG"
-printf '1' | run_capture copy --to --auth --all
+printf '1' | FAKE_LABELLED_SESSIONS_WORKSPACE="$OTHER_PATH" run_capture copy --from --sessions --all
+grep -Fq -- 'pi-agents-ws-labelled_pi-sessions:/state-source/sessions:ro' "$DOCKER_LOG"
+
+# A missing session volume fails before the helper runs.
+: > "$DOCKER_LOG"
+if printf '1' | FAKE_NO_SESSION_MOUNT=1 run_capture copy --from --sessions --all; then
+  printf 'copy without a session volume unexpectedly succeeded\n' >&2
+  exit 1
+fi
+grep -Fq -- 'no session volume found for workspace' "$OUTPUT_LOG"
+if grep -Fq -- 'pi-state-copy' "$DOCKER_LOG"; then
+  printf 'copy helper ran without a session volume\n' >&2
+  exit 1
+fi
+
+# Auth-only copies do not need session volumes.
+: > "$DOCKER_LOG"
+printf '1' | FAKE_NO_SESSION_MOUNT=1 run_capture copy --to --auth --all
 grep -Fq -- 'Choose a destination Pi container:' "$OUTPUT_LOG"
 grep -Fq -- 'pi-agents-ws-current_pi-agent-state:/state-source:ro' "$DOCKER_LOG"
 grep -Fq -- 'pi-agents-ws-other_pi-agent-state:/state-target' "$DOCKER_LOG"
+if grep -Fq -- '_pi-sessions:/' "$DOCKER_LOG"; then
+  printf 'auth-only copy mounted session volumes:\n%s\n' "$(cat "$DOCKER_LOG")" >&2
+  exit 1
+fi
 
 printf 'bin/pi copy tests passed\n'

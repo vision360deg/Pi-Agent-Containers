@@ -34,9 +34,33 @@ if [[ "${1:-}" == "volume" ]]; then
   if [[ "${2:-}" == "create" ]]; then
     exit 0
   fi
+  if [[ "${2:-}" == "inspect" && "$*" == *com.pi-agents.managed* ]]; then
+    exit 0
+  fi
   exit 1
 fi
 if [[ "${1:-}" == "ps" ]]; then
+  # stop and remove look up this workspace's own stack; report one.
+  if [[ "$*" == *'label=com.pi-agents.workspace='* ]]; then
+    stack_workspace="$*"
+    stack_workspace="${stack_workspace#*label=com.pi-agents.workspace=}"
+    printf '%s\n' "${stack_workspace%% --*}" > "$DOCKER_LOG.stack"
+    printf 'stack-id\tpi-agents-pi-workspace\tpi-agents-pi-workspace\n'
+  fi
+  exit 0
+fi
+if [[ "${1:-}" == "inspect" && "$*" == *com.pi-agents.managed* ]]; then
+  printf '/pi-agents-pi-workspace\037true\037%s\037pi-agents-pi-workspace\037pi\037False\n' "$(cat "$DOCKER_LOG.stack")"
+  exit 0
+fi
+# Identity and helper-image lookups are not part of the asserted sequence.
+if [[ "${1:-}" == "container" && "${2:-}" == "inspect" ]]; then
+  exit 1
+fi
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "compose" && "$*" == *' config --images pi' ]]; then
   exit 0
 fi
 if [[ "${1:-}" == "run" ]]; then
@@ -157,10 +181,11 @@ run_wrapper_with_workspace() {
 assert_persistent_logged_exec() {
   expected_exec="$1"
   expect_shell_alias_setup="${2:-false}"
-  expected_line_count=9
+  # The run lines include marking the new agent state initialized.
+  expected_line_count=10
   expected_workspace_count=4
   if [[ "$expect_shell_alias_setup" == true ]]; then
-    expected_line_count=11
+    expected_line_count=12
     expected_workspace_count=5
   fi
   assert_log_line_count "$expected_line_count"
@@ -204,8 +229,11 @@ assert_log ""
 [[ "$DETAILED_HELP" == *'# Also remove Pi and browser persisted state.'* ]]
 [[ "$DETAILED_HELP" == *'--new-state'* ]]
 [[ "$DETAILED_HELP" == *'pi --new-state'* ]]
-[[ "$DETAILED_HELP" == *'from the workspace currently designated as the'* ]]
-[[ "$DETAILED_HELP" == *'seed. Workspace sessions remain isolated.'* ]]
+[[ "$DETAILED_HELP" == *'Run this workspace against its extra agent-state volume,'* ]]
+[[ "$DETAILED_HELP" == *'The extra volume starts empty and is never seeded, never becomes'* ]]
+[[ "$DETAILED_HELP" == *'active-state says whether the container mounts the normal or extra agent'* ]]
+[[ "$DETAILED_HELP" == *'browser state volumes, including the extra state volume.'* ]]
+[[ "$DETAILED_HELP" == *'--new-state cannot be combined with stop, remove, or --seed'* ]]
 [[ "$DETAILED_HELP" == *'from an existing'* ]]
 [[ "$DETAILED_HELP" == *'normal workspace state volume'* ]]
 [[ "$DETAILED_HELP" == *'--seed'* ]]
@@ -294,7 +322,7 @@ Options:
   --rebuild         Build the image with cache for this launch.
   --keep-existing   Preserve an existing colliding workspace container.
   --workspace PATH  Use PATH as the workspace; it overrides PI_WORKSPACE.
-  --new-state       Start empty; skip copying agent-state files from the seed workspace.
+  --new-state       Use a separate, empty extra agent-state volume; normal state is kept.
   --seed            Promote this workspace's state to the default seed state.
   --latest-state    Copy the newest Docker-managed state when initializing.
   --oauth [PORTS...] Publish known callback ports 1455/53692/51121; add comma- or
@@ -424,7 +452,7 @@ assert_output "$BRIEF_USAGE"
 assert_log ""
 
 run_wrapper update
-assert_log_line_count 9
+assert_log_line_count 10
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml build --pull --no-cache pi"
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach --force-recreate pi"
 assert_log_lacks_fragment ' up --build '
@@ -544,18 +572,20 @@ fi
 assert_log ""
 
 run_wrapper --rm --version
-assert_log_line_count 5
+assert_log_line_count 6
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --entrypoint /bin/sh pi -c"
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml run --rm --service-ports pi pi-shell-launch pi --version"
 assert_log_lacks_fragment ' run --build '
 assert_log_has_line "PI_WORKSPACE=$WORKSPACE"
 
 run_wrapper --rebuild --version
-assert_log_line_count 11
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --build --detach pi"
+# --rebuild builds the service image once before Compose recreates from it.
+assert_log_line_count 14
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml build pi"
+assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --detach pi"
+assert_log_lacks_fragment ' up --build '
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml exec pi pi-shell-launch pi-session-log --version"
-assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml up --build --detach pi"
 
 run_wrapper --rebuild --rm --version
 assert_log_has_fragment "--project-directory $ROOT --file $ROOT/compose.yml build pi"

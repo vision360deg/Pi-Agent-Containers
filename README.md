@@ -31,7 +31,8 @@ same time without sharing their agent state.
 ## Requirements
 
 - Docker Desktop or Docker Engine with Docker Compose v2.
-- Bash and standard Unix tools on the host.
+- Bash 4 or newer on `PATH` and standard Unix tools on the host. macOS ships
+  Bash 3.2 as `/bin/bash`; install a newer Bash (for example with Homebrew).
 - A host directory containing the project you want Pi to work on.
 
 The wrapper targets macOS and Linux. Windows users should run it from a
@@ -124,13 +125,24 @@ Run `./bin/pi --help` for the complete, authoritative help text.
 ./bin/pi remove --all
 ```
 
+`stop` and `remove` act only on the stack labelled with the current workspace
+path and fail when there is none. `remove --all` on a workspace whose stack is
+already gone lists its leftover state volumes and asks whether to leave them
+(the default), delete all, or delete selected ones.
+
 Persistent mode is the default. It keeps the container and named volumes so a
 later `./bin/pi` can reconnect to the same workspace. `--rm` is the exception:
 it uses a temporary Compose container and removes it when Pi exits.
 
 `--replace` force-recreates the current workspace container. If another
-workspace has the same basename, `--keep-existing` preserves the existing
-container and creates a disambiguated one instead.
+workspace has the same basename, `pi` prompts before renaming the existing
+container to `pi-agents-pi-<first-differing-path-components>-<path-hash>` and
+giving the current workspace its own such name; `--keep-existing` preserves
+the existing container and creates the disambiguated one instead. Every
+destination container name and Compose project is checked before the first
+rename, and `pi` stops without renaming anything if one belongs to a different
+workspace. A workspace that already has a stack reuses it under its current
+name, and two stacks claiming the same workspace are refused as ambiguous.
 
 Arguments that are not wrapper options or commands are passed through to Pi.
 The wrapper's `stop`, `update`, `list`, `remove`, and `shell` commands take
@@ -160,9 +172,15 @@ and produce warnings.
 
 The host home directory is not mounted into the container. The persistent
 container service remains Bash-based; host-shell selection applies only to
-foreground Pi commands and interactive shell attachment. Compose builds the
-image for persistent and disposable launches so the shell launcher is present;
-`pi shell` repairs the current workspace image when needed.
+foreground Pi commands and interactive shell attachment. For zsh, the launcher
+creates a private `ZDOTDIR` under `${TMPDIR:-/tmp}` and removes it when zsh
+exits, preserving zsh's exit status. Missing images are built before use;
+`--rebuild` builds once with the cache and Compose recreates the service from
+the result. `pi shell` repairs the current workspace image when needed.
+
+Helper containers that probe, seed, copy, or repair state volumes run the
+configured Pi service image (`docker compose config --images pi`) with an
+explicit `--user`, so no separate image is pulled.
 
 Use a leading `-` to force a wrapper command name through to Pi: `pi - list`
 runs Pi's `list` command inside the container, while `pi list` runs the wrapper
@@ -206,6 +224,21 @@ read-only and the destination state volume mounted read-write. It works whether
 the selected containers are running or stopped and never shares their volumes
 afterward.
 
+Sessions live in each workspace's separate session volume, which the helper
+mounts at `sessions/` on both sides. It is located by its workspace label, or
+for older unlabelled volumes through the container's sessions mount; `pi copy`
+fails before copying if either session volume is missing. Copies that exclude
+sessions (`--auth`, `--extensions`) do not need them.
+
+The copy is transactional per run. Every selected item, including each
+duplicate decision, is staged in a temporary directory inside the destination
+before the destination changes. Staged items are then published by rename,
+each previous item kept as a backup until all items are in place; a failure or
+interruption while publishing restores the previous items. Cancelling (`q`)
+exits with status 3 and leaves the destination unchanged. Symlinked state
+paths on either side, and overlapping source/destination directories, are
+refused.
+
 By default, `pi copy` treats the current workspace as the destination and lets
 you pick the source. `pi copy --to` treats the current workspace as the source
 and lets you pick the destination. `--from` explicitly selects the source;
@@ -247,10 +280,25 @@ The first managed stack becomes the seed. A new workspace copies the seed's
 agent files once; it does not share the volume. Later changes in either
 workspace stay independent.
 
+Initialization is tracked by marker files in the agent-state volume.
+`.container-initialization-pending` records the seed source before copying,
+and `.container-initialized` marks completion. If a seed copy is interrupted,
+the next launch resumes from the recorded source, and fails rather than
+reseeding from another volume if that source is gone. Agent-state volumes
+created before the markers that contain a non-empty `auth.json` or a
+`defaultProvider`/`defaultModel` setting are marked initialized unchanged.
+
+New agent, session, and browser volumes carry `com.pi-agents.*` labels for
+their workspace and kind, and a labelled volume belonging to another
+workspace is refused. Docker cannot label existing volumes, so unlabelled
+volumes from earlier releases continue to work. Containers carry
+`com.pi-agents.managed=true`; older containers without it are still found by
+their workspace label.
+
 Use these options when creating a workspace:
 
 ```bash
-# Start with an empty agent-state volume.
+# Run on this workspace's separate, empty extra agent-state volume.
 ./bin/pi --new-state
 
 # Copy from the newest Docker-managed state during first initialization.
@@ -261,8 +309,29 @@ Use these options when creating a workspace:
 ```
 
 `--latest-state` only affects first initialization. On an already initialized
-workspace it has no effect and prints a warning. A `--new-state` workspace is
-still eligible to be selected by a later `--latest-state` run.
+workspace it has no effect and prints a warning.
+
+### Extra state volume (`--new-state`)
+
+`--new-state` runs the workspace against an extra agent-state volume,
+`pi-agents-new-ws-<hash>_pi-agent-state`, and force-recreates the container on
+it. Sessions and browser state stay on the workspace's normal volumes, and the
+normal agent-state volume is left untouched. Running without `--new-state`
+later recreates the container on the normal agent state.
+
+- The extra volume is created empty, marked initialized, and never seeded;
+  `--latest-state` has no effect with `--new-state`.
+- It is never the seed or a seed candidate, never the `latest` volume, and
+  never a `--latest-state` source. `--seed --new-state` is rejected.
+- New extra volumes are labelled `com.pi-agents.state-kind=agent-extra` with
+  the usual managed, workspace, and project labels. Extra volumes created by
+  earlier releases carry the `agent` kind and are recognised by name.
+- Whenever the workspace has an extra volume, every start or reuse of the
+  persistent container, every `--rm` run, and `pi shell` when it starts or
+  creates the stack prints a warning: either that the extra volume is in use
+  and the normal state is untouched, or that it exists and is not in use.
+- `pi remove` keeps it and names it in a warning; `pi remove --all` removes it
+  with the workspace's other state volumes.
 
 The seed pointer is stored on the host at
 `~/.config/pi-agent-containers/seed`. Override its directory in the shell with:
@@ -272,14 +341,16 @@ export PI_AGENT_CONTAINERS_CONFIG_PATH="$HOME/.config/pi-agent-containers"
 ```
 
 If the pointer is missing but managed state volumes exist, the wrapper proposes
-the oldest state as the seed and asks for confirmation. Removing the current
-seed with `./bin/pi remove --all` reassigns the pointer to the oldest remaining
+the oldest state as the seed and asks for confirmation. A pointer naming an
+extra state volume is discarded the same way. Removing the current seed with
+`./bin/pi remove --all` reassigns the pointer to the oldest remaining normal
 state, if one exists.
 
 `./bin/pi list` reports workspace paths, project/container names, Docker
-timestamps, state volumes, and seed/latest markers. `started` comes from
-Docker's `State.StartedAt`; a container that has never started is shown as
-`never`.
+timestamps, the mounted agent-state volume, `active-state` (`normal` or
+`extra`), the workspace's `extra-state` volume (or `none`), and seed/latest
+markers. `started` comes from Docker's `State.StartedAt`; a container that has
+never started is shown as `never`.
 
 ## Authentication and OAuth
 

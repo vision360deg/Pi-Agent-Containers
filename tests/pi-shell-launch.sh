@@ -11,22 +11,26 @@ assert_contains() { grep -Fqx -- "$2" "$1" || fail "missing $2"; }
 
 [[ -x $LAUNCHER ]] || fail 'launcher must be executable'
 
-mkdir -p "$TMP/bin"
+mkdir -p "$TMP/bin" "$TMP/tmpdir"
 for shell in bash zsh; do
   cat > "$TMP/bin/$shell" <<'EOF'
 #!/bin/sh
 printf 'shell=%s\n' "$(basename "$0")" >> "$PI_TEST_LOG"
 printf 'zdotdir=%s\n' "${ZDOTDIR-}" >> "$PI_TEST_LOG"
+if [ -n "${ZDOTDIR-}" ] && [ -L "$ZDOTDIR/.zshrc" ]; then
+  printf 'zshrc=%s\n' "$(readlink "$ZDOTDIR/.zshrc")" >> "$PI_TEST_LOG"
+fi
 for argument in "$@"; do
   printf 'arg=%s\n' "$argument" >> "$PI_TEST_LOG"
 done
+exit "${PI_TEST_STATUS:-0}"
 EOF
   chmod 0755 "$TMP/bin/$shell"
 done
 
 run_launcher() {
   : > "$TMP/log"
-  PI_TEST_LOG="$TMP/log" PATH="$TMP/bin:$PATH" /bin/bash "$LAUNCHER" "$@"
+  PI_TEST_LOG="$TMP/log" TMPDIR="$TMP/tmpdir" PATH="$TMP/bin:$PATH" /bin/bash "$LAUNCHER" "$@"
 }
 
 PI_HOST_SHELL=zsh PI_HOST_RC_FILE="$TMP/rc" PI_NO_RC_CONFIG=0 run_launcher command one
@@ -37,7 +41,18 @@ assert_contains "$TMP/log" 'arg=exec "$@"'
 assert_contains "$TMP/log" 'arg=pi-shell-launch'
 assert_contains "$TMP/log" 'arg=command'
 assert_contains "$TMP/log" 'arg=one'
-grep -Eq "^zdotdir=/tmp/pi-shell-launch\." "$TMP/log" || fail 'zsh must receive a private ZDOTDIR'
+grep -Eq "^zdotdir=$TMP/tmpdir/pi-shell-launch\." "$TMP/log" || fail 'zsh must receive a private ZDOTDIR under TMPDIR'
+assert_contains "$TMP/log" "zshrc=$TMP/rc"
+zdotdir="$(sed -n 's/^zdotdir=//p' "$TMP/log")"
+[[ ! -e $zdotdir ]] || fail 'the private ZDOTDIR must be removed after zsh exits'
+
+# zsh runs as a child, so its exit status is preserved after cleanup.
+set +e
+PI_TEST_STATUS=7 PI_HOST_SHELL=zsh PI_HOST_RC_FILE="$TMP/rc" PI_NO_RC_CONFIG=0 run_launcher command one
+status=$?
+set -e
+[[ $status -eq 7 ]] || fail "zsh exit status must be preserved, got $status"
+[[ -z $(find "$TMP/tmpdir" -mindepth 1 -print) ]] || fail 'failed zsh must not leave a ZDOTDIR behind'
 
 PI_HOST_SHELL=zsh PI_HOST_RC_FILE="$TMP/rc" PI_NO_RC_CONFIG=0 run_launcher
 assert_contains "$TMP/log" 'shell=zsh'
