@@ -810,6 +810,28 @@ if [[ "$COPY_COMMAND" == true && "$REBUILD_IMAGE" == true ]]; then
   exit 2
 fi
 
+if [[ "$COPY_COMMAND" == true && "$REMOVE_AFTER_RUN" == true ]]; then
+  printf 'pi: --rm cannot be combined with copy\n' >&2
+  exit 2
+fi
+
+if [[ "$COPY_COMMAND" == true &&
+  ( "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true ||
+    "$SEED_STATE" == true || "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true ) ]]; then
+  printf 'pi: copy cannot be combined with launch, state, or OAuth options\n' >&2
+  exit 2
+fi
+
+if [[ "$COPY_FROM" == true && "$COPY_TO" == true ]]; then
+  printf 'pi: --from and --to are mutually exclusive\n' >&2
+  exit 2
+fi
+
+if [[ "$REPLACE_CONTAINER" == true && "$KEEP_EXISTING" == true ]]; then
+  printf 'pi: --replace and --keep-existing are mutually exclusive\n' >&2
+  exit 2
+fi
+
 if [[ "$HELP_REQUESTED" == false && "${1:-}" == "shell" ]]; then
   SHELL_COMMAND=true
   shift
@@ -844,6 +866,12 @@ if [[ "$SHELL_COMMAND" == true &&
     "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true ) ]]; then
   printf 'pi: shell cannot be combined with lifecycle, state, or OAuth options\n' >&2
   printf 'usage: pi shell [--root|-r]\n' >&2
+  exit 2
+fi
+
+if [[ "$OAUTH_CALLBACK" == true && "$HELP_REQUESTED" == false && "$PI_PASSTHROUGH_MARKER" == false &&
+  ( "${1:-}" == "stop" || "${1:-}" == "remove" ) ]]; then
+  printf 'pi: --oauth cannot be combined with %s\n' "$1" >&2
   exit 2
 fi
 
@@ -2365,17 +2393,7 @@ copy_agent_state() {
   local -a session_mounts=() repair_mounts=()
   current_copy_container || { printf 'pi: current workspace has no usable agent-state volume\n' >&2; return 2; }
 
-  if [[ "$COPY_FROM" == true && "$COPY_TO" == true ]]; then
-    select_copy_container source || return $?
-    source_volume="$COPY_SELECTED_VOLUME"
-    source_name="$COPY_SELECTED_NAME"
-    source_path="$COPY_SELECTED_PATH"
-    select_copy_container destination "$source_name" || return $?
-    target_volume="$COPY_SELECTED_VOLUME"
-    target_name="$COPY_SELECTED_NAME"
-    target_state="$COPY_SELECTED_STATE"
-    target_path="$COPY_SELECTED_PATH"
-  elif [[ "$COPY_TO" == true ]]; then
+  if [[ "$COPY_TO" == true ]]; then
     source_volume="$COPY_CURRENT_VOLUME"
     source_name="$COPY_CURRENT_NAME"
     source_path="$WORKSPACE"
