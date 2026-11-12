@@ -35,6 +35,7 @@ services:
       # for machine-readable JSONL or color=never for plain text.
       PI_SESSION_LOG_FORMAT: ${PI_SESSION_LOG_FORMAT:-pretty}
       PI_SESSION_LOG_COLOR: ${PI_SESSION_LOG_COLOR:-always}
+      PI_SESSION_LOG_POLL_INTERVAL: ${PI_SESSION_LOG_POLL_INTERVAL:-1}
       PI_HOST_SHELL: ${PI_HOST_SHELL:-bash}
       PI_HOST_RC_FILE: ${PI_HOST_RC_FILE:-/tmp/pi-host-shellrc/rc}
       PI_NO_RC_CONFIG: ${PI_NO_RC_CONFIG:-0}
@@ -62,7 +63,7 @@ networks:
   pi:
     # The wrapper passes the resolved workspace project name so each stack
     # receives its own isolated network.
-    name: ${PI_WORKSPACE_PROJECT:-pi-agents-pi}
+    name: ${PI_PROJECT_NAME:-pi-agents-pi}
 
 volumes:
   pi-agent-state:

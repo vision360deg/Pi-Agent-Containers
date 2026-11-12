@@ -29,14 +29,14 @@ docker compose --project-name pi-agents-pi-example --project-directory "$ROOT" \
 docker compose --project-name pi-agents-pi-example --project-directory "$ROOT" \
   --file "$ROOT/compose.yml" config | grep -Fqx '      PI_SESSION_LOG_COLOR: always'
 
-if ! PI_WORKSPACE_PROJECT=pi-agents-pi-example \
+if ! PI_PROJECT_NAME=pi-agents-pi-example \
   docker compose --project-name pi-agents-pi-example --project-directory "$ROOT" \
   --file "$ROOT/compose.yml" config | grep -Fqx '    name: pi-agents-pi-example'; then
   fail 'Compose network must follow the resolved project name'
 fi
 
 if ! PI_WORKSPACE=/tmp/example \
-  PI_WORKSPACE_PROJECT=pi-agents-pi-example \
+  PI_PROJECT_NAME=pi-agents-pi-example \
   PI_AGENT_STATE_VOLUME_NAME=pi-agents-ws-example_pi-agent-state \
   PI_SESSION_STATE_VOLUME_NAME=pi-agents-ws-example_pi-sessions \
   PI_BROWSER_STATE_VOLUME_NAME=pi-agents-ws-example_agent-browser-state \

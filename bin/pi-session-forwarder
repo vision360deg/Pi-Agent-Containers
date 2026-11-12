@@ -6,7 +6,7 @@ set -euo pipefail
 # Pi retains foreground ownership of its PTY while Docker receives session
 # records through the service's normal stdout stream.
 SESSION_DIR="${PI_CODING_AGENT_SESSION_DIR:-/home/node/.pi/agent/sessions}"
-POLL_INTERVAL="${PI_SESSION_LOG_POLL_INTERVAL:-0.05}"
+POLL_INTERVAL="${PI_SESSION_LOG_POLL_INTERVAL:-1}"
 RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pi-session-forwarder.XXXXXX")"
 
 declare -A SESSION_OFFSETS=()

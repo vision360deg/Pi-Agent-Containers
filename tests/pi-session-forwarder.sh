@@ -45,6 +45,7 @@ live_pids() {
 start_forwarder() {
   PI_CODING_AGENT_SESSION_DIR="$SESSION_DIR" \
   PI_SESSION_LOG_FORMAT=raw \
+  PI_SESSION_LOG_POLL_INTERVAL=0.05 \
   TMPDIR="$TMP_DIR/tmp" \
   PATH="$FAKE_BIN:$ROOT/bin:$PATH" \
     bash "$ROOT/bin/pi-session-forwarder" \

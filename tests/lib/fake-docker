@@ -334,7 +334,7 @@ docker_compose() {
     exit 1
   }
   printf 'compose-env project=%s container=%s network=%s workspace=%s agent=%s sessions=%s browser=%s shell=%s rc-source=%s rc-file=%s no-rc=%s\n' \
-    "$project" "${PI_CONTAINER_NAME:-}" "${PI_WORKSPACE_PROJECT:-}" "${PI_WORKSPACE:-}" \
+    "$project" "${PI_CONTAINER_NAME:-}" "${PI_PROJECT_NAME:-}" "${PI_WORKSPACE:-}" \
     "${PI_AGENT_STATE_VOLUME_NAME:-}" "${PI_SESSION_STATE_VOLUME_NAME:-}" "${PI_BROWSER_STATE_VOLUME_NAME:-}" \
     "${PI_HOST_SHELL:-}" "${PI_HOST_RC_SOURCE:-}" "${PI_HOST_RC_FILE:-}" "${PI_NO_RC_CONFIG:-}" >> "$DOCKER_LOG"
   # Generated override files live outside the project; record what Compose read.
