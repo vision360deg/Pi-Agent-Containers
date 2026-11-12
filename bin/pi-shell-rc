@@ -2,8 +2,13 @@
 set -euo pipefail
 
 usage() {
-  printf 'usage: pi-shell-rc --shell bash|zsh --home HOST_HOME --output GENERATED_RC\n' >&2
-  exit 2
+  local status=${1:-2}
+  if (( status == 0 )); then
+    printf 'usage: pi-shell-rc --shell bash|zsh --home HOST_HOME --output GENERATED_RC\n'
+  else
+    printf 'usage: pi-shell-rc --shell bash|zsh --home HOST_HOME --output GENERATED_RC\n' >&2
+  fi
+  exit "$status"
 }
 
 shell=''
@@ -11,6 +16,7 @@ home=''
 output=''
 while (($#)); do
   case $1 in
+    --help|-h) usage 0 ;;
     --shell) (($# >= 2)) || usage; shell=$2; shift 2 ;;
     --home) (($# >= 2)) || usage; home=$2; shift 2 ;;
     --output) (($# >= 2)) || usage; output=$2; shift 2 ;;
@@ -21,6 +27,7 @@ done
 [[ -n $shell && -n $home && -n $output ]] || usage
 [[ $home = /* ]] || { printf 'pi-shell-rc: home must be absolute: %s\n' "$home" >&2; exit 2; }
 [[ $output = /* ]] || { printf 'pi-shell-rc: output must be absolute: %s\n' "$output" >&2; exit 2; }
+[[ ! -d $output ]] || { printf 'pi-shell-rc: output must be a file path: %s\n' "$output" >&2; exit 2; }
 home=$(cd -P -- "$home" 2>/dev/null && pwd -P) || {
   printf 'pi-shell-rc: home must be a readable directory: %s\n' "$home" >&2
   exit 2

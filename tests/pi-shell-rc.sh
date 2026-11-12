@@ -545,4 +545,16 @@ for form in one-line multi-line; do
   bash -n "$TMP/true-$form.rc" || fail "static true guard ($form) output must be valid bash"
 done
 
+bash "$RESOLVER" --help > "$TMP/help" || fail "--help must succeed"
+assert_contains "$TMP/help" 'usage: pi-shell-rc --shell bash|zsh'
+bash "$RESOLVER" -h > "$TMP/help-h" || fail "-h must succeed"
+assert_contains "$TMP/help-h" 'usage: pi-shell-rc'
+OUTPUT_DIR=$TMP/output-dir
+mkdir -p "$OUTPUT_DIR"
+DIR_STATUS=0
+bash "$RESOLVER" --shell bash --home "$HOME_ROOT" --output "$OUTPUT_DIR" 2>"$TMP/output-dir.err" || DIR_STATUS=$?
+[[ $DIR_STATUS -eq 2 ]] || fail "directory --output must return status 2, got $DIR_STATUS"
+assert_contains "$TMP/output-dir.err" "pi-shell-rc: output must be a file path: $OUTPUT_DIR"
+[[ -z $(ls -A "$OUTPUT_DIR") ]] || fail "directory --output must not write into the directory"
+
 printf 'PASS: pi-shell-rc\n'
