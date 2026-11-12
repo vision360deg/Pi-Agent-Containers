@@ -366,7 +366,7 @@ volume is discarded the same way. Launching an already-initialized workspace
 never fills a missing pointer
 on its own; only `--seed` does. Removing the current seed with
 `./bin/pi remove --all` reassigns the pointer to the oldest remaining normal
-state, if one exists.
+state, if one exists, and otherwise deletes the pointer file.
 
 `./bin/pi list` reports workspace paths, project/container names, Docker
 timestamps, the mounted agent-state volume, `active-state` (`normal` or
@@ -479,6 +479,7 @@ before recreating the workspace container:
 ```bash
 PI_SESSION_LOG_FORMAT=raw   # pretty or raw
 PI_SESSION_LOG_COLOR=never  # always, auto, or never
+PI_SESSION_LOG_POLL_INTERVAL=0.2  # seconds between session file scans; default 1
 ./bin/pi update
 ```
 
@@ -511,6 +512,7 @@ build arguments and container environment. Settings consumed directly by
 | `PI_OAUTH_CALLBACK_HOST` | Bind address used by Pi's callback listeners inside the container. |
 | `AGENT_BROWSER_CDP` | Optional CDP port or WebSocket URL for an existing browser. |
 | `PI_OAUTH_CALLBACK_PORTS` | Extra fixed OAuth ports; export in the shell before calling `bin/pi`. |
+| `PI_SESSION_LOG_POLL_INTERVAL` | Seconds between the session log forwarder's scans for new or grown session files; defaults to `1`. |
 | `PI_AGENT_CONTAINERS_CONFIG_PATH` | Host directory for the seed pointer; export in the shell. |
 
 Avoid setting `PI_WORKSPACE` in `.env`; use `--workspace` or export it in the
