@@ -1,42 +1,30 @@
 #!/usr/bin/env bash
+# pi --host: native Pi lookup, passthrough, conflicts, and the installer offer. Docker must never run.
 set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.bash"
+source "$ROOT/tests/lib/launcher.bash"
 
-ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
-TMP_DIR="$(cd -P -- "$TMP_DIR" && pwd)"
+WS=$(make_workspace "$TEST_HOME/projects/alpha")
+OTHER=$(make_workspace "$TEST_HOME/projects/other workspace")
+WRAPPER_LINK_DIR=$TMP_DIR/link-bin
+PATH_NATIVE_DIR=$TMP_DIR/path-native
+SYSTEM_BIN=$TMP_DIR/system-bin
+LAUNCHER=$TEST_HOME/.pi/agent/bin/pi
+PATH_NATIVE=$PATH_NATIVE_DIR/pi
+INSTALLED_TEMPLATE=$TMP_DIR/installed-pi
+FAKE_INSTALLER=$TMP_DIR/install.sh
+CURL_LOG=$TMP_DIR/curl.log
+INSTALLER_LOG=$TMP_DIR/installer.log
+NATIVE_LOG=$TMP_DIR/native.log
+export CURL_LOG INSTALLER_LOG NATIVE_LOG FAKE_INSTALLER INSTALLED_TEMPLATE
 
-FAKE_BIN="$TMP_DIR/fake-bin"
-WRAPPER_LINK_DIR="$TMP_DIR/link-bin"
-PATH_NATIVE_DIR="$TMP_DIR/path-native"
-SYSTEM_BIN="$TMP_DIR/system-bin"
-HOST_HOME="$TMP_DIR/home"
-WORKSPACE="$TMP_DIR/workspace"
-OTHER_WORKSPACE="$TMP_DIR/other workspace"
-LAUNCHER="$HOST_HOME/.pi/agent/bin/pi"
-PATH_NATIVE="$PATH_NATIVE_DIR/pi"
-INSTALLED_TEMPLATE="$TMP_DIR/installed-pi"
-FAKE_INSTALLER="$TMP_DIR/install.sh"
-DOCKER_LOG="$TMP_DIR/docker.log"
-CURL_LOG="$TMP_DIR/curl.log"
-INSTALLER_LOG="$TMP_DIR/installer.log"
-NATIVE_LOG="$TMP_DIR/native.log"
-OUTPUT_LOG="$TMP_DIR/output.log"
-export DOCKER_LOG CURL_LOG INSTALLER_LOG NATIVE_LOG FAKE_INSTALLER INSTALLED_TEMPLATE
-
-mkdir -p "$FAKE_BIN" "$WRAPPER_LINK_DIR" "$PATH_NATIVE_DIR" "$SYSTEM_BIN" "$HOST_HOME" "$WORKSPACE" "$OTHER_WORKSPACE"
+mkdir -p "$WRAPPER_LINK_DIR" "$PATH_NATIVE_DIR" "$SYSTEM_BIN"
 # PATH reaches the wrapper both through a symlink, like ~/.local/bin/pi, and
 # through the repository's bin directory. The system bash is linked in so the
 # wrapper's env shebang works without exposing other host commands named pi.
 ln -s "$ROOT/bin/pi" "$WRAPPER_LINK_DIR/pi"
 ln -s "$(command -v bash)" "$SYSTEM_BIN/bash"
-printf 'y\n' > "$TMP_DIR/answer-yes"
-printf 'n\n' > "$TMP_DIR/answer-no"
-
-cat > "$FAKE_BIN/docker" <<'FAKE_DOCKER'
-#!/bin/sh
-printf 'docker %s\n' "$*" >> "$DOCKER_LOG"
-FAKE_DOCKER
+HOST_PATH=$FAKE_BIN:$WRAPPER_LINK_DIR:$ROOT/bin:$PATH_NATIVE_DIR:$SYSTEM_BIN:/usr/bin:/bin
 
 cat > "$FAKE_BIN/curl" <<'FAKE_CURL'
 #!/bin/sh
@@ -46,7 +34,7 @@ if [ "${FAKE_CURL_FAIL-}" = 1 ]; then
 fi
 cat "$FAKE_INSTALLER"
 FAKE_CURL
-chmod +x "$FAKE_BIN/docker" "$FAKE_BIN/curl"
+chmod +x "$FAKE_BIN/curl"
 
 # Stands in for https://pi.dev/install.sh: records what it sees and installs a
 # launcher where the official installer keeps its script.
@@ -64,9 +52,9 @@ if [ "${FAKE_INSTALL_ACTION-}" = install ]; then
 fi
 FAKE_INSTALL
 
+# write_fake_native PATH LABEL: a native Pi that records how it was started.
 write_fake_native() {
-  local target="$1"
-  local label="$2"
+  local target=$1 label=$2
   mkdir -p -- "$(dirname -- "$target")"
   {
     printf '#!/bin/sh\n'
@@ -84,70 +72,41 @@ FAKE_NATIVE
   chmod +x "$target"
 }
 
-# Usage: [WRAPPER_INPUT=file] run_wrapper [NAME=value...] -- [WRAPPER_ARGS...]
-run_wrapper() {
-  local -a assignments=()
-  while [[ "$1" != -- ]]; do
-    assignments+=("$1")
-    shift
-  done
+# run_host CWD ARGS...: run the wrapper with the host PATH and HOST_ENV entries.
+HOST_ENV=()
+run_host() {
+  local cwd=$1
   shift
-  : > "$DOCKER_LOG"
   : > "$CURL_LOG"
   : > "$INSTALLER_LOG"
   : > "$NATIVE_LOG"
-  STATUS=0
-  (
-    cd "$WORKSPACE"
-    env -u PI_WORKSPACE -u PI_CODING_AGENT_DIR -u PI_MANAGED_INSTALL_ROOT \
-      HOME="$HOST_HOME" \
-      PI_AGENT_CONTAINERS_CONFIG_PATH="$TMP_DIR/config" \
-      PATH="$FAKE_BIN:$WRAPPER_LINK_DIR:$ROOT/bin:$PATH_NATIVE_DIR:$SYSTEM_BIN:/usr/bin:/bin" \
-      "${assignments[@]}" \
-      "$ROOT/bin/pi" "$@"
-  ) < "${WRAPPER_INPUT:-/dev/null}" > "$OUTPUT_LOG" 2>&1 || STATUS=$?
+  EXTRA_ENV=(PATH="$HOST_PATH" "${HOST_ENV[@]}")
+  run_pi "$cwd" "$@"
+  EXTRA_ENV=()
+  HOST_ENV=()
+  INPUT=''
 }
 
-fail() {
-  printf 'FAIL: %s\n--- output ---\n%s\n--- native ---\n%s\n--- docker ---\n%s\n' \
-    "$1" "$(cat "$OUTPUT_LOG")" "$(cat "$NATIVE_LOG")" "$(cat "$DOCKER_LOG")" >&2
-  exit 1
-}
-
-assert_status() {
-  [[ "$STATUS" -eq "$1" ]] || fail "expected status $1, got $STATUS"
-}
-
-assert_contains() {
-  grep -Fq -- "$2" "$1" || fail "missing text in ${1##*/}: $2"
-}
-
-assert_lacks() {
-  ! grep -Fq -- "$2" "$1" || fail "unexpected text in ${1##*/}: $2"
-}
-
-assert_line() {
-  grep -Fqx -- "$2" "$1" || fail "missing line in ${1##*/}: $2"
+show_host_run() {
+  printf '%s\n--- native ---\n%s\n' "$(show_run)" "$(cat -- "$NATIVE_LOG")"
 }
 
 assert_empty() {
-  [[ ! -s "$1" ]] || fail "expected ${1##*/} to be empty, got: $(cat "$1")"
+  [[ ! -s $1 ]] || fail "expected ${1##*/} to be empty"$'\n'"$(show_host_run)"
 }
 
-# Asserts which native Pi ran, from which directory, with exactly these args.
+assert_line() {
+  grep -Fqx -- "$2" "$1" || fail "missing line in ${1##*/}: $2"$'\n'"$(show_host_run)"
+}
+
+# assert_native LABEL CWD ARGS...: which native Pi ran, from which directory,
+# with exactly these arguments.
 assert_native() {
-  local label="$1"
-  local cwd="$2"
-  local expected
+  local expected argument
+  expected="native=$1"$'\n'"cwd=$2"
   shift 2
-  expected="$(
-    printf 'native=%s\ncwd=%s\n' "$label" "$cwd"
-    for arg in "$@"; do
-      printf 'arg=%s\n' "$arg"
-    done
-  )"
-  [[ "$(cat "$NATIVE_LOG")" == "$expected" ]] || fail "native Pi invocation mismatch; expected:
-$expected"
+  for argument in "$@"; do expected+=$'\n'"arg=$argument"; done
+  assert_eq "$(cat -- "$NATIVE_LOG")" "$expected" 'native Pi invocation'
 }
 
 write_fake_native "$INSTALLED_TEMPLATE" installed
@@ -156,48 +115,51 @@ write_fake_native "$INSTALLED_TEMPLATE" installed
 # and Docker is never used.
 write_fake_native "$LAUNCHER" launcher
 write_fake_native "$PATH_NATIVE" path
-run_wrapper -- --host --model test-model 'two words'
+run_host "$WS" --host --model test-model 'two words'
 assert_status 0
-assert_native launcher "$WORKSPACE" --model test-model 'two words'
+assert_native launcher "$WS" --model test-model 'two words'
 assert_empty "$DOCKER_LOG"
 
 # PI_CODING_AGENT_DIR relocates the launcher, as it does for the installer.
 write_fake_native "$TMP_DIR/agent-dir/bin/pi" custom
-run_wrapper PI_CODING_AGENT_DIR="$TMP_DIR/agent-dir" -- --host
+HOST_ENV=(PI_CODING_AGENT_DIR="$TMP_DIR/agent-dir")
+run_host "$WS" --host
 assert_status 0
-assert_native custom "$WORKSPACE"
+assert_native custom "$WS"
 
 # Without a launcher, PATH lookup skips every entry that is this wrapper, and
 # wrapper command names belong to native Pi.
 rm -f "$LAUNCHER"
-run_wrapper -- --host update --extensions
+run_host "$WS" --host update --extensions
 assert_status 0
-assert_native path "$WORKSPACE" update --extensions
+assert_native path "$WS" update --extensions
 assert_empty "$DOCKER_LOG"
 
 # Workspace precedence still applies, wrapper options may follow --host, and a
 # leading - is dropped so native help stays reachable.
-run_wrapper PI_WORKSPACE="$OTHER_WORKSPACE" -- --host list
+HOST_ENV=(PI_WORKSPACE="$OTHER")
+run_host "$WS" --host list
 assert_status 0
-assert_native path "$OTHER_WORKSPACE" list
-run_wrapper PI_WORKSPACE="$TMP_DIR" -- --host --workspace "$OTHER_WORKSPACE" - --help
+assert_native path "$OTHER" list
+HOST_ENV=(PI_WORKSPACE="$TMP_DIR")
+run_host "$WS" --host --workspace "$OTHER" - --help
 assert_status 0
-assert_native path "$OTHER_WORKSPACE" --help
+assert_native path "$OTHER" --help
 
-run_wrapper -- --host --workspace "$TMP_DIR/missing"
+run_host "$WS" --host --workspace "$TMP_DIR/missing"
 assert_status 1
-assert_contains "$OUTPUT_LOG" "pi: workspace does not exist: $TMP_DIR/missing"
+assert_output_has "pi: workspace does not exist: $TMP_DIR/missing"
 assert_empty "$NATIVE_LOG"
 
 # Container-only options are rejected before anything runs, in either order.
 for option in --rm --replace --rebuild --keep-existing --new-state --seed --latest-state --oauth --bash --zsh --no-rc-config; do
-  run_wrapper -- --host "$option"
+  run_host "$WS" --host "$option"
   assert_status 2
-  assert_contains "$OUTPUT_LOG" 'pi: --host cannot be combined with'
+  assert_output_has 'pi: --host cannot be combined with'
   assert_empty "$NATIVE_LOG"
   assert_empty "$DOCKER_LOG"
 done
-run_wrapper -- --rm --host
+run_host "$WS" --rm --host
 assert_status 2
 assert_empty "$NATIVE_LOG"
 assert_empty "$DOCKER_LOG"
@@ -205,47 +167,53 @@ assert_empty "$DOCKER_LOG"
 # Without native Pi, declining the install offer or reaching EOF changes
 # nothing and exits 127.
 rm -f "$PATH_NATIVE"
-WRAPPER_INPUT="$TMP_DIR/answer-no" run_wrapper -- --host
+INPUT='n\n'
+run_host "$WS" --host
 assert_status 127
-assert_contains "$OUTPUT_LOG" 'pi: native Pi was not found'
-assert_contains "$OUTPUT_LOG" 'curl -fsSL https://pi.dev/install.sh | sh'
+assert_output_has 'pi: native Pi was not found'
+assert_output_has 'curl -fsSL https://pi.dev/install.sh | sh'
 assert_empty "$CURL_LOG"
 assert_empty "$DOCKER_LOG"
 
-run_wrapper -- --host
+run_host "$WS" --host
 assert_status 127
 assert_empty "$CURL_LOG"
 
 # Accepting runs the official installer from the workspace. The wrapper is
 # hidden from it, the launcher directory comes first so nothing shadows the
 # wrapper, and Pi is not started a second time afterward.
-WRAPPER_INPUT="$TMP_DIR/answer-yes" run_wrapper FAKE_INSTALL_ACTION=install -- --host --workspace "$OTHER_WORKSPACE" first-prompt
+INPUT='y\n'
+HOST_ENV=(FAKE_INSTALL_ACTION=install)
+run_host "$WS" --host --workspace "$OTHER" first-prompt
 assert_status 0
 assert_line "$CURL_LOG" 'curl -fsSL https://pi.dev/install.sh'
-assert_line "$INSTALLER_LOG" "cwd=$OTHER_WORKSPACE"
+assert_line "$INSTALLER_LOG" "cwd=$OTHER"
 assert_line "$INSTALLER_LOG" 'pi=none'
-installer_path="$(sed -n 's/^path=//p' "$INSTALLER_LOG")"
-[[ "$installer_path" == "$HOST_HOME/.pi/agent/bin:"* ]] || fail "installer PATH must start with the launcher directory: $installer_path"
+installer_path=$(sed -n 's/^path=//p' "$INSTALLER_LOG")
+[[ $installer_path == "$TEST_HOME/.pi/agent/bin:"* ]] || fail "installer PATH must start with the launcher directory: $installer_path"
 [[ ":$installer_path:" != *":$WRAPPER_LINK_DIR:"* && ":$installer_path:" != *":$ROOT/bin:"* ]] || fail "installer PATH still exposes the wrapper: $installer_path"
 [[ ":$installer_path:" == *":$SYSTEM_BIN:"* ]] || fail "installer PATH dropped unrelated entries: $installer_path"
-assert_contains "$OUTPUT_LOG" "pi: native Pi is ready at $LAUNCHER"
+assert_output_has "pi: native Pi is ready at $LAUNCHER"
 assert_empty "$NATIVE_LOG"
 assert_empty "$DOCKER_LOG"
 
-run_wrapper -- --host again
+run_host "$WS" --host again
 assert_status 0
-assert_native installed "$WORKSPACE" again
+assert_native installed "$WS" again
 
 # An installer run that installs nothing, or a failed download, still fails.
 rm -f "$LAUNCHER"
-WRAPPER_INPUT="$TMP_DIR/answer-yes" run_wrapper -- --host
+INPUT='y\n'
+run_host "$WS" --host
 assert_status 127
-assert_line "$INSTALLER_LOG" "cwd=$WORKSPACE"
-assert_lacks "$OUTPUT_LOG" 'native Pi is ready'
+assert_line "$INSTALLER_LOG" "cwd=$WS"
+assert_output_lacks 'native Pi is ready'
 
-WRAPPER_INPUT="$TMP_DIR/answer-yes" run_wrapper FAKE_CURL_FAIL=1 -- --host
+INPUT='y\n'
+HOST_ENV=(FAKE_CURL_FAIL=1)
+run_host "$WS" --host
 assert_status 22
 assert_empty "$INSTALLER_LOG"
-assert_lacks "$OUTPUT_LOG" 'native Pi is ready'
+assert_output_lacks 'native Pi is ready'
 
-printf 'bin/pi host tests passed\n'
+pass
