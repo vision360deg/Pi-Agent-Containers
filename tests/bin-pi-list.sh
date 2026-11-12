@@ -27,6 +27,13 @@ set -euo pipefail
 printf 'docker %s\n' "$*" >> "$DOCKER_LOG"
 
 if [[ "${1:-}" == "ps" ]]; then
+  # Real Docker lists --rm one-off containers unless the oneoff filter is set.
+  oneoff_ids='oneoff-id\n'
+  if [[ "$#" -eq 8 && "$5" == "--filter" &&
+    "$6" == "label=com.docker.compose.oneoff=False" ]]; then
+    oneoff_ids=''
+    set -- "$1" "$2" "$3" "$4" "$7" "$8"
+  fi
   if [[ "$#" -ne 6 || "$2" != "-a" || "$3" != "--filter" ||
     "$4" != "label=com.pi-agents.workspace" || "$5" != "--format" ||
     "$6" != '{{.ID}}' ]]; then
@@ -36,7 +43,7 @@ if [[ "${1:-}" == "ps" ]]; then
   if [[ "${FAKE_EMPTY-false}" == true ]]; then
     exit 0
   fi
-  printf 'zeta-id\nunresolvable-id\nno-agent-state-id\ndelta-id\nalpha-id\n'
+  printf "zeta-id\nunresolvable-id\nno-agent-state-id\ndelta-id\nalpha-id\n$oneoff_ids"
   exit 0
 fi
 
@@ -62,6 +69,9 @@ if [[ "${1:-}" == "inspect" ]]; then
       ;;
     unresolvable-id)
       printf '/pi-agents-pi-unresolvable\037created\0372026-08-08T09:30:00.000000000Z\0370001-01-01T00:00:00Z\037/tmp/workspaces/unresolvable\037pi-agents-pi-unresolvable\037pi-agents-ws-unresolvable_pi-agent-state\n'
+      ;;
+    oneoff-id)
+      printf '/pi-agents-pi-run-1a2b3c\037running\0372026-08-08T10:00:00.000000000Z\0372026-08-08T10:00:00.000000000Z\037/tmp/workspaces/alpha\037pi-agents-pi-alpha\037pi-agents-ws-alpha_pi-agent-state\n'
       ;;
     zeta-id)
       printf '/pi-agents-pi-zeta\037exited\0372026-08-08T10:00:00.000000000Z\0370001-01-01T00:00:00Z\037/tmp/workspaces/zeta\037pi-agents-pi-zeta\037pi-agents-ws-zeta_pi-agent-state\n'

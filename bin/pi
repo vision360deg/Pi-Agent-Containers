@@ -1573,7 +1573,7 @@ list_pi_stacks() (
   trap 'rm -rf "$temp_dir"' EXIT
   inspect_format="{{.Name}}${delimiter}{{.State.Status}}${delimiter}{{.Created}}${delimiter}{{.State.StartedAt}}${delimiter}{{index .Config.Labels \"com.pi-agents.workspace\"}}${delimiter}{{index .Config.Labels \"com.docker.compose.project\"}}${delimiter}{{range .Mounts}}{{if and (eq .Type \"volume\") (eq .Destination \"/home/node/.pi/agent\")}}{{.Name}}{{end}}{{end}}"
 
-  ids="$(docker ps -a --filter 'label=com.pi-agents.workspace' --format '{{.ID}}')"
+  ids="$(docker ps -a --filter 'label=com.pi-agents.workspace' --filter 'label=com.docker.compose.oneoff=False' --format '{{.ID}}')"
   if [[ -z "$ids" ]]; then
     printf 'No Pi stacks found.\n'
     return 0
