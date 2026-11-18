@@ -464,4 +464,3 @@ mkdir -- "$STAGING_ROOT/items"
 [[ "$COPY_AUTH" == true ]] && stage_auth
 [[ "$COPY_EXTENSIONS" == true ]] && stage_extensions
 publish_staged_items || exit 2
-printf 'pi-state-copy: copy complete\n'
