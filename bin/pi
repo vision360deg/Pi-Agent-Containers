@@ -938,6 +938,15 @@ assert_managed_state_volume() {
     fail "state volume kind label does not match: $volume"
 }
 
+agent_state_volume_workspace() {
+  local volume="$1" record managed workspace kind
+  local delimiter=$'\037'
+  record="$(docker volume inspect --format "{{index .Labels \"com.pi-agents.managed\"}}${delimiter}{{index .Labels \"com.pi-agents.workspace\"}}${delimiter}{{index .Labels \"com.pi-agents.state-kind\"}}" "$volume" 2>/dev/null)" || return 1
+  IFS="$delimiter" read -r managed workspace kind <<< "$record"
+  [[ "$managed" == true && "$workspace" == /* && "$kind" == agent ]] || return 1
+  printf '%s' "$workspace"
+}
+
 is_extra_agent_state_volume() {
   [[ -n "$1" && "$(docker volume inspect --format '{{index .Labels "com.pi-agents.state-kind"}}' "$1" 2>/dev/null)" == agent-extra ]]
 }
@@ -1901,7 +1910,7 @@ select_shell_container() {
       "$((index + 1))" "${SHELL_NAMES[$index]}" \
       "${SHELL_STATUSES[$index]}" "${SHELL_PATHS[$index]}" >&2
   done
-  printf 'X) Press Esc to cancel\n' >&2
+  printf 'X) Cancel (or Esc)\n' >&2
   if ! read_picker_choice "${#SHELL_NAMES[@]}"; then
     printf 'pi: container selection cancelled\n' >&2
     return 2
@@ -2039,155 +2048,143 @@ attach_shell() {
   fi
 }
 
-list_copy_containers() {
-  docker ps -a \
-    --filter 'label=com.pi-agents.managed=true' \
-    --filter 'label=com.pi-agents.workspace' \
-    --filter 'label=com.docker.compose.oneoff=False' \
-    --format '{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.State}}\t{{.Label "com.pi-agents.workspace"}}'
+run_state_copy() {
+  local source_agent="$1" target_agent="$2" source_workspace="$3" target_workspace="$4" source_sessions="${5:-}" target_sessions="${6:-}"
+  shift 6 || true
+  local -a command tty_arguments=(-i)
+  assert_managed_state_volume "$source_agent" "$source_workspace" agent
+  assert_managed_state_volume "$target_agent" "$target_workspace" agent
+  ensure_helper_image
+  # The helper's item and duplicate pickers need a terminal when there is one.
+  [[ ! -t 0 ]] || tty_arguments+=(-t)
+  command=(docker run --rm "${tty_arguments[@]}" --user 0:0
+    -v "$ROOT/bin/pi-state-copy:/usr/local/bin/pi-state-copy:ro"
+    -v "$source_agent:/state-source:ro" -v "$target_agent:/state-target"
+    "$HELPER_IMAGE" bash /usr/local/bin/pi-state-copy --source /state-source --target /state-target)
+  if [[ -n "$source_sessions" && -n "$target_sessions" ]]; then
+    assert_managed_state_volume "$source_sessions" "$source_workspace" sessions
+    assert_managed_state_volume "$target_sessions" "$target_workspace" sessions
+    command=(docker run --rm "${tty_arguments[@]}" --user 0:0
+      -v "$ROOT/bin/pi-state-copy:/usr/local/bin/pi-state-copy:ro"
+      -v "$source_agent:/state-source:ro" -v "$source_sessions:/state-source/sessions:ro"
+      -v "$target_agent:/state-target" -v "$target_sessions:/state-target/sessions"
+      "$HELPER_IMAGE" bash /usr/local/bin/pi-state-copy --source /state-source --target /state-target)
+  fi
+  command+=("$@")
+  "${command[@]}"
 }
 
-copy_container_volume() {
-  docker inspect --format '{{range .Mounts}}{{if eq .Destination "/home/node/.pi/agent"}}{{.Name}}{{end}}{{end}}' "$1"
+repair_copied_state_permissions() {
+  local agent_volume="$1" session_volume="${2:-}"
+  local -a command mounts
+  ensure_helper_image
+  mounts=(-v "$agent_volume:/state")
+  [[ -z "$session_volume" ]] || mounts+=(-v "$session_volume:/sessions")
+  command=(docker run --rm --user 0:0 "${mounts[@]}" "$HELPER_IMAGE" sh -c
+    'set -eu; for path in /state /sessions; do [ ! -d "$path" ] || { chown -R 1000:1000 "$path"; find "$path" -type d -exec chmod u+rwx {} +; find "$path" -type f -exec chmod u+rw {} +; }; done')
+  "${command[@]}"
+}
+
+pick_managed_agent_volume() {
+  local excluded="$1" prompt="$2" candidate workspace created selection index
+  local -a volumes=() workspaces=()
+  PICKED_AGENT_VOLUME=''
+  PICKED_AGENT_WORKSPACE=''
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" && "$candidate" != "$excluded" ]] || continue
+    workspace="$(agent_state_volume_workspace "$candidate")" || continue
+    volumes+=("$candidate")
+    workspaces+=("$workspace")
+  done < <(list_managed_agent_state_volumes)
+  ((${#volumes[@]})) || fail 'no other managed Pi state volumes are available'
+  printf '%s\n' "$prompt" >&2
+  for index in "${!volumes[@]}"; do
+    candidate="${volumes[$index]}"
+    created="$(volume_created_at "$candidate" || true)"
+    printf '%s) %s\n   workspace: %s\n   created: %s\n' \
+      "$((index + 1))" "$candidate" "${workspaces[$index]}" "${created:-unknown}" >&2
+  done
+  printf 'X) Cancel (or Esc)\n' >&2
+  read_picker_choice "${#volumes[@]}" || { printf 'pi: copy cancelled\n' >&2; exit 3; }
+  selection="$PICKER_CHOICE"
+  printf '\n' >&2
+  case "$selection" in
+    $'\e'|x|X) printf 'pi: copy cancelled\n' >&2; exit 3 ;;
+  esac
+  [[ "$selection" =~ ^[0-9]+$ ]] || fail "invalid state volume selection: $selection"
+  index=$((10#$selection - 1))
+  (( index >= 0 && index < ${#volumes[@]} )) || fail "invalid state volume selection: $selection"
+  PICKED_AGENT_VOLUME="${volumes[$index]}"
+  PICKED_AGENT_WORKSPACE="${workspaces[$index]}"
 }
 
 # Sessions live in their own volume mounted over the agent state's sessions/
-# directory, so the copy helper must mount it explicitly. It is the one managed
-# session volume labelled for the workspace.
-copy_session_volume() {
-  local workspace="$1" rows candidate volume='' count=0
-  rows="$(docker volume ls \
-    --filter 'label=com.pi-agents.managed=true' \
-    --filter 'label=com.pi-agents.state-kind=sessions' \
-    --filter "label=com.pi-agents.workspace=$workspace" \
-    --format '{{.Name}}')" || fail "could not list session volumes for workspace: $workspace"
+# directory, so the copy helper mounts both. The volume is the one managed
+# session volume labelled with the agent volume's workspace.
+session_volume_for_agent_volume() {
+  local agent_volume="$1" workspace candidate selected='' count=0
+  workspace="$(docker volume inspect --format '{{index .Labels "com.pi-agents.workspace"}}' "$agent_volume")"
+  [[ -n "$workspace" ]] || fail "managed state volume has no workspace label: $agent_volume"
   while IFS= read -r candidate; do
     [[ -n "$candidate" ]] || continue
+    selected="$candidate"
     count=$((count + 1))
-    volume="$candidate"
-  done <<< "$rows"
-  (( count == 1 )) || fail "expected one managed session volume for workspace: $workspace"
-  printf '%s' "$volume"
+  done < <(docker volume ls --filter 'label=com.pi-agents.managed=true' \
+    --filter 'label=com.pi-agents.state-kind=sessions' \
+    --filter "label=com.pi-agents.workspace=$workspace" --format '{{.Name}}')
+  [[ "$count" -eq 1 ]] || fail "expected one managed session volume for state volume: $agent_volume"
+  printf '%s' "$selected"
 }
 
-select_copy_container() {
-  local role="$1" exclude_name="${2:-}" rows id name status state path choice index=0
-  local -a names=() statuses=() states=() paths=() volumes=()
-
-  while IFS=$'\t' read -r id name status state path; do
-    [[ -n "$id" && -n "$name" && -n "$path" ]] || continue
-    [[ "$name" == "$exclude_name" ]] && continue
-    volume="$(copy_container_volume "$name")"
-    [[ -n "$volume" ]] || continue
-    names+=("$name")
-    statuses+=("$status")
-    states+=("$state")
-    paths+=("$path")
-    volumes+=("$volume")
-  done < <(list_copy_containers)
-
-  ((${#names[@]} > 0)) || { printf 'pi: no usable Pi containers available for %s\n' "$role" >&2; return 2; }
-  printf 'Choose a %s Pi container:\n' "$role" >&2
-  for index in "${!names[@]}"; do
-    printf '%s) %s\n   status: %s\n   workspace: %s\n   agent-state: %s\n' \
-      "$((index + 1))" "${names[$index]}" "${statuses[$index]}" "${paths[$index]}" "${volumes[$index]}" >&2
-  done
-  printf 'X) Press Esc to cancel\n' >&2
-  read_picker_choice "${#names[@]}" || return 3
-  choice="$PICKER_CHOICE"
-  printf '\n' >&2
-  case "$choice" in
-    $'\e'|x|X) printf 'pi: container selection cancelled\n' >&2; return 3 ;;
-  esac
-  [[ "$choice" =~ ^[0-9]+$ ]] || { printf 'pi: invalid container selection: %s\n' "$choice" >&2; return 2; }
-  index=$((choice - 1))
-  (( index >= 0 && index < ${#names[@]} )) || { printf 'pi: invalid container selection: %s\n' "$choice" >&2; return 2; }
-
-  COPY_SELECTED_NAME="${names[$index]}"
-  COPY_SELECTED_VOLUME="${volumes[$index]}"
-  COPY_SELECTED_STATE="${states[$index]}"
-  COPY_SELECTED_PATH="${paths[$index]}"
-}
-
-current_copy_container() {
-  local id name status state path volume
-  while IFS=$'\t' read -r id name status state path; do
-    [[ -n "$id" && "$path" == "$WORKSPACE" ]] || continue
-    volume="$(copy_container_volume "$name")"
-    [[ -n "$volume" ]] || continue
-    COPY_CURRENT_NAME="$name"
-    COPY_CURRENT_VOLUME="$volume"
-    COPY_CURRENT_STATE="$state"
-    return 0
-  done < <(list_copy_containers)
-  COPY_CURRENT_NAME=''
-  COPY_CURRENT_VOLUME="$ACTIVE_AGENT_STATE_VOLUME_NAME"
-  COPY_CURRENT_STATE='unknown'
-  docker volume inspect "$COPY_CURRENT_VOLUME" >/dev/null 2>&1
+# A running Pi keeps cached auth and extension metadata, so name every running
+# managed container whose agent state is the copy destination.
+warn_running_copy_destination() {
+  local target_agent="$1" name mounted
+  while IFS=$'\t' read -r name mounted; do
+    [[ -n "$name" && "$mounted" == "$target_agent" ]] || continue
+    printf 'pi: warning: %s is mounted by running container %s; restart it to pick up copied auth or extensions\n' \
+      "$target_agent" "$name" >&2
+  done < <(docker ps --filter 'label=com.pi-agents.managed=true' \
+    --format '{{.Names}}\t{{range .Mounts}}{{if eq .Destination "/home/node/.pi/agent"}}{{.Name}}{{end}}{{end}}')
 }
 
 copy_agent_state() {
-  local source_volume target_volume source_name target_name source_path target_path
-  local source_sessions target_sessions
-  local -a session_mounts=() repair_mounts=()
-  current_copy_container || { printf 'pi: current workspace has no usable agent-state volume\n' >&2; return 2; }
-
+  local source_agent target_agent source_workspace target_workspace source_sessions='' target_sessions=''
+  local -a copy_arguments=()
+  ensure_workspace_volumes
   if [[ "$COPY_TO" == true ]]; then
-    source_volume="$COPY_CURRENT_VOLUME"
-    source_name="$COPY_CURRENT_NAME"
-    source_path="$WORKSPACE"
-    select_copy_container destination "$source_name" || return $?
-    target_volume="$COPY_SELECTED_VOLUME"
-    target_name="$COPY_SELECTED_NAME"
-    target_state="$COPY_SELECTED_STATE"
-    target_path="$COPY_SELECTED_PATH"
+    source_agent="$NORMAL_AGENT_STATE_VOLUME_NAME"
+    source_workspace="$WORKSPACE"
+    pick_managed_agent_volume "$source_agent" 'Choose a destination Pi state volume:'
+    target_agent="$PICKED_AGENT_VOLUME"
+    target_workspace="$PICKED_AGENT_WORKSPACE"
   else
-    target_volume="$COPY_CURRENT_VOLUME"
-    target_name="$COPY_CURRENT_NAME"
-    target_state="$COPY_CURRENT_STATE"
-    target_path="$WORKSPACE"
-    select_copy_container source "$target_name" || return $?
-    source_volume="$COPY_SELECTED_VOLUME"
-    source_name="$COPY_SELECTED_NAME"
-    source_path="$COPY_SELECTED_PATH"
+    target_agent="$NORMAL_AGENT_STATE_VOLUME_NAME"
+    target_workspace="$WORKSPACE"
+    pick_managed_agent_volume "$target_agent" 'Choose a source Pi state volume:'
+    source_agent="$PICKED_AGENT_VOLUME"
+    source_workspace="$PICKED_AGENT_WORKSPACE"
   fi
-
-  [[ "$source_volume" != "$target_volume" ]] || { printf 'pi: source and destination are the same state volume\n' >&2; return 2; }
-  if [[ "$target_state" == running ]]; then
-    printf 'pi: destination is running; copied auth/extensions may require a Pi reload or restart\n' >&2
-  fi
-
-  copy_args=(--source /state-source --target /state-target)
-  [[ "$COPY_SESSIONS" == true ]] && copy_args+=(--sessions)
-  [[ "$COPY_AUTH" == true ]] && copy_args+=(--auth)
-  [[ "$COPY_EXTENSIONS" == true ]] && copy_args+=(--extensions)
-  [[ "$COPY_ALL" == true ]] && copy_args+=(--all)
-  [[ "$COPY_OVERRIDE" == true ]] && copy_args+=(--override)
-
+  [[ "$COPY_SESSIONS" != true ]] || copy_arguments+=(--sessions)
+  [[ "$COPY_AUTH" != true ]] || copy_arguments+=(--auth)
+  [[ "$COPY_EXTENSIONS" != true ]] || copy_arguments+=(--extensions)
+  [[ "$COPY_ALL" != true ]] || copy_arguments+=(--all)
+  [[ "$COPY_OVERRIDE" != true ]] || copy_arguments+=(--override)
+  assert_managed_state_volume "$source_agent" "$source_workspace" agent
+  assert_managed_state_volume "$target_agent" "$target_workspace" agent
   # Sessions are copied unless category flags exclude them.
-  repair_mounts=(-v "$target_volume:/state")
-  if [[ "$COPY_SESSIONS" == true || ( "$COPY_AUTH" == false && "$COPY_EXTENSIONS" == false ) ]]; then
-    source_sessions="$(copy_session_volume "$source_path")" || return 2
-    target_sessions="$(copy_session_volume "$target_path")" || return 2
-    [[ "$source_sessions" != "$target_sessions" ]] || { printf 'pi: source and destination are the same session volume\n' >&2; return 2; }
-    session_mounts=(-v "$source_sessions:/state-source/sessions:ro" -v "$target_sessions:/state-target/sessions")
-    repair_mounts+=(-v "$target_sessions:/sessions")
+  if [[ "$COPY_SESSIONS" == true || ( "$COPY_SESSIONS" == false && "$COPY_AUTH" == false && "$COPY_EXTENSIONS" == false ) ]]; then
+    source_sessions="$(session_volume_for_agent_volume "$source_agent")"
+    target_sessions="$(session_volume_for_agent_volume "$target_agent")"
+    volume_exists "$source_sessions" || fail "source session volume is unavailable: $source_sessions"
+    volume_exists "$target_sessions" || fail "target session volume is unavailable: $target_sessions"
   fi
-
-  printf 'pi: copying agent state from %s to %s\n' "$source_name" "$target_name" >&2
-
-  ensure_helper_image
-  copy_tty_args=(-i)
-  [[ -t 0 ]] && copy_tty_args+=(-t)
-  docker run --rm "${copy_tty_args[@]}" --user 0:0 \
-    -v "$ROOT/bin/pi-state-copy:/usr/local/bin/pi-state-copy:ro" \
-    -v "$source_volume:/state-source:ro" \
-    -v "$target_volume:/state-target" \
-    ${session_mounts[@]+"${session_mounts[@]}"} \
-    "$HELPER_IMAGE" bash /usr/local/bin/pi-state-copy "${copy_args[@]}"
+  printf 'pi: copying agent state from %s to %s\n' "$source_agent" "$target_agent" >&2
+  repair_copied_state_permissions "$target_agent" "$target_sessions"
+  run_state_copy "$source_agent" "$target_agent" "$source_workspace" "$target_workspace" "$source_sessions" "$target_sessions" ${copy_arguments[@]+"${copy_arguments[@]}"}
   printf 'pi: agent-state copy complete\n' >&2
-  docker run --rm --user 0:0 "${repair_mounts[@]}" "$HELPER_IMAGE" \
-    sh -c 'set -eu; for path in /state /sessions; do [ -d "$path" ] || continue; chown -R 1000:1000 "$path"; find "$path" -type d -exec chmod u+rwx {} +; find "$path" -type f -exec chmod u+rw {} +; done'
+  repair_copied_state_permissions "$target_agent" "$target_sessions"
+  warn_running_copy_destination "$target_agent"
 }
 
 if [[ "$COMMAND" == copy ]]; then
