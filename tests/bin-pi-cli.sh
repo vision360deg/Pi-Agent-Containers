@@ -199,53 +199,57 @@ assert_status 0
 assert_log_has "$COMPOSE_A run --rm --service-ports pi pi-shell-launch pi --help"
 
 # Conflicting or unsupported options fail with status 2 before any Docker call.
+# The message is the complete output; each line carries the wrapper prefix.
 expect_conflict() {
-  local message=$1
+  local message=$1 expected
   shift
   run_pi "$WS_A" "$@"
   assert_status 2
-  assert_output_has "$message"
+  expected=$(printf '%s\n' "$message" | sed 's/^/pi: /')
+  assert_eq "$(cat -- "$OUTPUT_LOG")" "$expected" "pi $* output"
   assert_no_docker
 }
-expect_conflict 'pi: --bash and --zsh are mutually exclusive' --bash --zsh
-expect_conflict 'pi: --replace and --keep-existing are mutually exclusive' --replace --keep-existing
-expect_conflict 'pi: --new-state and --seed are mutually exclusive; the extra state volume is never a seed' --seed --new-state
-expect_conflict 'pi: --from and --to are mutually exclusive' copy --from --to
-expect_conflict 'pi: --oauth cannot be combined with stop' --oauth stop
-expect_conflict 'pi: --oauth cannot be combined with remove' --oauth remove
-expect_conflict 'pi: --oauth cannot be combined with remove' --oauth=1455 remove --all
+expect_conflict '--bash and --zsh are mutually exclusive' --bash --zsh
+expect_conflict '--replace and --keep-existing are mutually exclusive' --replace --keep-existing
+expect_conflict '--new-state and --seed are mutually exclusive; the extra state volume is never a seed' --seed --new-state
+expect_conflict '--new-state and --seed are mutually exclusive; the extra state volume is never a seed' --new-state --seed --latest-state
+expect_conflict '--from and --to are mutually exclusive' copy --from --to
+expect_conflict '--rm cannot be combined with --replace' --rm --replace
+expect_conflict '--rm cannot be combined with --keep-existing' --rm --keep-existing
+expect_conflict '--seed and --latest-state require a persistent workspace stack' --rm --seed
+expect_conflict '--seed and --latest-state require a persistent workspace stack' --rm --latest-state
+expect_conflict '--oauth cannot be combined with stop' --oauth stop
+expect_conflict '--oauth cannot be combined with remove' --oauth remove
+expect_conflict '--oauth cannot be combined with remove' --oauth=1455 remove --all
 for option in --replace --keep-existing --new-state --seed --latest-state --oauth; do
-  expect_conflict 'pi: copy cannot be combined with launch, state, or OAuth options' "$option" copy
+  expect_conflict 'copy cannot be combined with launch, state, or OAuth options' "$option" copy
 done
-expect_conflict 'pi: --rebuild cannot be combined with copy' --rebuild copy
-expect_conflict 'pi: --rebuild, --replace, and --keep-existing cannot be combined with update' --rebuild update
-expect_conflict 'pi: --rebuild cannot be combined with stop' --rebuild stop
-expect_conflict 'pi: --rebuild cannot be combined with remove' --rebuild remove
-expect_conflict 'pi: usage: pi list' --rebuild list
+expect_conflict '--rebuild cannot be combined with copy' --rebuild copy
+expect_conflict '--rebuild, --replace, and --keep-existing cannot be combined with update' --rebuild update
+expect_conflict '--rebuild, --replace, and --keep-existing cannot be combined with update' --replace update
+expect_conflict '--rebuild cannot be combined with stop' --rebuild stop
+expect_conflict '--rebuild cannot be combined with remove' --rebuild remove
+expect_conflict '--replace, --keep-existing, --new-state, --seed, and --latest-state cannot be combined with stop' --new-state stop
+expect_conflict '--replace, --keep-existing, --new-state, --seed, and --latest-state cannot be combined with remove' --seed remove
+expect_conflict 'usage: pi list' --rebuild list
 # --rm refuses every wrapper command with one message, before the command's
 # own checks.
 for command in stop update list remove shell copy; do
-  run_pi "$WS_A" --rm "$command"
-  assert_status 2
-  assert_eq "$(cat -- "$OUTPUT_LOG")" "pi: --rm cannot be combined with $command" "pi --rm $command output"
-  assert_no_docker
+  expect_conflict "--rm cannot be combined with $command" --rm "$command"
 done
-expect_conflict 'pi: --rm cannot be combined with copy' --rm --rebuild copy
-assert_output_lacks 'pi: --rebuild cannot be combined with copy'
-expect_conflict 'pi: --rm cannot be combined with --replace' --rm --replace update
-assert_output_lacks 'cannot be combined with update'
-expect_conflict 'pi: --seed and --latest-state require a persistent workspace stack' --rm --seed shell
-assert_output_lacks 'shell cannot be combined'
-expect_conflict 'pi: unsupported update option: --unknown' update --unknown
-expect_conflict 'pi: unsupported remove option: --unknown' remove --unknown
-expect_conflict 'pi: usage: pi stop' stop extra
-expect_conflict 'pi: unsupported shell option: --unknown' shell --unknown
-assert_output_has 'pi: usage: pi shell [--root|-r]'
-expect_conflict 'pi: unsupported copy option: --unknown' copy --unknown
-assert_output_has 'pi: usage: pi copy'
-expect_conflict 'pi: - requires a Pi argument' -
-assert_eq "$(cat -- "$OUTPUT_LOG")" $'pi: - requires a Pi argument\npi: usage: pi - PI_ARGS...' 'pi - output'
-expect_conflict 'pi: --workspace requires a path' --workspace
+expect_conflict '--rm cannot be combined with copy' --rm --rebuild copy
+expect_conflict '--rm cannot be combined with --replace' --rm --replace update
+expect_conflict '--seed and --latest-state require a persistent workspace stack' --rm --seed shell
+expect_conflict $'unsupported update option: --unknown\nusage: pi update [--extensions] [--models]' update --unknown
+expect_conflict $'unsupported remove option: --unknown\nusage: pi remove [--all]' remove --unknown
+expect_conflict 'usage: pi stop' stop extra
+expect_conflict $'unsupported shell option: --unknown\nusage: pi shell [--root|-r]' shell --unknown
+expect_conflict $'unsupported shell option: --zsh\nusage: pi shell [--root|-r]' shell --zsh
+expect_conflict $'shell cannot be combined with lifecycle, state, or OAuth options\nusage: pi shell [--root|-r]' --new-state shell
+expect_conflict $'unsupported copy option: --unknown\nusage: pi copy [--from] [--to] [-s|--sessions] [-a|--auth] [-e|--extensions] [--all] [--override]' copy --unknown
+expect_conflict $'- requires a Pi argument\nusage: pi - PI_ARGS...' -
+expect_conflict $'--workspace requires a path\nusage: pi [--workspace PATH] [PI_ARGS...]' --workspace
+expect_conflict $'--workspace requires a path\nusage: pi [--workspace PATH] [PI_ARGS...]' --workspace=
 
 # list takes no arguments and no launch options; it prints only its usage.
 for arguments in 'list extra' '--workspace . list' '--oauth list'; do
@@ -259,13 +263,19 @@ done
 # --new-state with --latest-state is refused and leaves the seed pointer alone.
 mkdir -p "$CONFIG_DIR"
 printf '%s\n' "$(agent_volume "$WS_B")" > "$SEED_FILE"
-expect_conflict 'pi: --new-state and --latest-state are mutually exclusive; the extra state volume is never seeded' --new-state --latest-state
+expect_conflict '--new-state and --latest-state are mutually exclusive; the extra state volume is never seeded' --new-state --latest-state
 assert_eq "$(seed_value)" "$(agent_volume "$WS_B")" 'seed pointer after a refused launch'
 
 # Option guards run before workspace validation.
 EXTRA_ENV=(PI_WORKSPACE="$TMP_DIR/missing-workspace")
-expect_conflict 'pi: --rm cannot be combined with stop' --rm stop
+expect_conflict '--rm cannot be combined with stop' --rm stop
 EXTRA_ENV=()
+
+# A missing workspace is an error for launches.
+run_pi "$WS_A" --workspace "$TEST_HOME/projects/missing"
+assert_status 1
+assert_output_has "workspace does not exist: $TEST_HOME/projects/missing"
+assert_no_docker
 
 # The invocation directory is the default workspace.
 fresh_stack
@@ -297,19 +307,44 @@ assert_status 0
 assert_log_has "$COMPOSE_A run --rm --service-ports pi pi-shell-launch pi list"
 assert_log_lacks 'run --rm --service-ports pi pi-shell-launch pi - list'
 
-# --workspace overrides PI_WORKSPACE, in both option forms; relative paths
-# resolve from the invocation directory.
+# PI_WORKSPACE overrides the invocation directory; --workspace overrides both.
+EXTRA_ENV=(PI_WORKSPACE="$WS_B")
+fresh_stack
+run_pi "$WS_A" --version
+assert_status 0
+assert_log_has "container=pi-agents-pi-beta network=pi-agents-pi-beta workspace=$WS_B agent="
+assert_log_lacks "workspace=$WS_A agent="
 EXTRA_ENV=(PI_WORKSPACE="$WS_A")
 fresh_stack
 run_pi "$WS_A" --workspace "$WS_B" --version
 assert_status 0
 assert_log_has "container=pi-agents-pi-beta network=pi-agents-pi-beta workspace=$WS_B agent="
 assert_log_lacks "workspace=$WS_A agent="
+EXTRA_ENV=()
+
+# Relative paths resolve from the invocation directory, in both option forms.
 fresh_stack
-run_pi "$WS_A" --workspace=../beta --version
+run_pi "$WS_A" --workspace ../beta --version
 assert_status 0
 assert_log_has "container=pi-agents-pi-beta network=pi-agents-pi-beta workspace=$WS_B agent="
-assert_log_lacks "workspace=$WS_A agent="
-EXTRA_ENV=()
+fresh_stack
+run_pi "$WS_B" --workspace=../alpha --version
+assert_status 0
+assert_log_has "container=pi-agents-pi-alpha network=pi-agents-pi-alpha workspace=$WS_A agent="
+
+# Symlinked workspaces resolve to the physical directory.
+ln -s "$WS_B" "$TEST_HOME/beta-link"
+fresh_stack
+run_pi "$TEST_HOME" --workspace beta-link --version
+assert_status 0
+assert_log_has "workspace=$WS_B agent="
+assert_log_lacks 'beta-link'
+
+# Container and project names come from a sanitized basename.
+WS_MIXED=$(make_workspace "$TEST_HOME/projects/My Project!")
+reset_docker
+run_pi "$WS_MIXED" --version
+assert_status 0
+assert_log_has "compose-env project=pi-agents-pi-my-project container=pi-agents-pi-my-project network=pi-agents-pi-my-project workspace=$WS_MIXED agent="
 
 pass
