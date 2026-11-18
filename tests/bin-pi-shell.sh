@@ -225,4 +225,21 @@ assert_output_has 'X) Cancel (or Esc)'
 assert_output_has 'container selection cancelled'
 assert_log_lacks 'docker compose'
 
+# An unsupported host shell, or conflicting shell flags, fail before the picker
+# and before any rc is generated.
+reset_docker
+fake_container pi-agents-pi-other "$OTHER" running
+fake_container pi-agents-pi-second "$SECOND" running
+rm -rf -- "$CONFIG_DIR/shell-rc"
+INPUT='1\n'
+EXTRA_ENV=(SHELL=/bin/fish)
+run_pi "$WS" shell
+EXTRA_ENV=()
+assert_status 2
+assert_output_has 'pi: unsupported host shell: fish (supported: bash, zsh)'
+assert_output_lacks 'Choose a Pi container:'
+assert_log_lacks 'docker exec'
+[[ ! -e $CONFIG_DIR/shell-rc ]] || fail 'an rc was generated before shell validation'
+INPUT=''
+
 pass

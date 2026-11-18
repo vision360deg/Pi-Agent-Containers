@@ -2133,6 +2133,9 @@ if [[ "$COMMAND" == list ]]; then
 fi
 
 if [[ "$COMMAND" == shell ]]; then
+  # Validate the host shell before the picker; the rc is generated only for the
+  # selected workspace.
+  select_host_shell || exit $?
   attach_shell
   exit $?
 fi
