@@ -72,6 +72,47 @@ volume_has_file "$(session_volume "$WS")" old-session.jsonl || fail 'the session
 (( $(line_of 'pi: copying agent state' "$OUTPUT_LOG") < $(line_of 'pi: agent-state copy complete' "$OUTPUT_LOG") )) ||
   fail 'the copying message must precede the completion message'
 
+# Without a category, nothing is forwarded and sessions are mounted alongside
+# configuration state.
+two_states
+copy_with 1
+assert_status 0
+assert_log_has 'bash /usr/local/bin/pi-state-copy --source /state-source --target /state-target'
+assert_log_lacks 'pi-state-copy --source /state-source --target /state-target --'
+assert_log_has "$(session_volume "$OTHER"):/state-source/sessions:ro"
+assert_log_has "$(session_volume "$WS"):/state-target/sessions"
+
+# copy needs no host shell configuration, so any host shell works.
+EXTRA_ENV=(SHELL=/usr/bin/fish)
+copy_with 1
+EXTRA_ENV=()
+assert_status 0
+assert_output_lacks 'unsupported host shell'
+assert_log_has 'pi-state-copy --source /state-source --target /state-target'
+
+# --from with categories and flags forwards them; non-session copies skip
+# session mounts.
+two_states
+copy_with 1 --from -a -e --all --override
+assert_status 0
+assert_log_has 'pi-state-copy --source /state-source --target /state-target --auth --extensions --all --override'
+assert_log_has "$(agent_volume "$OTHER"):/state-source:ro"
+assert_log_has "$(agent_volume "$WS"):/state-target"
+assert_log_lacks ':/state-source/sessions'
+assert_log_lacks ':/state-target/sessions'
+
+# --to --sessions copies the current workspace's sessions into the picked
+# destination's.
+two_states
+copy_with 1 --to --sessions
+assert_status 0
+assert_output_has 'Choose a destination Pi state volume:'
+assert_log_has "$(agent_volume "$WS"):/state-source:ro"
+assert_log_has "$(session_volume "$WS"):/state-source/sessions:ro"
+assert_log_has "$(agent_volume "$OTHER"):/state-target"
+assert_log_has "$(session_volume "$OTHER"):/state-target/sessions"
+assert_log_has 'pi-state-copy --source /state-source --target /state-target --sessions'
+
 # The current workspace's volumes are created before the picker when missing.
 reset_docker
 workspace_state "$OTHER"
@@ -87,10 +128,12 @@ assert_log_has "$(agent_volume "$WS"):/state-target"
 two_states
 fake_volume "$(extra_volume "$OTHER")" "$OTHER" agent-extra 2026-01-01T00:00:00Z
 fake_volume pi-agents-ws-legacy_pi-agent-state /legacy agent 2026-01-01T00:00:00Z "${UNLABEL[@]}"
+fake_volume pi-agents-ws-stray_pi-agent-state "$OTHER" agent 2026-01-01T00:00:00Z label.com.pi-agents.managed=false
 copy_with 1 --auth --all
 assert_status 0
 assert_output_lacks "$(extra_volume "$OTHER")"
 assert_output_lacks 'pi-agents-ws-legacy_pi-agent-state'
+assert_output_lacks 'pi-agents-ws-stray_pi-agent-state'
 assert_output_lacks "1) $(session_volume "$OTHER")"
 assert_output_lacks '2) '
 
@@ -110,8 +153,15 @@ copy_with 1 --sessions --all
 assert_status 0
 assert_log_has "$LABELLED_SESSIONS:/state-source/sessions:ro"
 
-# A session volume without the managed labels is not found, and two labelled
-# session volumes are ambiguous; both fail before the helper runs.
+# A session copy requires exactly one session volume per workspace: a missing
+# or unlabelled one is not found, and two labelled ones are ambiguous; all fail
+# before the helper runs.
+two_states
+rm -- "$FAKE_DOCKER_STATE/volumes/$(session_volume "$OTHER")"
+copy_with 1 --sessions
+assert_status 2
+assert_output_has "pi: expected one managed session volume for state volume: $(agent_volume "$OTHER")"
+assert_log_lacks 'pi-state-copy'
 two_states
 fake_volume "$(session_volume "$OTHER")" "$OTHER" sessions 2026-01-01T00:00:00Z "${UNLABEL[@]}"
 copy_with 1 --sessions --all
@@ -152,12 +202,12 @@ copy_with 1 --auth --all
 assert_status 0
 assert_output_lacks 'warning'
 
-# A failed helper reports no completion.
+# The helper's status is returned to the caller, with no completion message.
 two_states
-EXTRA_ENV=(FAKE_STATE_COPY_STATUS=1)
+EXTRA_ENV=(FAKE_STATE_COPY_STATUS=3)
 copy_with 1 --auth --all
 EXTRA_ENV=()
-assert_status 1
+assert_status 3
 assert_output_lacks 'pi: agent-state copy complete'
 
 # With ten or more entries the picker waits for Enter after a leading 1-9,
@@ -188,8 +238,8 @@ for cancel in x X '\033' ''; do
   assert_output_has 'pi: copy cancelled'
   assert_log_lacks '/state-source'
 done
-for invalid in 9 0 q; do
-  copy_with "$invalid" --auth --all
+for invalid in 9 0 q one; do
+  copy_with "$invalid\n" --auth --all
   assert_status 2
   assert_output_has "pi: invalid state volume selection: $invalid"
   assert_log_lacks '/state-source'
