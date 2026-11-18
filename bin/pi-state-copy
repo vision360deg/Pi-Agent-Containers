@@ -36,7 +36,7 @@ Interactive cancellation exits with status 3.
 EOF
 }
 
-fail() { printf 'pi-state-copy: %s\n' "$1" >&2; exit 1; }
+fail() { printf 'pi-state-copy: %s\n' "$1" >&2; exit 2; }
 
 rollback_published() {
   local index target backup status=0
@@ -74,8 +74,8 @@ trap 'exit 143' HUP TERM
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --source) [[ $# -gt 1 ]] || fail '--source requires a path'; SOURCE="$2"; shift 2 ;;
-    --target) [[ $# -gt 1 ]] || fail '--target requires a path'; TARGET="$2"; shift 2 ;;
+    --source) [[ $# -gt 1 ]] || fail '--source requires a directory'; SOURCE="$2"; shift 2 ;;
+    --target) [[ $# -gt 1 ]] || fail '--target requires a directory'; TARGET="$2"; shift 2 ;;
     --sessions) COPY_SESSIONS=true; shift ;;
     --auth) COPY_AUTH=true; shift ;;
     --extensions) COPY_EXTENSIONS=true; shift ;;
@@ -89,7 +89,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$SOURCE" && -n "$TARGET" ]] || fail '--source and --target are required'
+[[ -n "$SOURCE" ]] || fail '--source is required'
+[[ -n "$TARGET" ]] || fail '--target is required'
 [[ ! -L "$SOURCE" && -d "$SOURCE" ]] || fail "source is not a directory: $SOURCE"
 [[ ! -L "$TARGET" && -d "$TARGET" ]] || fail "target is not a directory: $TARGET"
 SOURCE="$(cd -P -- "$SOURCE" && pwd -P)"
@@ -125,11 +126,16 @@ assert_safe_path() {
   done
 }
 
+cancel_copy() {
+  printf 'pi-state-copy: copy cancelled\n' >&2
+  exit 3
+}
+
 prompt_duplicate() {
   local kind="$1" item="$2" answer
   [[ "$OVERRIDE" == true || "$REPLACE_ALL" == true ]] && return 0
   while :; do
-    printf 'Duplicate %s "%s": [r]eplace, [s]kip, replace [a]ll, [q]uit? ' "$kind" "$item" >&2
+    printf 'Destination already has %s "%s": [r]eplace, [s]kip, replace [a]ll, or [q]uit? ' "$kind" "$item" >&2
     if IFS= read -r -n 1 answer <&3; then
       # Consume an already-buffered newline from piped input without waiting
       # for Enter when the user is typing directly into the terminal.
@@ -143,28 +149,42 @@ prompt_duplicate() {
       r) return 0 ;;
       s) return 1 ;;
       a) REPLACE_ALL=true; return 0 ;;
-      q) printf 'pi-state-copy: cancelled\n' >&2; exit 3 ;;
+      q) cancel_copy ;;
       *) printf 'Please choose r, s, a, or q.\n' >&2 ;;
     esac
   done
 }
 
-parse_picker_selection() {
-  local selection="$1" count="$2" token index
+# pick_items CATEGORY ITEM...: lets the user select items of CATEGORY into
+# PICKED_ITEMS. The selection is parsed in this shell so an invalid choice
+# stops the copy before anything is staged.
+pick_items() {
+  local category="$1" selection token index chosen
+  shift
+  local -a items=("$@") indexes=()
+  PICKED_ITEMS=()
+  if ((${#items[@]} == 0)); then
+    printf 'pi-state-copy: the source state has no %s to select\n' "$category" >&2
+    return 0
+  fi
+  printf 'Available %s:\n' "$category" >&2
+  for index in "${!items[@]}"; do printf '  %s) %s\n' "$((index + 1))" "${items[$index]}" >&2; done
+  printf 'Select %s by number (space or comma separated), all, or q to cancel: ' "$category" >&2
+  IFS= read -r selection <&3 || [[ -n "$selection" ]] || cancel_copy
   selection="${selection//,/ }"
+  case "${selection//[[:space:]]/}" in
+    ''|q|Q|x|X|$'\e'*) cancel_copy ;;
+    all|a) PICKED_ITEMS=("${items[@]}"); return 0 ;;
+  esac
   for token in $selection; do
-    [[ "$token" =~ ^[0-9]+$ ]] || fail "invalid picker selection: $token"
-    index=$((10#$token - 1))
-    (( index >= 0 && index < count )) || fail "picker selection is out of range: $token"
-    printf '%s\n' "$index"
+    [[ "$token" =~ ^[0-9]+$ ]] && index=$((10#$token - 1)) && ((index >= 0 && index < ${#items[@]})) ||
+      fail "invalid $category selection: $token"
+    for chosen in "${indexes[@]}"; do
+      [[ "$chosen" != "$index" ]] || fail "duplicate $category selection: $token"
+    done
+    indexes+=("$index")
+    PICKED_ITEMS+=("${items[$index]}")
   done
-}
-
-read_picker_selection() {
-  local first rest=''
-  IFS= read -r -n 1 first <&3 || return 1
-  IFS= read -r -t 0.05 -n 1024 rest <&3 || true
-  printf '%s%s\n' "$first" "$rest"
 }
 
 list_source_sessions() {
@@ -174,53 +194,29 @@ list_source_sessions() {
 }
 
 pick_sessions() {
-  local name selection index
+  local name
   local -a items=()
   while IFS= read -r name; do items+=("${name#"$SOURCE/sessions/"}"); done < <(list_source_sessions)
-  if ((${#items[@]} == 0)); then
-    printf 'pi-state-copy: no sessions were found in the source state; nothing to select\n' >&2
-    return 0
-  fi
-  printf 'Select sessions to copy (numbers separated by spaces, or all):\n' >&2
-  for index in "${!items[@]}"; do printf '%s) %s\n' "$((index + 1))" "${items[$index]}" >&2; done
-  printf 'Selection: ' >&2
-  selection="$(read_picker_selection || true)"
-  [[ -n "$selection" ]] || return 0
-  printf '\n' >&2
-  if [[ "$selection" == all || "$selection" == a ]]; then SESSION_ITEMS=("${items[@]}"); return 0; fi
-  while IFS= read -r index; do SESSION_ITEMS+=("${items[$index]}"); done < <(parse_picker_selection "$selection" "${#items[@]}")
+  pick_items sessions "${items[@]}"
+  SESSION_ITEMS=("${PICKED_ITEMS[@]}")
 }
 
 pick_providers() {
-  local provider selection index
+  local provider
   local -a items=()
   [[ -e "$SOURCE/auth.json" ]] && assert_safe_path "$SOURCE" auth.json
   while IFS= read -r provider; do items+=("$provider"); done < <(jq -r 'keys[]' "$SOURCE/auth.json" 2>/dev/null || true)
-  ((${#items[@]} > 0)) || return 0
-  printf 'Select provider auth entries to copy (numbers separated by spaces, or all):\n' >&2
-  for index in "${!items[@]}"; do printf '%s) %s\n' "$((index + 1))" "${items[$index]}" >&2; done
-  printf 'Selection: ' >&2
-  selection="$(read_picker_selection || true)"
-  [[ -n "$selection" ]] || return 0
-  printf '\n' >&2
-  if [[ "$selection" == all || "$selection" == a ]]; then PROVIDER_ITEMS=("${items[@]}"); return 0; fi
-  while IFS= read -r index; do PROVIDER_ITEMS+=("${items[$index]}"); done < <(parse_picker_selection "$selection" "${#items[@]}")
+  pick_items providers "${items[@]}"
+  PROVIDER_ITEMS=("${PICKED_ITEMS[@]}")
 }
 
 pick_extensions() {
-  local package selection index
+  local package
   local -a items=()
   [[ -e "$SOURCE/settings.json" ]] && assert_safe_path "$SOURCE" settings.json
   while IFS= read -r package; do items+=("$package"); done < <(jq -r '.packages[] | if type == "string" then . else .source // empty end' "$SOURCE/settings.json" 2>/dev/null || true)
-  ((${#items[@]} > 0)) || { printf 'pi-state-copy: no configured extensions found in source settings\n' >&2; return 0; }
-  printf 'Select extensions to copy (numbers separated by spaces, or all):\n' >&2
-  for index in "${!items[@]}"; do printf '%s) %s\n' "$((index + 1))" "${items[$index]}" >&2; done
-  printf 'Selection: ' >&2
-  selection="$(read_picker_selection || true)"
-  [[ -n "$selection" ]] || return 0
-  printf '\n' >&2
-  if [[ "$selection" == all || "$selection" == a ]]; then EXTENSION_ITEMS=("${items[@]}"); return 0; fi
-  while IFS= read -r index; do EXTENSION_ITEMS+=("${items[$index]}"); done < <(parse_picker_selection "$selection" "${#items[@]}")
+  pick_items extensions "${items[@]}"
+  EXTENSION_ITEMS=("${PICKED_ITEMS[@]}")
 }
 
 # Copy a source item into the staging tree under its target-relative path.
@@ -467,5 +463,5 @@ mkdir -- "$STAGING_ROOT/items"
 [[ "$COPY_SESSIONS" == true ]] && stage_sessions
 [[ "$COPY_AUTH" == true ]] && stage_auth
 [[ "$COPY_EXTENSIONS" == true ]] && stage_extensions
-publish_staged_items || exit 1
+publish_staged_items || exit 2
 printf 'pi-state-copy: copy complete\n'

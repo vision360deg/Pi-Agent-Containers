@@ -382,7 +382,8 @@ complete` after it.
 The category flags are `--sessions`/`-s`, `--auth`/`-a`, and
 `--extensions`/`-e`. Without category flags, all categories are copied. Without
 `--all`, `pi copy` lets you select individual sessions, providers, or
-extensions; `--all` copies every item in the selected categories.
+extensions by number, or type `all`; `--all` copies every item in the selected
+categories.
 
 ```bash
 pi copy --sessions --auth --extensions --all
@@ -406,9 +407,11 @@ before the destination changes. Staged items are then published by rename,
 each previous item kept as a backup until all items are in place; a failure or
 interruption while publishing restores the previous items, and if that restore
 fails the original is kept in a `.pi-state-copy-backup.*` entry beside it.
-Cancelling a picker or a duplicate prompt (`q` or end of input) exits with
-status 3 and leaves the destination unchanged. Symlinked state paths on either
-side, and overlapping source/destination directories, are refused.
+Cancelling an item picker (`q`, `x`, Esc, an empty line, or end of input) or a
+duplicate prompt (`q` or end of input) prints `pi-state-copy: copy cancelled`,
+exits with status 3, and leaves the destination unchanged. Symlinked state
+paths on either side, and overlapping source/destination directories, are
+refused.
 
 When a running container mounts the destination state volume, copied files are
 immediately present in it, but Pi may still hold cached authentication or
