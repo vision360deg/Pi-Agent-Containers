@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# pi copy: copy direction, flags, pickers, session volumes, and permission repair.
+# pi copy: copy direction, flags, the state-volume picker, session volumes,
+# running-destination warnings, and permission repair.
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.bash"
 source "$ROOT/tests/lib/launcher.bash"
@@ -15,14 +16,11 @@ workspace_state() {
   fake_volume "$(session_volume "$1")" "$1" sessions 2026-01-01T00:00:00Z
 }
 
-# two_stacks [KEY=VALUE...]: the running current stack and a stopped other
-# stack, each on its own state; the keys apply to both containers.
-two_stacks() {
+# two_states: the current and another workspace's state, with no containers.
+two_states() {
   reset_docker
   workspace_state "$WS"
   workspace_state "$OTHER"
-  fake_container pi-agents-pi-current "$WS" running "$@"
-  fake_container pi-agents-pi-other "$OTHER" exited "$@"
 }
 
 copy_with() {
@@ -39,81 +37,162 @@ copy_with_slow_input() {
   INPUT_COMMAND=''
 }
 
-two_stacks
+# output_has_block TEXT: the output contains TEXT, newlines included.
+output_has_block() {
+  [[ $(cat -- "$OUTPUT_LOG") == *"$1"* ]] || fail "output lacks: $1"$'\n'"$(show_run)"
+}
+
+line_of() { grep -nF -- "$1" "$2" | head -n 1 | cut -d: -f1; }
+
+# The default direction copies from a picked state volume into the current
+# workspace; no container is needed on either side.
+two_states
 fake_volume_file "$(session_volume "$OTHER")" old-session.jsonl '{}'
-copy_with 1 --from --sessions --all
+copy_with 1 --sessions --all
 assert_status 0
-assert_log_has 'pi-state-copy'
-assert_log_has 'bash /usr/local/bin/pi-state-copy'
+output_has_block $'Choose a source Pi state volume:\n1) '"$(agent_volume "$OTHER")"$'\n   workspace: '"$OTHER"$'\n   created: 2026-01-01T00:00:00Z\nX) Cancel (or Esc)\nChoice: '
+# The current workspace's own state volume is not offered.
+assert_output_lacks ") $(agent_volume "$WS")"
+assert_output_lacks '2) '
+assert_output_has "pi: copying agent state from $(agent_volume "$OTHER") to $(agent_volume "$WS")"
+assert_output_has 'pi: agent-state copy complete'
+assert_output_lacks 'warning'
+assert_log_has 'bash /usr/local/bin/pi-state-copy --source /state-source --target /state-target --sessions --all'
 # The copy helper must not inherit Compose capability drops.
 assert_log_lacks '--no-deps'
 assert_log_has 'docker run --rm -i --user 0'
 assert_log_has "$(agent_volume "$OTHER"):/state-source:ro"
 assert_log_has "$(agent_volume "$WS"):/state-target"
 # Sessions live in a separate volume found by its workspace label; the
-# target's is repaired.
+# target's is repaired before and after the copy.
 assert_log_has "$(session_volume "$OTHER"):/state-source/sessions:ro"
 assert_log_has "$(session_volume "$WS"):/state-target/sessions"
-assert_log_has "$(session_volume "$WS"):/sessions"
+assert_eq "$(grep -cF -- "$(session_volume "$WS"):/sessions" "$DOCKER_LOG")" 2 'target session repairs'
 volume_has_file "$(session_volume "$WS")" old-session.jsonl || fail 'the session must be copied'
+(( $(line_of 'pi: copying agent state' "$OUTPUT_LOG") < $(line_of 'pi: agent-state copy complete' "$OUTPUT_LOG") )) ||
+  fail 'the copying message must precede the completion message'
+
+# The current workspace's volumes are created before the picker when missing.
+reset_docker
+workspace_state "$OTHER"
+copy_with 1 --auth --all
+assert_status 0
+assert_log_has "docker volume create --label com.pi-agents.managed=true --label com.pi-agents.state-kind=agent --label com.pi-agents.workspace=$WS"
+volume_exists "$(agent_volume "$WS")" || fail 'the current agent volume must be created'
+volume_exists "$(session_volume "$WS")" || fail 'the current session volume must be created'
+assert_log_has "$(agent_volume "$WS"):/state-target"
+
+# Only managed agent-state volumes are offered: extra, session, and unlabelled
+# volumes are not.
+two_states
+fake_volume "$(extra_volume "$OTHER")" "$OTHER" agent-extra 2026-01-01T00:00:00Z
+fake_volume pi-agents-ws-legacy_pi-agent-state /legacy agent 2026-01-01T00:00:00Z "${UNLABEL[@]}"
+copy_with 1 --auth --all
+assert_status 0
+assert_output_lacks "$(extra_volume "$OTHER")"
+assert_output_lacks 'pi-agents-ws-legacy_pi-agent-state'
+assert_output_lacks "1) $(session_volume "$OTHER")"
+assert_output_lacks '2) '
+
+# Without another state volume there is nothing to pick.
+reset_docker
+workspace_state "$WS"
+copy_with 1 --auth --all
+assert_status 2
+assert_output_has 'pi: no other managed Pi state volumes are available'
+assert_log_lacks 'pi-state-copy'
 
 # A labelled session volume is located by its workspace label, whatever its name.
-two_stacks
+two_states
 rm -- "$FAKE_DOCKER_STATE/volumes/$(session_volume "$OTHER")"
 fake_volume "$LABELLED_SESSIONS" "$OTHER" sessions 2026-01-02T00:00:00Z
-copy_with 1 --from --sessions --all
+copy_with 1 --sessions --all
 assert_status 0
 assert_log_has "$LABELLED_SESSIONS:/state-source/sessions:ro"
 
 # A session volume without the managed labels is not found, and two labelled
 # session volumes are ambiguous; both fail before the helper runs.
-two_stacks
+two_states
 fake_volume "$(session_volume "$OTHER")" "$OTHER" sessions 2026-01-01T00:00:00Z "${UNLABEL[@]}"
-copy_with 1 --from --sessions --all
+copy_with 1 --sessions --all
 assert_status 2
-assert_output_has "expected one managed session volume for workspace: $OTHER"
+assert_output_has "pi: expected one managed session volume for state volume: $(agent_volume "$OTHER")"
 assert_log_lacks 'pi-state-copy'
-two_stacks
+two_states
 fake_volume "$LABELLED_SESSIONS" "$OTHER" sessions 2026-01-02T00:00:00Z
-copy_with 1 --from --sessions --all
+copy_with 1 --all
 assert_status 2
-assert_output_has "expected one managed session volume for workspace: $OTHER"
+assert_output_has "pi: expected one managed session volume for state volume: $(agent_volume "$OTHER")"
 assert_log_lacks 'pi-state-copy'
 
-# Auth-only copies do not need session volumes.
+# --to picks the destination; auth-only copies do not need session volumes.
 copy_with 1 --to --auth --all
 assert_status 0
-assert_output_has 'Choose a destination Pi container:'
+output_has_block $'Choose a destination Pi state volume:\n1) '"$(agent_volume "$OTHER")"
+assert_output_has "pi: copying agent state from $(agent_volume "$WS") to $(agent_volume "$OTHER")"
 assert_log_has "$(agent_volume "$WS"):/state-source:ro"
 assert_log_has "$(agent_volume "$OTHER"):/state-target"
+assert_log_has "$(agent_volume "$OTHER"):/state "
 assert_log_lacks '_pi-sessions:/'
+
+# A running container that mounts the destination agent volume is named in a
+# warning after the copy; a stopped one is not.
+two_states
+fake_container pi-agents-pi-current "$WS" running
+fake_container pi-agents-pi-other "$OTHER" running
+copy_with 1 --auth --all
+assert_status 0
+assert_output_has "pi: warning: $(agent_volume "$WS") is mounted by running container pi-agents-pi-current; restart it to pick up copied auth or extensions"
+assert_output_lacks 'pi-agents-pi-other;'
+(( $(line_of 'pi: agent-state copy complete' "$OUTPUT_LOG") < $(line_of 'pi: warning:' "$OUTPUT_LOG") )) ||
+  fail 'the warning must follow the completion message'
+two_states
+fake_container pi-agents-pi-current "$WS" exited
+copy_with 1 --auth --all
+assert_status 0
+assert_output_lacks 'warning'
+
+# A failed helper reports no completion.
+two_states
+EXTRA_ENV=(FAKE_STATE_COPY_STATUS=1)
+copy_with 1 --auth --all
+EXTRA_ENV=()
+assert_status 1
+assert_output_lacks 'pi: agent-state copy complete'
 
 # With ten or more entries the picker waits for Enter after a leading 1-9,
 # so a slowly typed 10 selects item 10 rather than item 1.
-two_stacks
+two_states
 for index in 01 02 03 04 05 06 07 08 09 10; do
-  fake_container "pi-agents-pi-extra-$index" "/extra-$index" exited
+  workspace_state "/extra-$index"
 done
 copy_with_slow_input 'printf 1; sleep 0.3; printf "0\n"' --auth --all
 assert_status 0
-assert_output_has 'Choice (number, then Enter): '
-assert_output_has '10) pi-agents-pi-extra-10'
-assert_log_has "$(agent_volume /extra-10):/state-source:ro"
+output_has_block $'X) Cancel (or Esc)\nChoice (number, then Enter): '
+output_has_block "$(agent_volume /extra-10)"$'\n   workspace: /extra-10'
+selected=$(sed -n "s|^10) ||p" "$OUTPUT_LOG")
+assert_log_has "$selected:/state-source:ro"
 
 # Shorter lists keep single-key selection.
-two_stacks
+two_states
 copy_with 1 --auth --all
 assert_status 0
 assert_output_has 'Choice: '
 assert_log_has "$(agent_volume "$OTHER"):/state-source:ro"
 
-# Cancelling the picker exits 3 and copies nothing; invalid choices exit 2.
+# x, X, Esc, and end of input cancel with status 3 and copy nothing; any other
+# choice is invalid and exits 2.
 for cancel in x X '\033' ''; do
   copy_with "$cancel" --auth --all
   assert_status 3
+  assert_output_has 'pi: copy cancelled'
   assert_log_lacks '/state-source'
 done
-copy_with 9 --auth --all
-assert_status 2
+for invalid in 9 0 q; do
+  copy_with "$invalid" --auth --all
+  assert_status 2
+  assert_output_has "pi: invalid state volume selection: $invalid"
+  assert_log_lacks '/state-source'
+done
 
 pass

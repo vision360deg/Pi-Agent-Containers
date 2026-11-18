@@ -132,7 +132,7 @@ assert_status 0
 [[ -d $MISSING ]] || fail 'the new project directory must be created'
 assert_output_has '0) Start a new project'
 assert_output_has '1) pi-agents-pi-existing'
-assert_output_has 'X) Press Esc to cancel'
+assert_output_has 'X) Cancel (or Esc)'
 assert_log_has 'up --detach pi'
 assert_log_lacks 'up --build'
 assert_log_has 'docker volume create'
@@ -173,7 +173,7 @@ reset_docker
 run_pi "$WS" --workspace "$CANCELLED" shell
 assert_status 2
 [[ ! -d $CANCELLED ]] || fail 'a cancelled new project must not be created'
-assert_output_has 'X) Press Esc to cancel'
+assert_output_has 'X) Cancel (or Esc)'
 assert_output_has 'container selection cancelled'
 assert_log_lacks 'docker compose'
 
@@ -183,7 +183,7 @@ run_pi "$WS" shell
 INPUT=''
 assert_status 2
 assert_output_has '0) Start a new project'
-assert_output_has 'X) Press Esc to cancel'
+assert_output_has 'X) Cancel (or Esc)'
 assert_output_has 'container selection cancelled'
 assert_log_lacks 'docker compose'
 
