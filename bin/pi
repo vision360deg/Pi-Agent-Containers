@@ -926,31 +926,20 @@ volume_exists() {
   [[ -n "$1" ]] && docker volume inspect "$1" >/dev/null 2>&1
 }
 
-# Volumes created before session and browser state were labelled carry no
-# pi-agents labels, and Docker cannot add labels to an existing volume. Those
-# volumes are accepted unchanged; any volume carrying the labels must match.
-# An optional legacy kind is also accepted for volumes labelled by older
-# releases with a kind that has since been refined.
 assert_managed_state_volume() {
-  local volume="$1" expected_workspace="$2" expected_kind="$3" legacy_kind="${4:-}" record managed workspace kind
+  local volume="$1" expected_workspace="$2" expected_kind="$3" record managed workspace kind
   local delimiter=$'\037'
   record="$(docker volume inspect --format "{{index .Labels \"com.pi-agents.managed\"}}${delimiter}{{index .Labels \"com.pi-agents.workspace\"}}${delimiter}{{index .Labels \"com.pi-agents.state-kind\"}}" "$volume" 2>/dev/null)" ||
     fail "could not inspect state volume: $volume"
   IFS="$delimiter" read -r managed workspace kind <<< "$record"
-  [[ "$managed" != '<no value>' ]] || managed=''
-  [[ "$workspace" != '<no value>' ]] || workspace=''
-  [[ "$kind" != '<no value>' ]] || kind=''
-  [[ -n "$managed$workspace$kind" ]] || return 0
   [[ "$managed" == true ]] || fail "state volume is not managed: $volume"
   [[ "$workspace" == "$expected_workspace" ]] || fail "state volume workspace label does not match: $volume"
-  [[ "$kind" == "$expected_kind" || ( -n "$legacy_kind" && "$kind" == "$legacy_kind" ) ]] ||
+  [[ "$kind" == "$expected_kind" ]] ||
     fail "state volume kind label does not match: $volume"
 }
 
-# Extra state volumes are recognised by name: those created by older releases
-# carry the normal agent kind label, which Docker cannot change.
 is_extra_agent_state_volume() {
-  [[ "$1" == "$EXTRA_AGENT_STATE_PREFIX"* ]]
+  [[ -n "$1" && "$(docker volume inspect --format '{{index .Labels "com.pi-agents.state-kind"}}' "$1" 2>/dev/null)" == agent-extra ]]
 }
 
 extra_agent_state_volume_for_workspace() {
@@ -959,7 +948,7 @@ extra_agent_state_volume_for_workspace() {
 
 assert_agent_state_volume() {
   if [[ "$ACTIVE_AGENT_STATE_VOLUME_NAME" == "$EXTRA_AGENT_STATE_VOLUME_NAME" ]]; then
-    assert_managed_state_volume "$ACTIVE_AGENT_STATE_VOLUME_NAME" "$WORKSPACE" agent-extra agent
+    assert_managed_state_volume "$ACTIVE_AGENT_STATE_VOLUME_NAME" "$WORKSPACE" agent-extra
   else
     assert_managed_state_volume "$ACTIVE_AGENT_STATE_VOLUME_NAME" "$WORKSPACE" agent
   fi
@@ -999,18 +988,13 @@ volume_created_at() {
   docker volume inspect --format '{{.CreatedAt}}' "$volume" 2>/dev/null
 }
 
-# Extra state volumes are excluded: they are never seed candidates and never
-# the latest state.
+# Extra state volumes carry their own kind: they are never seed candidates and
+# never the latest state.
 list_managed_agent_state_volumes() {
-  local volume
-  while IFS= read -r volume; do
-    [[ -n "$volume" ]] || continue
-    is_extra_agent_state_volume "$volume" && continue
-    printf '%s\n' "$volume"
-  done < <(docker volume ls \
+  docker volume ls \
     --filter 'label=com.pi-agents.managed=true' \
     --filter 'label=com.pi-agents.state-kind=agent' \
-    --format '{{.Name}}')
+    --format '{{.Name}}'
 }
 
 find_agent_state_volume_by_age() {
@@ -1359,7 +1343,7 @@ list_stacks() {
   TEMPORARY_DIRECTORIES+=("$temp_dir")
   inspect_format="{{.Name}}${delimiter}{{.State.Status}}${delimiter}{{.Created}}${delimiter}{{.State.StartedAt}}${delimiter}{{index .Config.Labels \"com.pi-agents.workspace\"}}${delimiter}{{index .Config.Labels \"com.docker.compose.project\"}}${delimiter}{{range .Mounts}}{{if and (eq .Type \"volume\") (eq .Destination \"/home/node/.pi/agent\")}}{{.Name}}{{end}}{{end}}"
 
-  ids="$(docker ps -a --filter 'label=com.pi-agents.workspace' --filter 'label=com.docker.compose.oneoff=False' --format '{{.ID}}')"
+  ids="$(docker ps -a --filter 'label=com.pi-agents.managed=true' --filter 'label=com.pi-agents.workspace' --filter 'label=com.docker.compose.oneoff=False' --format '{{.ID}}')"
   if [[ -z "$ids" ]]; then
     printf 'No Pi stacks found.\n'
     return 0
@@ -1379,7 +1363,7 @@ list_stacks() {
       agent_state=""
     fi
     extra_state=""
-    if [[ -n "$workspace" && "$workspace" != '<no value>' ]]; then
+    if [[ -n "$workspace" ]]; then
       extra_state="$(extra_agent_state_volume_for_workspace "$workspace")"
       volume_exists "$extra_state" || extra_state=""
     fi
@@ -1582,8 +1566,6 @@ prompt_collision() {
   esac
 }
 
-# Containers created before the managed label existed are identified by their
-# workspace label alone; any container carrying the label must be managed.
 # Only persistent service containers match unless allow-oneoff is true, which
 # also accepts `docker compose run` one-offs such as `pi --rm` containers.
 inspect_workspace_container() {
@@ -1592,8 +1574,7 @@ inspect_workspace_container() {
   local delimiter=$'\037'
   record="$(docker inspect --format "{{.Name}}${delimiter}{{index .Config.Labels \"com.pi-agents.managed\"}}${delimiter}{{index .Config.Labels \"com.pi-agents.workspace\"}}${delimiter}{{index .Config.Labels \"com.docker.compose.project\"}}${delimiter}{{index .Config.Labels \"com.docker.compose.service\"}}${delimiter}{{index .Config.Labels \"com.docker.compose.oneoff\"}}" "$name" 2>/dev/null)" || return 2
   IFS="$delimiter" read -r actual_name managed workspace project service oneoff <<< "$record"
-  [[ "$managed" != '<no value>' ]] || managed=''
-  if [[ "$actual_name" != "/$name" || ( -n "$managed" && "$managed" != true ) ||
+  if [[ "$actual_name" != "/$name" || "$managed" != true ||
     "$workspace" != "$expected_workspace" || -z "$project" || "$project" == '<no value>' ||
     "$service" != pi ]] || ! [[ "$oneoff" == False || ( "$allow_oneoff" == true && "$oneoff" == True ) ]]; then
     printf 'pi: container identity does not match workspace: %s\n' "$name" >&2
@@ -1644,6 +1625,7 @@ prepare_workspace_container() {
   COLLISION_PATHS=("$WORKSPACE")
 
   rows="$(docker ps -a \
+    --filter 'label=com.pi-agents.managed=true' \
     --filter "label=com.pi-agents.workspace-basename=$WORKSPACE_BASENAME" \
     --filter 'label=com.docker.compose.oneoff=False' \
     --format '{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Label "com.pi-agents.workspace"}}')"
@@ -1728,6 +1710,7 @@ resolve_workspace_project() {
 find_exact_workspace_stack() {
   local rows id name project count=0
   rows="$(docker ps -a \
+    --filter 'label=com.pi-agents.managed=true' \
     --filter "label=com.pi-agents.workspace=$WORKSPACE" \
     --filter 'label=com.docker.compose.oneoff=False' \
     --format '{{.ID}}\t{{.Names}}\t{{.Label "com.docker.compose.project"}}')" ||
@@ -1860,6 +1843,7 @@ read_picker_choice() {
 
 list_shell_containers() {
   docker ps -a \
+    --filter 'label=com.pi-agents.managed=true' \
     --filter 'label=com.pi-agents.workspace' \
     --filter 'label=com.docker.compose.oneoff=False' \
     --format '{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.State}}\t{{.Label "com.pi-agents.workspace"}}'
@@ -2057,6 +2041,7 @@ attach_shell() {
 
 list_copy_containers() {
   docker ps -a \
+    --filter 'label=com.pi-agents.managed=true' \
     --filter 'label=com.pi-agents.workspace' \
     --filter 'label=com.docker.compose.oneoff=False' \
     --format '{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.State}}\t{{.Label "com.pi-agents.workspace"}}'
@@ -2067,12 +2052,12 @@ copy_container_volume() {
 }
 
 # Sessions live in their own volume mounted over the agent state's sessions/
-# directory, so the copy helper must mount it explicitly. Labelled volumes are
-# found by workspace; volumes from before session labels are found through the
-# container's mount, or the current workspace's derived volume name.
+# directory, so the copy helper must mount it explicitly. It is the one managed
+# session volume labelled for the workspace.
 copy_session_volume() {
-  local container="$1" workspace="$2" fallback="${3:-}" rows candidate volume='' count=0
+  local workspace="$1" rows candidate volume='' count=0
   rows="$(docker volume ls \
+    --filter 'label=com.pi-agents.managed=true' \
     --filter 'label=com.pi-agents.state-kind=sessions' \
     --filter "label=com.pi-agents.workspace=$workspace" \
     --format '{{.Name}}')" || fail "could not list session volumes for workspace: $workspace"
@@ -2081,13 +2066,7 @@ copy_session_volume() {
     count=$((count + 1))
     volume="$candidate"
   done <<< "$rows"
-  (( count <= 1 )) || fail "multiple session volumes found for workspace: $workspace"
-  if [[ -z "$volume" && -n "$container" ]]; then
-    volume="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/home/node/.pi/agent/sessions"}}{{.Name}}{{end}}{{end}}' "$container")" ||
-      fail "could not inspect session mount of container: $container"
-  fi
-  [[ -n "$volume" ]] || volume="$fallback"
-  [[ -n "$volume" ]] && volume_exists "$volume" || fail "no session volume found for workspace: $workspace"
+  (( count == 1 )) || fail "expected one managed session volume for workspace: $workspace"
   printf '%s' "$volume"
 }
 
@@ -2149,7 +2128,7 @@ current_copy_container() {
 
 copy_agent_state() {
   local source_volume target_volume source_name target_name source_path target_path
-  local source_fallback='' target_fallback='' source_sessions target_sessions
+  local source_sessions target_sessions
   local -a session_mounts=() repair_mounts=()
   current_copy_container || { printf 'pi: current workspace has no usable agent-state volume\n' >&2; return 2; }
 
@@ -2157,7 +2136,6 @@ copy_agent_state() {
     source_volume="$COPY_CURRENT_VOLUME"
     source_name="$COPY_CURRENT_NAME"
     source_path="$WORKSPACE"
-    source_fallback="$SESSION_STATE_VOLUME_NAME"
     select_copy_container destination "$source_name" || return $?
     target_volume="$COPY_SELECTED_VOLUME"
     target_name="$COPY_SELECTED_NAME"
@@ -2168,7 +2146,6 @@ copy_agent_state() {
     target_name="$COPY_CURRENT_NAME"
     target_state="$COPY_CURRENT_STATE"
     target_path="$WORKSPACE"
-    target_fallback="$SESSION_STATE_VOLUME_NAME"
     select_copy_container source "$target_name" || return $?
     source_volume="$COPY_SELECTED_VOLUME"
     source_name="$COPY_SELECTED_NAME"
@@ -2190,8 +2167,8 @@ copy_agent_state() {
   # Sessions are copied unless category flags exclude them.
   repair_mounts=(-v "$target_volume:/state")
   if [[ "$COPY_SESSIONS" == true || ( "$COPY_AUTH" == false && "$COPY_EXTENSIONS" == false ) ]]; then
-    source_sessions="$(copy_session_volume "$source_name" "$source_path" "$source_fallback")" || return 2
-    target_sessions="$(copy_session_volume "$target_name" "$target_path" "$target_fallback")" || return 2
+    source_sessions="$(copy_session_volume "$source_path")" || return 2
+    target_sessions="$(copy_session_volume "$target_path")" || return 2
     [[ "$source_sessions" != "$target_sessions" ]] || { printf 'pi: source and destination are the same session volume\n' >&2; return 2; }
     session_mounts=(-v "$source_sessions:/state-source/sessions:ro" -v "$target_sessions:/state-target/sessions")
     repair_mounts+=(-v "$target_sessions:/sessions")

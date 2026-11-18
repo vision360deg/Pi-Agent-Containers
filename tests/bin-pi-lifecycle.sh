@@ -240,8 +240,7 @@ for command in stop remove; do
 done
 
 # --- list ---
-# Alpha has an unused extra state volume; delta runs on its legacy extra
-# volume, which still carries the normal agent kind label.
+# Alpha has an unused extra state volume; delta runs on its extra volume.
 ALPHA_EXTRA=$(extra_volume /tmp/workspaces/alpha)
 DELTA_EXTRA=$(extra_volume /tmp/workspaces/delta)
 
@@ -265,7 +264,7 @@ list_stacks() {
   fake_volume pi-agents-ws-alpha_pi-agent-state /tmp/workspaces/alpha agent 2026-08-08T12:30:00Z
   fake_volume pi-agents-ws-zeta_pi-agent-state /tmp/workspaces/zeta agent 2026-08-08T13:30:00Z
   fake_volume "$ALPHA_EXTRA" /tmp/workspaces/alpha agent-extra 2026-08-09T12:30:00Z
-  fake_volume "$DELTA_EXTRA" /tmp/workspaces/delta agent 2026-08-09T13:30:00Z
+  fake_volume "$DELTA_EXTRA" /tmp/workspaces/delta agent-extra 2026-08-09T13:30:00Z
   mkdir -p "$CONFIG_DIR"
 }
 
@@ -311,7 +310,7 @@ run_pi "$WS" list
 assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list - 'seed, latest')" 'list output, zeta seed'
 assert_read_only_docker_calls
 
-# A legacy seed pointer naming an extra volume is not shown as the seed.
+# A seed pointer naming an extra volume is not shown as the seed.
 printf '%s\n' "$DELTA_EXTRA" > "$SEED_FILE"
 run_pi "$WS" list
 assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list - latest)" 'list output, extra seed'
