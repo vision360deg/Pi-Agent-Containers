@@ -111,7 +111,8 @@ INPUT='c\n'
 run_pi "$PATH_2"
 [[ $STATUS -ne 0 ]] || fail 'collision cancel unexpectedly succeeded'
 assert_log_lacks 'rename'
-assert_output_has '¡¡¡ WARNING !!!'
+assert_output_has '¡¡¡ WARNING !!! Renaming/recreating the existing container may interrupt processes currently running inside it.'
+assert_output_has $'Choose:\n  [r] Rename/recreate the existing container\n  [k] Keep it unchanged and disambiguate this workspace\n  [c] Cancel\n\nChoice [c]: '
 
 INPUT='r\n'
 run_pi "$PATH_2"
@@ -140,7 +141,7 @@ stack_1
 fake_container "$TARGET_1" "$PATH_1" exited
 run_pi "$PATH_1"
 [[ $STATUS -ne 0 ]] || fail 'duplicate workspace stacks unexpectedly succeeded'
-assert_output_has "multiple managed stacks found for workspace: $PATH_1"
+assert_output_has "pi: multiple stacks found for workspace: $PATH_1"
 assert_log_lacks ' up '
 
 # `pi --rm` one-off containers live in the workspace's own project, so a

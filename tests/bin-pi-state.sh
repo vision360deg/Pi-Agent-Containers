@@ -169,8 +169,7 @@ assert_status 0
 assert_eq "$(target_volume)" "$NORMAL" 'agent state volume'
 assert_log_has 'up --detach --force-recreate pi'
 assert_eq "$(container_field pi-agents-pi-workspace mount./home/node/.pi/agent)" "$NORMAL" 'mounted agent state'
-assert_output_has "pi: warning: an extra state volume $EXTRA exists and is not in use"
-assert_output_has 'pi remove --all'
+assert_output_has "pi: warning: an extra state volume $EXTRA exists and is not in use; use it with --new-state, or remove it with \`pi remove --all\` (also removes the normal state volumes)"
 
 # A container already on the normal volume is reused, still with the warning.
 run_pi "$WS"

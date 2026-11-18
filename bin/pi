@@ -599,7 +599,7 @@ if [[ "${1:-}" == "-" ]]; then
   PASSTHROUGH_MARKER=true
   shift
   if [[ $# -eq 0 ]]; then
-    printf 'pi: - requires a Pi command\n' >&2
+    printf 'pi: - requires a Pi argument\n' >&2
     fail 'usage: pi - PI_ARGS...'
   fi
 fi
@@ -674,13 +674,19 @@ esac
 [[ ! ( "$FORCE_BASH" == true && "$FORCE_ZSH" == true ) ]] || fail '--bash and --zsh are mutually exclusive'
 [[ ! ( "$REPLACE_CONTAINER" == true && "$KEEP_EXISTING" == true ) ]] || fail '--replace and --keep-existing are mutually exclusive'
 [[ ! ( "$SEED_STATE" == true && "$NEW_STATE" == true ) ]] ||
-  fail '--seed cannot be combined with --new-state; the extra state volume is never a seed'
+  fail '--new-state and --seed are mutually exclusive; the extra state volume is never a seed'
 [[ ! ( "$LATEST_STATE" == true && "$NEW_STATE" == true ) ]] ||
-  fail '--latest-state cannot be combined with --new-state; the extra state volume is never seeded'
+  fail '--new-state and --latest-state are mutually exclusive; the extra state volume is never seeded'
 [[ ! ( "$COPY_FROM" == true && "$COPY_TO" == true ) ]] || fail '--from and --to are mutually exclusive'
+if [[ "$REMOVE_AFTER_RUN" == true ]]; then
+  [[ "$REPLACE_CONTAINER" != true ]] || fail '--rm cannot be combined with --replace'
+  [[ "$KEEP_EXISTING" != true ]] || fail '--rm cannot be combined with --keep-existing'
+  [[ "$SEED_STATE" != true && "$LATEST_STATE" != true ]] || fail '--seed and --latest-state require a persistent workspace stack'
+  [[ "$COMMAND" == run ]] || fail "--rm cannot be combined with $COMMAND"
+fi
 case "$COMMAND" in
   list)
-    if [[ "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true ||
+    if [[ "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true ||
       "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true ||
       "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true || "$WORKSPACE_OPTION" == true ]]; then
       fail 'usage: pi list'
@@ -688,14 +694,13 @@ case "$COMMAND" in
     ;;
   copy)
     [[ "$REBUILD_IMAGE" != true ]] || fail '--rebuild cannot be combined with copy'
-    [[ "$REMOVE_AFTER_RUN" != true ]] || fail '--rm cannot be combined with copy'
     if [[ "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true ||
       "$SEED_STATE" == true || "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true ]]; then
       fail 'copy cannot be combined with launch, state, or OAuth options'
     fi
     ;;
   shell)
-    if [[ "$REMOVE_AFTER_RUN" == true || "$REPLACE_CONTAINER" == true ||
+    if [[ "$REPLACE_CONTAINER" == true ||
       "$KEEP_EXISTING" == true || "$NEW_STATE" == true || "$SEED_STATE" == true ||
       "$LATEST_STATE" == true || "$OAUTH_CALLBACK" == true ]]; then
       printf 'pi: shell cannot be combined with lifecycle, state, or OAuth options\n' >&2
@@ -704,7 +709,6 @@ case "$COMMAND" in
     ;;
   stop|remove)
     [[ "$OAUTH_CALLBACK" != true ]] || fail "--oauth cannot be combined with $COMMAND"
-    [[ "$REMOVE_AFTER_RUN" != true ]] || fail "--rm cannot be combined with $COMMAND; $COMMAND targets the persistent service"
     [[ "$REBUILD_IMAGE" != true ]] || fail "--rebuild cannot be combined with $COMMAND"
     if [[ "$REPLACE_CONTAINER" == true || "$KEEP_EXISTING" == true || "$NEW_STATE" == true ||
       "$SEED_STATE" == true || "$LATEST_STATE" == true ]]; then
@@ -715,14 +719,8 @@ case "$COMMAND" in
     if [[ "$REPLACE_CONTAINER" == true || "$REBUILD_IMAGE" == true || "$KEEP_EXISTING" == true ]]; then
       fail '--rebuild, --replace, and --keep-existing cannot be combined with update'
     fi
-    [[ "$REMOVE_AFTER_RUN" != true ]] || fail '--rm cannot be combined with update; updates require the persistent service'
     ;;
 esac
-if [[ "$REMOVE_AFTER_RUN" == true ]]; then
-  [[ "$REPLACE_CONTAINER" != true ]] || fail '--rm cannot be combined with --replace'
-  [[ "$KEEP_EXISTING" != true ]] || fail '--rm cannot be combined with --keep-existing'
-  [[ "$SEED_STATE" != true && "$LATEST_STATE" != true ]] || fail '--seed and --latest-state require a persistent workspace stack'
-fi
 
 create_oauth_override
 
@@ -1271,7 +1269,7 @@ warn_extra_state_volume() {
     printf 'pi: warning: using the extra state volume %s; the normal state volume %s is untouched\n' \
       "$EXTRA_AGENT_STATE_VOLUME_NAME" "$NORMAL_AGENT_STATE_VOLUME_NAME" >&2
   else
-    printf 'pi: warning: an extra state volume %s exists and is not in use (use it with --new-state; remove it with `pi remove --all`)\n' \
+    printf 'pi: warning: an extra state volume %s exists and is not in use; use it with --new-state, or remove it with `pi remove --all` (also removes the normal state volumes)\n' \
       "$EXTRA_AGENT_STATE_VOLUME_NAME" >&2
   fi
 }
@@ -1544,7 +1542,7 @@ prompt_collision() {
     printf '¡¡¡ WARNING !!! Renaming/recreating the existing container may interrupt processes currently running inside it.\n\n' >&2
   fi
 
-  printf 'Choose:\n  [r] Rename/recreate the existing container\n  [k] Keep the existing container unchanged\n  [c] Cancel\n\nChoice [c]: ' >&2
+  printf 'Choose:\n  [r] Rename/recreate the existing container\n  [k] Keep it unchanged and disambiguate this workspace\n  [c] Cancel\n\nChoice [c]: ' >&2
   local choice
   if ! IFS= read -r choice; then
     choice="c"
@@ -1625,7 +1623,7 @@ prepare_workspace_container() {
     [[ -n "$path" ]] || continue
     inspect_workspace_container "$name" "$path" || fail "invalid managed container: $name"
     if [[ "$path" == "$WORKSPACE" ]]; then
-      [[ -z "$same_workspace_name" ]] || fail "multiple managed stacks found for workspace: $WORKSPACE"
+      [[ -z "$same_workspace_name" ]] || fail "multiple stacks found for workspace: $WORKSPACE"
       same_workspace_name="$name"
       same_workspace_project="$INSPECTED_PROJECT"
       continue
@@ -1706,12 +1704,12 @@ find_exact_workspace_stack() {
     --format '{{.ID}}\t{{.Names}}\t{{.Label "com.docker.compose.project"}}')" ||
     fail 'could not list workspace stacks'
   while IFS=$'\t' read -r id name project; do
-    [[ -n "$id" && -n "$name" ]] || continue
+    [[ -n "$id" && -n "$name" && -n "$project" ]] || continue
     count=$((count + 1))
     (( count == 1 )) || fail "multiple stacks found for workspace: $WORKSPACE"
-    inspect_workspace_container "$name" "$WORKSPACE" || fail "stack identity does not match workspace: $name"
+    inspect_workspace_container "$name" "$WORKSPACE" "$project" || fail "stack identity does not match workspace: $name"
     CONTAINER_NAME="$name"
-    PROJECT_NAME="$INSPECTED_PROJECT"
+    PROJECT_NAME="$project"
   done <<< "$rows"
   (( count == 1 )) || return 1
   assert_project_available "$PROJECT_NAME" "$WORKSPACE" || fail 'workspace Compose project is shared with another stack'

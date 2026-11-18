@@ -209,7 +209,7 @@ expect_conflict() {
 }
 expect_conflict 'pi: --bash and --zsh are mutually exclusive' --bash --zsh
 expect_conflict 'pi: --replace and --keep-existing are mutually exclusive' --replace --keep-existing
-expect_conflict 'pi: --seed cannot be combined with --new-state' --seed --new-state
+expect_conflict 'pi: --new-state and --seed are mutually exclusive; the extra state volume is never a seed' --seed --new-state
 expect_conflict 'pi: --from and --to are mutually exclusive' copy --from --to
 expect_conflict 'pi: --oauth cannot be combined with stop' --oauth stop
 expect_conflict 'pi: --oauth cannot be combined with remove' --oauth remove
@@ -218,13 +218,24 @@ for option in --replace --keep-existing --new-state --seed --latest-state --oaut
   expect_conflict 'pi: copy cannot be combined with launch, state, or OAuth options' "$option" copy
 done
 expect_conflict 'pi: --rebuild cannot be combined with copy' --rebuild copy
-expect_conflict 'pi: --rm cannot be combined with copy' --rm copy
 expect_conflict 'pi: --rebuild, --replace, and --keep-existing cannot be combined with update' --rebuild update
 expect_conflict 'pi: --rebuild cannot be combined with stop' --rebuild stop
 expect_conflict 'pi: --rebuild cannot be combined with remove' --rebuild remove
 expect_conflict 'pi: usage: pi list' --rebuild list
-expect_conflict 'pi: --rm cannot be combined with update' --rm update
-expect_conflict 'pi: --rm cannot be combined with stop' --rm stop
+# --rm refuses every wrapper command with one message, before the command's
+# own checks.
+for command in stop update list remove shell copy; do
+  run_pi "$WS_A" --rm "$command"
+  assert_status 2
+  assert_eq "$(cat -- "$OUTPUT_LOG")" "pi: --rm cannot be combined with $command" "pi --rm $command output"
+  assert_no_docker
+done
+expect_conflict 'pi: --rm cannot be combined with copy' --rm --rebuild copy
+assert_output_lacks 'pi: --rebuild cannot be combined with copy'
+expect_conflict 'pi: --rm cannot be combined with --replace' --rm --replace update
+assert_output_lacks 'cannot be combined with update'
+expect_conflict 'pi: --seed and --latest-state require a persistent workspace stack' --rm --seed shell
+assert_output_lacks 'shell cannot be combined'
 expect_conflict 'pi: unsupported update option: --unknown' update --unknown
 expect_conflict 'pi: unsupported remove option: --unknown' remove --unknown
 expect_conflict 'pi: usage: pi stop' stop extra
@@ -232,11 +243,12 @@ expect_conflict 'pi: unsupported shell option: --unknown' shell --unknown
 assert_output_has 'pi: usage: pi shell [--root|-r]'
 expect_conflict 'pi: unsupported copy option: --unknown' copy --unknown
 assert_output_has 'pi: usage: pi copy'
-expect_conflict 'pi: - requires a Pi command' -
+expect_conflict 'pi: - requires a Pi argument' -
+assert_eq "$(cat -- "$OUTPUT_LOG")" $'pi: - requires a Pi argument\npi: usage: pi - PI_ARGS...' 'pi - output'
 expect_conflict 'pi: --workspace requires a path' --workspace
 
 # list takes no arguments and no launch options; it prints only its usage.
-for arguments in 'list extra' '--rm list'; do
+for arguments in 'list extra' '--workspace . list' '--oauth list'; do
   # shellcheck disable=SC2086
   run_pi "$WS_A" $arguments
   assert_status 2
@@ -247,7 +259,7 @@ done
 # --new-state with --latest-state is refused and leaves the seed pointer alone.
 mkdir -p "$CONFIG_DIR"
 printf '%s\n' "$(agent_volume "$WS_B")" > "$SEED_FILE"
-expect_conflict 'pi: --latest-state cannot be combined with --new-state' --new-state --latest-state
+expect_conflict 'pi: --new-state and --latest-state are mutually exclusive; the extra state volume is never seeded' --new-state --latest-state
 assert_eq "$(seed_value)" "$(agent_volume "$WS_B")" 'seed pointer after a refused launch'
 
 # Option guards run before workspace validation.
