@@ -266,38 +266,43 @@ assert_source "$SECOND"
 assert_log_has "state-initialization pending $SECOND"
 assert_log_has 'state-initialization complete'
 
-# A pending seed whose recorded source vanished is refused, not restarted.
-restore lineage
-rm -f -- "$FAKE_DOCKER_STATE/volume-data/$SIXTH/.container-initialized"
-fake_volume_file "$SIXTH" .container-initialization-pending pi-agents-ws-gone_pi-agent-state
-run_pi "$WS_F" --version
-[[ $STATUS -ne 0 ]] || fail 'pending seed with a missing source unexpectedly succeeded'
-assert_output_has 'pending agent-state initialization source is unavailable'
-assert_no_source_copy
-assert_log_lacks ' up '
+# A pending seed whose recorded source vanished, or is no longer a managed
+# normal state volume, is refused, not restarted.
+for pending_source in pi-agents-ws-gone_pi-agent-state "$FOURTH"; do
+  restore lineage
+  rm -f -- "$FAKE_DOCKER_STATE/volume-data/$SIXTH/.container-initialized"
+  fake_volume_file "$SIXTH" .container-initialization-pending "$pending_source"
+  run_pi "$WS_F" --version
+  assert_status 2
+  assert_output_has "pi: pending agent-state initialization source is unavailable; restore it before retrying: $pending_source"
+  assert_no_source_copy
+  assert_log_lacks ' up '
+done
 
-# A seed pointer naming an extra state volume is discarded, and the
-# extra volume is not proposed even though it is the oldest.
+# A seed pointer naming an extra state volume is treated as missing but kept,
+# and the extra volume is not proposed even though it is the oldest.
 restore lineage
 fake_record "$FAKE_DOCKER_STATE/volumes/$FOURTH" created=2026-01-01T00:00:00Z
 snapshot recovery
 set_seed "$FOURTH"
 INPUT='n\n'
 run_pi "$WS_G" --version
-[[ $STATUS -ne 0 ]] || fail 'missing-seed confirmation unexpectedly succeeded'
-assert_output_has 'seed pointer was not found'
+assert_status 2
 assert_output_has "$FIRST"
-assert_output_lacks "$FOURTH"
-# Every managed normal state volume is listed with its creation time before
-# the warning and proposal.
-EXPECTED_CANDIDATES='Managed Pi state volumes:'
+assert_output_lacks "  $FOURTH"
+assert_eq "$(seed_value)" "$FOURTH" 'an invalid seed pointer is never deleted as a side effect'
+assert_log_lacks ' up '
+# The warning comes first, then every managed normal state volume with its
+# creation time, then the proposal and the question.
+EXPECTED_PROMPT=$'pi: warning: the seed pointer was not found.\nManaged Pi state volumes:'
 for file in "$TMP_DIR/snapshot-recovery/volumes"/*; do
   grep -qx 'label.com.pi-agents.state-kind=agent' "$file" || continue
-  EXPECTED_CANDIDATES+=$'\n'"  ${file##*/}  ($(sed -n 's/^created=//p' "$file"))"
+  EXPECTED_PROMPT+=$'\n'"  ${file##*/}  ($(sed -n 's/^created=//p' "$file"))"
 done
-EXPECTED_CANDIDATES+=$'\npi: warning: the seed pointer was not found.'
-[[ $(cat -- "$OUTPUT_LOG") == *"$EXPECTED_CANDIDATES"* ]] ||
-  fail "missing-seed prompt did not list the candidates first"$'\n'"expected:"$'\n'"$EXPECTED_CANDIDATES"$'\n'"$(show_run)"
+EXPECTED_PROMPT+=$'\npi: the oldest managed agent-state volume is:\n  '"$FIRST"
+EXPECTED_PROMPT+=$'\npi: use it as the seed for this new workspace? [y/N] pi: seed selection cancelled; workspace was not started'
+[[ $(cat -- "$OUTPUT_LOG") == *$'\n'"$EXPECTED_PROMPT" ]] ||
+  fail "missing-seed prompt"$'\n'"expected:"$'\n'"$EXPECTED_PROMPT"$'\n'"$(show_run)"
 
 # The prompt also accepts yes/YES, and still runs with --latest-state.
 for answer in yes YES; do
@@ -319,16 +324,27 @@ assert_status 0
 assert_source "$FIRST"
 assert_eq "$(seed_value)" "$FIRST" 'seed after answering y'
 
+# The proposed volume is validated again after the answer.
+restore recovery
+rm -f -- "$SEED_FILE"
+INPUT_COMMAND="until grep -Fq '[y/N]' '$OUTPUT_LOG'; do sleep 0.05; done; rm -f -- '$FAKE_DOCKER_STATE/volumes/$FIRST'; printf 'y\\n'"
+run_pi "$WS_G" --version
+INPUT_COMMAND=''
+assert_status 2
+assert_output_has 'pi: selected seed volume is no longer valid'
+[[ ! -e $SEED_FILE ]] || fail "an invalidated proposal became the seed: $(seed_value)"
+assert_log_lacks ' up '
+
 # Launching an already-initialized workspace while the pointer is missing, or
-# names a volume that is gone, never silently makes it the seed: the pointer
-# is deleted and stays missing so the next new workspace gets the confirmation.
+# names a volume that is gone, never makes it the seed, and the pointer file is
+# left as it was so the next new workspace gets the confirmation.
 for stale_pointer in '' pi-agents-ws-gone_pi-agent-state; do
   restore lineage
   rm -f -- "$SEED_FILE"
   [[ -z $stale_pointer ]] || set_seed "$stale_pointer"
   run_pi "$WS_F" --version
   assert_status 0
-  [[ ! -e $SEED_FILE ]] || fail "initialized workspace became the seed: $(seed_value)"
+  assert_eq "$(seed_value)" "$stale_pointer" 'seed pointer after launching an initialized workspace'
   assert_output_lacks 'seed pointer was not found'
 done
 

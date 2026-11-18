@@ -952,10 +952,6 @@ agent_state_volume_workspace() {
   printf '%s' "$workspace"
 }
 
-is_extra_agent_state_volume() {
-  [[ -n "$1" && "$(docker volume inspect --format '{{index .Labels "com.pi-agents.state-kind"}}' "$1" 2>/dev/null)" == agent-extra ]]
-}
-
 extra_agent_state_volume_for_workspace() {
   printf '%s%s_pi-agent-state' "$EXTRA_AGENT_STATE_PREFIX" "$(workspace_hash "$1")"
 }
@@ -1037,19 +1033,17 @@ find_agent_state_volume_by_age() {
   printf '%s' "$selected"
 }
 
-bootstrap_seed_pointer() {
-  local seed
-
-  seed="$(read_seed_pointer)"
-  if [[ -n "$seed" ]] && { is_extra_agent_state_volume "$seed" || ! volume_exists "$seed"; }; then
-    clear_seed_pointer
-  fi
+# A valid seed or pending source is a managed normal agent-state volume
+# labelled with an absolute workspace path.
+is_managed_agent_state_volume() {
+  agent_state_volume_workspace "$1" >/dev/null
 }
 
 print_agent_state_volume_candidates() {
   local candidate created
   printf 'Managed Pi state volumes:\n' >&2
   while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
     created="$(volume_created_at "$candidate" || true)"
     printf '  %s  (%s)\n' "$candidate" "${created:-unknown creation time}" >&2
   done < <(list_managed_agent_state_volumes)
@@ -1059,13 +1053,14 @@ confirm_missing_seed_pointer() {
   local candidate="$1"
   local answer="n"
 
-  print_agent_state_volume_candidates
   printf 'pi: warning: the seed pointer was not found.\n' >&2
+  print_agent_state_volume_candidates
   printf 'pi: the oldest managed agent-state volume is:\n  %s\n' "$candidate" >&2
   printf 'pi: use it as the seed for this new workspace? [y/N] ' >&2
   if IFS= read -r answer; then
     case "$answer" in
       y|Y|yes|YES)
+        is_managed_agent_state_volume "$candidate" || fail 'selected seed volume is no longer valid'
         write_seed_pointer "$candidate"
         return 0
         ;;
@@ -1143,19 +1138,11 @@ prepare_state_lineage() {
   STATE_VOLUME_ALREADY_INITIALIZED=false
   STATE_INITIALIZATION_PENDING=false
   STATE_INITIAL_SOURCE=''
-  # The extra state volume starts empty and is never seeded, so no seed
-  # pointer or source logic runs; it is only marked initialized.
-  if [[ "$NEW_STATE" == true ]]; then
-    if volume_exists "$ACTIVE_AGENT_STATE_VOLUME_NAME"; then
-      assert_agent_state_volume
-      if state_initialization_status; then
-        STATE_VOLUME_ALREADY_INITIALIZED=true
-      fi
-    fi
-    return 0
-  fi
-  if volume_exists "$ACTIVE_AGENT_STATE_VOLUME_NAME"; then
-    assert_agent_state_volume
+  # The extra --new-state volume is never seeded and never a seed candidate.
+  [[ "$NEW_STATE" != true ]] || return 0
+  ensure_helper_image
+  if volume_exists "$NORMAL_AGENT_STATE_VOLUME_NAME"; then
+    assert_managed_state_volume "$NORMAL_AGENT_STATE_VOLUME_NAME" "$WORKSPACE" agent
     if state_initialization_status; then initialization_status=0; else initialization_status=$?; fi
     case "$initialization_status" in
       0) STATE_VOLUME_ALREADY_INITIALIZED=true ;;
@@ -1163,7 +1150,7 @@ prepare_state_lineage() {
       11)
         # Volumes initialized before the markers existed, or filled by
         # `pi copy`, keep their state and are marked complete.
-        if state_volume_has_auth_or_settings "$ACTIVE_AGENT_STATE_VOLUME_NAME"; then
+        if state_volume_has_auth_or_settings "$NORMAL_AGENT_STATE_VOLUME_NAME"; then
           STATE_VOLUME_ALREADY_INITIALIZED=true
           mark_state_initialization complete
         else
@@ -1174,60 +1161,57 @@ prepare_state_lineage() {
       *) fail 'could not inspect agent-state initialization status' ;;
     esac
     if [[ "$STATE_VOLUME_ALREADY_INITIALIZED" == true ]]; then
-      bootstrap_seed_pointer
-      if [[ "$LATEST_STATE" == true ]]; then
+      [[ "$LATEST_STATE" != true ]] ||
         printf 'pi: warning: --latest-state has no effect; this workspace already has initialized agent state\n' >&2
-      fi
       return 0
     fi
   fi
-
   if [[ "$STATE_INITIALIZATION_PENDING" == true ]]; then
-    STATE_INITIAL_SOURCE="$(docker run --rm --user 0:0 -v "$ACTIVE_AGENT_STATE_VOLUME_NAME:/state:ro" "$HELPER_IMAGE" cat /state/.container-initialization-pending)" ||
+    STATE_INITIAL_SOURCE="$(docker run --rm --user 0:0 -v "$NORMAL_AGENT_STATE_VOLUME_NAME:/state:ro" "$HELPER_IMAGE" cat /state/.container-initialization-pending)" ||
       fail 'could not read the pending agent-state initialization source'
-    if [[ -z "$STATE_INITIAL_SOURCE" || "$STATE_INITIAL_SOURCE" == "$ACTIVE_AGENT_STATE_VOLUME_NAME" ]] || ! volume_exists "$STATE_INITIAL_SOURCE"; then
+    [[ -n "$STATE_INITIAL_SOURCE" && "$STATE_INITIAL_SOURCE" != "$NORMAL_AGENT_STATE_VOLUME_NAME" ]] &&
+      is_managed_agent_state_volume "$STATE_INITIAL_SOURCE" ||
       fail "pending agent-state initialization source is unavailable; restore it before retrying: ${STATE_INITIAL_SOURCE:-unknown}"
-    fi
     return 0
   fi
-
-  bootstrap_seed_pointer
+  # A missing or invalid seed is confirmed first, even with --latest-state.
   seed="$(read_seed_pointer)"
-  if [[ -z "$seed" ]]; then
+  if [[ -z "$seed" || "$seed" == "$NORMAL_AGENT_STATE_VOLUME_NAME" ]] || ! is_managed_agent_state_volume "$seed"; then
+    seed=''
     candidate="$(find_agent_state_volume_by_age oldest "$NORMAL_AGENT_STATE_VOLUME_NAME")"
     if [[ -n "$candidate" ]]; then
-      confirm_missing_seed_pointer "$candidate" || return $?
+      confirm_missing_seed_pointer "$candidate" || exit
+      seed="$candidate"
     fi
   fi
-
-  STATE_INITIAL_SOURCE="$(select_state_source)"
-}
-
-select_state_source() {
-  local source=""
-  bootstrap_seed_pointer
   if [[ "$LATEST_STATE" == true ]]; then
-    source="$(find_agent_state_volume_by_age newest "$NORMAL_AGENT_STATE_VOLUME_NAME")"
+    STATE_INITIAL_SOURCE="$(find_agent_state_volume_by_age newest "$NORMAL_AGENT_STATE_VOLUME_NAME")"
   else
-    source="$(read_seed_pointer)"
-  fi
-
-  if [[ -n "$source" && "$source" != "$ACTIVE_AGENT_STATE_VOLUME_NAME" ]] && volume_exists "$source"; then
-    printf '%s' "$source"
+    STATE_INITIAL_SOURCE="$seed"
   fi
 }
 
 initialize_agent_state() {
-  local probe_status
+  local probe_status initialization_status
 
   # A per-workspace volume is seeded once from an existing state volume. The
   # source is mounted read-only and sessions are excluded so each workspace
   # starts with common login/configuration files but not another agent's
   # conversation history.
   [[ "$STATE_VOLUME_ALREADY_INITIALIZED" != true ]] || return 0
+  ensure_helper_image
+  if [[ "$NEW_STATE" == true ]]; then
+    # Mark the empty extra volume initialized so no seeding logic ever runs.
+    if state_initialization_status; then initialization_status=0; else initialization_status=$?; fi
+    case "$initialization_status" in
+      0) return 0 ;;
+      10|11) mark_state_initialization complete; return ;;
+      *) fail 'could not inspect agent-state initialization status' ;;
+    esac
+  fi
   if [[ -n "$STATE_INITIAL_SOURCE" ]]; then
     if [[ "$STATE_INITIALIZATION_PENDING" != true ]]; then
-      if state_volume_has_auth_or_settings "$ACTIVE_AGENT_STATE_VOLUME_NAME"; then
+      if state_volume_has_auth_or_settings "$NORMAL_AGENT_STATE_VOLUME_NAME"; then
         fail 'refusing to seed an agent-state volume that already contains auth or settings'
       else
         probe_status=$?
@@ -1237,7 +1221,7 @@ initialize_agent_state() {
     mark_state_initialization pending "$STATE_INITIAL_SOURCE"
     docker run --rm --user 0:0 \
       -v "$STATE_INITIAL_SOURCE:/state-source:ro" \
-      -v "$ACTIVE_AGENT_STATE_VOLUME_NAME:/state-target" \
+      -v "$NORMAL_AGENT_STATE_VOLUME_NAME:/state-target" \
       "$HELPER_IMAGE" \
       sh -c 'set -eu; find /state-source -mindepth 1 -maxdepth 1 ! -name sessions ! -name .container-initialized ! -name ".container-initialization*" -exec cp -a {} /state-target/ \; ; chown -R 1000:1000 /state-target'
   fi
@@ -1290,39 +1274,34 @@ warn_extra_state_volume() {
   fi
 }
 
-# The pointer is written for --seed, or when this is the first stack: no other
-# managed normal agent-state volume exists. With other volumes and no pointer,
-# it stays unset so the next new workspace asks which state to seed from
-# instead of an already-initialized workspace silently becoming the seed.
+# The seed moves only for --seed. A missing or invalid pointer is claimed only
+# by the first stack: with other managed normal agent-state volumes it stays
+# unset so the next new workspace asks which state to seed from instead of an
+# already-initialized workspace silently becoming the seed.
 record_state_lineage() {
-  local seed volume
+  local seed candidate
 
-  # The extra state volume never becomes the seed.
-  [[ "$ACTIVE_AGENT_STATE_VOLUME_NAME" != "$EXTRA_AGENT_STATE_VOLUME_NAME" ]] || return 0
+  # A run on the extra state volume never records it as the seed.
+  [[ "$NEW_STATE" != true ]] || return 0
   if [[ "$SEED_STATE" == true ]]; then
-    write_seed_pointer "$ACTIVE_AGENT_STATE_VOLUME_NAME"
+    write_seed_pointer "$NORMAL_AGENT_STATE_VOLUME_NAME"
     return 0
   fi
-  bootstrap_seed_pointer
   seed="$(read_seed_pointer)"
-  [[ -z "$seed" ]] || return 0
-  while IFS= read -r volume; do
-    [[ "$volume" == "$ACTIVE_AGENT_STATE_VOLUME_NAME" ]] || return 0
+  if [[ -n "$seed" ]] && is_managed_agent_state_volume "$seed"; then return 0; fi
+  while IFS= read -r candidate; do
+    [[ -z "$candidate" || "$candidate" == "$NORMAL_AGENT_STATE_VOLUME_NAME" ]] || return 0
   done < <(list_managed_agent_state_volumes)
-  write_seed_pointer "$ACTIVE_AGENT_STATE_VOLUME_NAME"
+  write_seed_pointer "$NORMAL_AGENT_STATE_VOLUME_NAME"
 }
 
+# Keeps a seed that is still a managed normal agent-state volume; otherwise
+# moves it to the oldest remaining one, or deletes the pointer when none remain.
 repoint_seed_after_removal() {
-  local seed
-  local candidate
-
-  bootstrap_seed_pointer
+  local seed candidate
   seed="$(read_seed_pointer)"
-  if [[ -n "$seed" ]] && volume_exists "$seed"; then
-    return 0
-  fi
-
-  candidate="$(find_agent_state_volume_by_age oldest "$NORMAL_AGENT_STATE_VOLUME_NAME")"
+  if [[ -n "$seed" ]] && is_managed_agent_state_volume "$seed"; then return 0; fi
+  candidate="$(find_agent_state_volume_by_age oldest)"
   if [[ -n "$candidate" ]]; then
     write_seed_pointer "$candidate"
     printf 'pi: the previous seed was removed; seed reassigned to oldest state %s\n' "$candidate" >&2

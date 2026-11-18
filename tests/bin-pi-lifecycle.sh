@@ -209,6 +209,18 @@ assert_log_has "volume rm $BROWSER_1"
 assert_log_has "volume rm $EXTRA_1"
 INPUT=''
 
+# Repointing considers every managed normal state, including this workspace's
+# own volume when it is kept.
+leftovers
+fake_volume pi-agents-ws-newer_pi-agent-state /tmp/workspaces/newer agent 2026-08-07T12:00:00Z
+mkdir -p "$CONFIG_DIR"
+printf '%s\n' pi-agents-ws-gone_pi-agent-state > "$SEED_FILE"
+INPUT='s\n2\n'
+run_pi "$PATH_1" remove --all
+INPUT=''
+assert_status 0
+assert_eq "$(seed_value)" "$NORMAL_1" 'seed pointer after removing state beside a kept own volume'
+
 # remove --all of the seed volume repoints the seed at the oldest remaining
 # agent state; no volume carries this workspace's label.
 SEEDED=$(make_workspace "$TEST_HOME/projects/seeded")

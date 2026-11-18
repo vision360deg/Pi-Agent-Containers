@@ -312,11 +312,14 @@ overrides its directory (see [Configuration](#configuration)). If the pointer
 is missing but managed state volumes exist, the wrapper lists every managed
 normal state volume with its creation time, proposes the oldest as the seed,
 and asks for confirmation (`y` or `yes`) before initializing a new workspace,
-even with `--latest-state`. A pointer naming an extra state volume is discarded
-the same way. Launching an already-initialized workspace never fills a missing
-pointer on its own; only `--seed` does. Removing the current seed with
-`pi remove --all` reassigns the pointer to the oldest remaining normal state,
-if one exists, and otherwise deletes the pointer file.
+even with `--latest-state`; the proposed volume is checked again after the
+answer, and declining or end of input exits with status 2. A pointer that does
+not name a managed normal state volume, such as a removed volume or an extra
+state volume, is treated as missing the same way; launches never delete the
+pointer file. Launching an already-initialized workspace never fills
+a missing pointer on its own; only `--seed` does. Removing the current seed
+with `pi remove --all` reassigns the pointer to the oldest remaining normal
+state, if one exists, and otherwise deletes the pointer file.
 
 `pi list` reports each stack, sorted by container name, with its workspace
 path, project/container names, Docker timestamps, the mounted `agent-state`
