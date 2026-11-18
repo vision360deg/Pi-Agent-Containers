@@ -13,13 +13,9 @@ assert_no_docker() {
   [[ ! -s $DOCKER_LOG ]] || fail "docker must not run"$'\n'"$(show_run)"
 }
 
-# help_has TEXT / help_lacks TEXT: TEXT, which may span lines, is (not) in the output.
+# help_has TEXT: TEXT, which may span lines, is in the output.
 help_has() {
   [[ $(cat -- "$OUTPUT_LOG") == *"$1"* ]] || fail "output lacks: $1"$'\n'"$(show_run)"
-}
-
-help_lacks() {
-  [[ $(cat -- "$OUTPUT_LOG") != *"$1"* ]] || fail "output unexpectedly has: $1"$'\n'"$(show_run)"
 }
 
 # The Compose subcommands (first two words) and helper containers the last run
@@ -70,108 +66,68 @@ run_pi "$WS_A" --help
 assert_status 0
 assert_no_docker
 DETAILED_HELP=$(cat -- "$OUTPUT_LOG")
+assert_eq "$(grep -E '^[A-Z][A-Za-z ]*:$' "$OUTPUT_LOG" | tr '\n' ' ')" \
+  'Usage: Options: Commands: Examples: Restrictions: Passthrough and help: ' 'detailed help sections'
 help_has 'Containerized Pi wrapper'
-help_has 'pi-agent-browser-native package'
-help_has 'pi --replace'
-help_has 'pi --keep-existing'
-help_has '--workspace PATH'
-help_has 'Takes precedence over PI_WORKSPACE'
-help_has 'pi update --extensions'
-help_has '# Update Pi-managed extensions.'
-help_has 'pi update --models'
-help_has "# Update Pi's model catalogs."
-help_has 'pi list'
-help_has 'List running and stopped persistent Pi stacks with workspace, project,'
-help_has 'Docker creation/start timestamps, agent-state volume, and seed/latest markers.'
-help_has $'  list\n      List running and stopped persistent Pi stacks with workspace, project,\n      Docker creation/start timestamps, agent-state volume, and seed/latest markers.'
-help_has 'pi list                             # Inventory persistent Pi stacks without changing Docker state.'
-help_has 'list accepts no positional arguments and does not change Docker state.'
-help_has 'pi remove --all'
-help_has '# Also remove Pi and browser persisted state.'
-help_has '--new-state'
-help_has 'pi --new-state'
-help_has 'Run this workspace against its extra agent-state volume,'
-help_has 'The extra volume starts empty and is never seeded, never becomes'
-help_has 'active-state says whether the container mounts the normal or extra agent'
-help_has 'browser state volumes, including the extra state volume.'
-help_has 'from an existing'
-help_has 'normal workspace state volume'
-help_has '--seed'
-help_has '--latest-state'
-help_has "provisions the workspace's named volumes"
-help_has '~/.config/pi-agent-containers/seed'
-help_has 'PI_AGENT_CONTAINERS_CONFIG_PATH overrides the seed-pointer directory when needed.'
-help_has 'oldest managed state volume'
-help_has '--oauth'
-help_has 'Known fixed callbacks 1455 (OpenAI Codex), 53692'
-help_has '(Anthropic), and 51121 (pi-antigravity) are always published.'
-help_has 'PI_OAUTH_CALLBACK_PORTS adds ports from the'
-help_has 'pi --oauth 7000,7001'
-help_has 'pi install npm:pi-web-access'
-help_has 'Wrapper commands take precedence when names collide'
-help_has 'pi [--workspace PATH] shell [--root|-r]'
-help_has 'Open a shell in the current workspace container'
-help_has '--root'
-help_has 'pi shell --root'
-help_has 'pi [--workspace PATH] copy [--from|--to]'
-help_has '[--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]'
-help_has '[--oauth [PORTS...]] --rm [PI_ARGS...]'
-help_has $'--rm cannot be combined with stop, update, remove, list, shell, copy, --replace,\n  --keep-existing, --seed, or --latest-state.'
-help_has '--replace and --keep-existing are mutually exclusive.'
-help_has '--oauth cannot be combined with stop or remove.'
-help_has '--from and --to are mutually exclusive.'
-help_has $'remove,\n  shell, and copy are handled by this wrapper'
-help_has 'rc mount is reconciled with Compose up'
-help_has '--sessions, -s'
-help_has '--auth, -a'
-help_has '--extensions, -e'
-help_has '--override replaces duplicates automatically.'
-help_has 'pi [--workspace PATH] - PI_ARGS...'
-help_has 'pi - list'
-help_has '0) Start a new project'
-help_has 'X) Press Esc to cancel'
-help_has 'Existing running and stopped containers are both considered during collision'
-help_has 'Persistent Pi session records are streamed as readable, colored events'
-help_has 'The session volume remains the'
-help_has 'durable JSONL source.'
-help_has 'Wrapper-managed package and model'
-help_has 'so ~/src/my.project becomes pi-agents-pi-my-project.'
-help_has $'pointer is missing while managed state volumes exist, pi lists them with\n  their creation times, warns, proposes the oldest managed state volume as the\n  seed, and asks for confirmation (y or yes) before initializing a new\n  workspace, even with --latest-state. Launching an already-initialized\n  workspace leaves a missing pointer unset unless --seed is given.'
-help_has $'list ten or more containers, a choice starting with 1-9 is a number\n      confirmed with Enter (prompt: Choice (number, then Enter)).'
-help_has 'update output is mirrored there too.'
-help_has 'PI_SESSION_LOG_FORMAT=raw'
-help_has 'PI_SESSION_LOG_COLOR=never'
-help_has '--bash'
-help_has '--zsh'
-help_has '--no-rc-config'
-help_has '--rebuild'
-help_has '.bash_profile'
-help_has '.bashrc'
-help_has '.zshenv'
-help_has '.zprofile'
-help_has '.zshrc'
-help_has '.zlogin'
-help_has 'recursively'
-help_has 'service bootstrap remains Bash'
-help_has 'Use --rebuild to explicitly build the image with the cache.'
-help_has 'pi update performs a pull and no-cache rebuild.'
-help_has 'A stale image is reported'
-help_has 'use pi update or --rebuild to recover.'
-help_has '--rebuild cannot be combined with update, stop, remove, list, or copy.'
+help_has $'  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]\n     [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]'
+help_has $'[--oauth [PORTS...]]\n     --rm [PI_ARGS...]'
 help_has 'pi [--workspace PATH] --host [PI_ARGS...]'
-help_has 'Run native Pi on the host instead of Docker'
+help_has 'pi [--workspace PATH] update [--extensions] [--models]'
+help_has $'\n  pi list\n'
+help_has 'pi [--workspace PATH] shell [--root|-r]'
+help_has $'pi [--workspace PATH] copy [--from|--to] [-s|--sessions] [-a|--auth] [-e|--extensions]\n     [--all] [--override]'
+help_has 'pi [--workspace PATH] - PI_ARGS...'
+help_has 'it overrides PI_WORKSPACE. Relative paths resolve from the'
+help_has '--workspace=PATH also works.'
+help_has 'the workspace state volumes are still used.'
 help_has '${PI_CODING_AGENT_DIR:-~/.pi/agent}/bin/pi'
 help_has 'curl -fsSL https://pi.dev/install.sh | sh'
-help_has 'pi --host update'
-help_has 'pi --host - --help'
-help_has '(list, stop, remove, copy) do'
-help_has '--host accepts only --workspace'
-help_has '--new-state cannot be combined with stop, remove, --seed, or --latest-state.'
-help_has 'Before starting, pi refuses a selected port that something else already'
-[[ $DETAILED_HELP == *'exits'*'with status 3.'* ]] || fail 'detailed help lacks the picker cancel status'
-help_lacks 'without creating Compose resources'
-help_has 'pi copy'
-help_has '--override'
+help_has "which uses the host's ~/.pi/agent state, not workspace volumes."
+help_has 'Build the image with the Docker build cache before this launch;'
+help_has 'give this workspace a disambiguated name.'
+help_has "Run on this workspace's extra agent-state volume, created empty"
+help_has 'Launches warn while the extra volume exists.'
+help_has 'The pointer is ~/.config/pi-agent-containers/seed;'
+help_has 'PI_AGENT_CONTAINERS_CONFIG_PATH overrides its directory.'
+help_has 'Once the workspace has state, it only warns.'
+help_has '--bash, --zsh       Use Bash or zsh for Pi and shell processes'
+help_has '--no-rc-config      Start the selected shell without the generated host startup'
+help_has $'1455\n                      (OpenAI Codex), 53692 (Anthropic), and 51121 (pi-antigravity),'
+help_has 'PI_OAUTH_CALLBACK_PORTS.'
+help_has 'but a --rm run'
+help_has 'Fails when the workspace has no stack.'
+help_has 'Rebuild the image with a fresh pull and no build cache, then'
+help_has "update --extensions Start the persistent service and run Pi's extension update."
+help_has "update --models     Start the persistent service and update Pi's model catalogs."
+help_has 'seed/latest markers. It does not change Docker state.'
+help_has 'a warning names a kept extra state volume.'
+help_has 'the oldest remaining managed state becomes the'
+help_has 'whether to leave them (default), delete all, or delete some.'
+help_has 'first reconciled with Compose up.'
+help_has '`0) Start a new project`'
+help_has '`X) Press Esc to cancel`'
+help_has "(root) instead of the image's node user."
+help_has 'sessions, provider auth, and extensions are'
+help_has 'duplicates prompt r=replace, s=skip, a=replace all, q=cancel,'
+help_has 'and --override replaces them.'
+help_has 'exits with status 3.'
+help_has $'In the shell and copy pickers a choice is a single key; with ten or more\n  containers, a choice starting with 1-9 is a number confirmed with Enter.'
+help_has 'pi --host update                 # Update the native Pi installation.'
+help_has 'pi install npm:pi-web-access'
+help_has "pi - update                      # Pi's update command, run in the container."
+help_has '--bash and --zsh are mutually exclusive.'
+help_has '--replace and --keep-existing are mutually exclusive.'
+help_has '--new-state cannot be combined with --seed or --latest-state.'
+help_has $'--rm cannot be combined with stop, update, remove, list, shell, copy, --replace,\n  --keep-existing, --seed, or --latest-state.'
+help_has $'--rebuild cannot be combined with stop, update, remove, list, or copy; with\n  shell it can only rebuild the current workspace\'s image.'
+help_has $'--replace, --keep-existing, --new-state, --seed, --latest-state, and --oauth\n  cannot be combined with stop, remove, list, shell, or copy.'
+help_has '--host accepts only --workspace among wrapper options;'
+help_has 'list accepts no arguments, rejects --workspace, and does not change Docker state.'
+help_has '--from and --to are mutually exclusive.'
+help_has 'prompts for action and defaults to cancel.'
+help_has 'a leading `-` sends'
+help_has 'Exact `pi -h` or `pi --help` shows this help; a help flag with other arguments'
+help_has '`pi --host - --help` shows native Pi'
 run_pi "$WS_A" -h
 assert_status 0
 assert_eq "$(cat -- "$OUTPUT_LOG")" "$DETAILED_HELP" '-h prints the same detailed help'
@@ -186,79 +142,38 @@ Usage:
   pi [-h|--help]
   pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
      [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]
-  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] --rm [PI_ARGS...]
+  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
+     --rm [PI_ARGS...]
   pi [--workspace PATH] --host [PI_ARGS...]
   pi [--workspace PATH] stop
   pi [--workspace PATH] update [--extensions] [--models]
   pi list
   pi [--workspace PATH] remove [--all]
   pi [--workspace PATH] shell [--root|-r]
-  pi [--workspace PATH] copy [--from|--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
+  pi [--workspace PATH] copy [--from|--to] [-s|--sessions] [-a|--auth] [-e|--extensions]
+     [--all] [--override]
   pi [--workspace PATH] - PI_ARGS...
 
-Options:
-  -h, --help        Show detailed help when used alone.
-  --rm              Run Pi in a disposable one-off container.
-  --host            Run native host Pi without Docker; offers to install it if missing.
-  --replace         Force-recreate the current workspace container.
-  --rebuild         Build the image with cache for this launch.
-  --keep-existing   Preserve an existing colliding workspace container.
-  --workspace PATH  Use PATH as the workspace; it overrides PI_WORKSPACE.
-  --new-state       Use a separate, empty extra agent-state volume; normal state is kept.
-                    Cannot be combined with --seed or --latest-state.
-  --seed            Promote this workspace's state to the default seed state.
-  --latest-state    Copy the newest Docker-managed state when initializing.
-  --oauth [PORTS...] Publish known callback ports 1455/53692/51121; add comma- or
-                     space-separated custom ports. Ports already in use are refused.
-  --bash, --zsh      Force Bash or zsh instead of detecting SHELL.
-  --no-rc-config     Start the selected shell without host startup files or an rc mount.
-
-  Shell image        Reuses existing images; Compose builds if missing.
-                     `--rebuild` uses cache; `pi update` pulls and rebuilds without cache.
-
-  State volumes     Private per workspace; existing contents are preserved and
-                    permissions are repaired before Pi starts.
-  Browser integration Ensures pi-agent-browser-native is installed by default.
-  Logging           Streams session events and wrapper package/model update output
-                     to Docker logs; use PI_SESSION_LOG_FORMAT=raw for JSONL.
-  Shell             Detects Bash/zsh from SHELL and recursively resolves the
-                    matching host startup files into a read-only generated rc.
-  Pi passthrough     Other arguments are passed to Pi in the workspace container.
-                     Example: pi install npm:pi-web-access
-                     Use `pi - PI_ARGS...` to force wrapper command names through
-                     to Pi, for example: pi - list
-
 Commands:
-  stop              Stop the current workspace's persistent project.
-  update            Rebuild Pi or update extensions/models.
-  list              List running and stopped persistent Pi stacks (read-only).
-  remove [--all]    Remove the current stack; --all also removes persisted state.
+  stop              Stop the current workspace's persistent stack.
+  update            Rebuild the image, or update Pi extensions and model catalogs.
+  list              List persistent Pi stacks without changing Docker state.
+  remove [--all]    Remove the current stack; --all also removes its state volumes.
   shell [--root|-r] Open a shell in the current or selected Pi container.
-  copy              Copy selected agent state between existing Pi containers.
+  copy              Copy agent state between Pi workspaces.
 
 Run `pi --help` for detailed usage.
 BRIEF
 )" 'brief usage'
 BRIEF_USAGE=$(cat -- "$OUTPUT_LOG")
-help_has '--bash, --zsh'
-help_has '--no-rc-config'
-help_has '--rebuild'
-help_has 'Shell'
-help_has 'wrapper package/model update output'
-help_has '--workspace PATH'
-help_has '--replace'
-help_has '--keep-existing'
-help_has '--new-state'
-help_has '--seed'
-help_has '--latest-state'
-help_has '--host'
+[[ $DETAILED_HELP == *"$(sed -n '/^Usage:/,/^$/p' "$OUTPUT_LOG")"* ]] || fail 'detailed help must repeat the brief usage synopsis'
 expect_brief_usage() {
   run_pi "$WS_A" "$@"
   assert_status 0
   assert_eq "$(cat -- "$OUTPUT_LOG")" "$BRIEF_USAGE" "pi $* prints the brief usage"
   assert_no_docker
 }
-for option in --replace --keep-existing --workspace --new-state --seed --latest-state --oauth \
+for option in -h --rm --replace --keep-existing --workspace --new-state --seed --latest-state --oauth \
   --bash --zsh --no-rc-config --rebuild --host; do
   expect_brief_usage "$option" --help
 done
@@ -268,9 +183,9 @@ done
 expect_brief_usage remove --all --help
 expect_brief_usage --new-state --latest-state --help
 expect_brief_usage --workspace "$WS_B" --host --help
+expect_brief_usage --workspace "$WS_B" -h
 expect_brief_usage --help --rm
-run_pi "$WS_A" copy --help
-assert_output_has 'Run `pi --help` for detailed usage.'
+expect_brief_usage --help list
 
 # Help after the passthrough marker belongs to Pi.
 fresh_stack

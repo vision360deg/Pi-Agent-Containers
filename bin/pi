@@ -73,354 +73,137 @@ print_detailed_help() {
 Containerized Pi wrapper
 
 Usage:
+  pi [-h|--help]
   pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
      [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]
-  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] --rm [PI_ARGS...]
+  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
+     --rm [PI_ARGS...]
   pi [--workspace PATH] --host [PI_ARGS...]
   pi [--workspace PATH] stop
   pi [--workspace PATH] update [--extensions] [--models]
   pi list
   pi [--workspace PATH] remove [--all]
   pi [--workspace PATH] shell [--root|-r]
-  pi [--workspace PATH] copy [--from|--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
+  pi [--workspace PATH] copy [--from|--to] [-s|--sessions] [-a|--auth] [-e|--extensions]
+     [--all] [--override]
   pi [--workspace PATH] - PI_ARGS...
 
-Description:
-  Runs Pi inside a persistent Docker Compose service scoped to the current
-  workspace while keeping the terminal attached to the Pi process.
-
-  With no command, the workspace's persistent Pi service is started or reused
-  and Pi is executed inside it. The current host directory is mounted at
-  /workspace. Each workspace has its own Compose project and Pi/browser state.
-
-  Before Compose starts, the wrapper provisions the workspace's named volumes
-  and treats them as external so existing state is never recreated because of
-  a metadata change. New agent, session, and browser volumes are labelled with
-  their workspace and kind; a labelled volume belonging to another workspace is
-  refused, while unlabelled volumes from older releases keep working. It also
-  repairs ownership and write permissions for the agent, session, and browser
-  volumes before launching Pi.
-
-  Helper containers that inspect, seed, copy, or repair state run the
-  configured Pi service image (docker compose config --images pi) with an
-  explicit user; the image is built first when it is missing.
-
-  The wrapper requires Bash 4 or newer on PATH.
-
-  Before each Pi run, the wrapper ensures the pi-agent-browser-native package is
-  installed in the mounted workspace agent state. The package exposes Pi's
-  native agent_browser tool while using the container's upstream agent-browser
-  CLI and Chromium.
-
 Options:
-  -h, --help
-      Show this detailed help. Help is handled locally and does not start
-      Docker.
-
-  --rm
-      Run Pi in a disposable one-off container. The container is removed after
-      Pi exits. This mode does not use the persistent service.
-
-  --host
-      Run native Pi on the host instead of Docker, from the selected workspace
-      directory. Pi's installer launcher at
-      ${PI_CODING_AGENT_DIR:-~/.pi/agent}/bin/pi is preferred; otherwise the
-      first pi on PATH that is not this wrapper runs. If neither exists, pi
-      offers to run curl -fsSL https://pi.dev/install.sh | sh. All remaining
-      arguments, including wrapper command names, go to native Pi, which uses
-      the host's ~/.pi/agent state rather than workspace volumes.
-
-  --replace
-      Force-recreate the persistent container for the current workspace.
-
-  --rebuild
-      Explicitly build the image with the Docker build cache for this launch.
-      Compose then recreates the service from the rebuilt image. Without it,
-      existing images are reused and a missing image is built before use.
-      Use `pi update` for a pull and no-cache rebuild.
-
-  --keep-existing
-      When another workspace has the same basename, preserve its container
-      unchanged and create the current workspace with a disambiguated name.
-
-  --workspace PATH, --workspace=PATH
-      Use PATH as the workspace instead of the current invocation directory.
-      Takes precedence over PI_WORKSPACE.
-      Relative paths resolve from the directory where pi is invoked.
-
-  --new-state
-      Run this workspace against its extra agent-state volume,
-      pi-agents-new-ws-<hash>_pi-agent-state, and force-recreate the container
-      onto it. The extra volume starts empty and is never seeded, never becomes
-      the seed, and is never the latest state; the normal agent-state volume is
-      untouched. Session and browser volumes stay the normal ones. Running
-      without --new-state later recreates the container on the normal state.
-      While the extra volume exists, each start warns whether it is in use.
-
-  --seed
-      Promote this workspace's agent state to the default seed used by future
-      workspaces. On the first-ever stack, it is also the newest managed state.
-
-  --latest-state
-      When initializing a new workspace, copy from the newest Docker-managed
-      state volume instead of the seed. Once this workspace already has
-      initialized state, this option has no effect and prints a warning.
-
-  --bash, --zsh
-      Force Bash or zsh for foreground Pi and shell processes instead of using
-      the basename of the host SHELL value. These options are mutually exclusive.
-
-  --no-rc-config
-      Start the selected Bash or zsh without loading host startup configuration.
-      This can be combined with either shell override.
-
-  --oauth [PORTS...]
-      Add the Compose override that publishes host loopback ports for browser
-      OAuth callbacks. Known fixed callbacks 1455 (OpenAI Codex), 53692
-      (Anthropic), and 51121 (pi-antigravity) are always published. Add custom
-      fixed ports as a
-      comma- or space-separated list, for example --oauth 7000,7001 or
-      --oauth 7000 7001. PI_OAUTH_CALLBACK_PORTS adds ports from the
-      environment. Without this option, stacks do not publish host ports.
-      Before starting, pi refuses a selected port that something else already
-      listens on, checked with lsof or nc. Ports this workspace's running stack
-      already publishes are reused; a --rm run cannot share them.
+  -h, --help          Show this help without starting Docker.
+  --workspace PATH    Use PATH as the workspace instead of the invocation directory;
+                      it overrides PI_WORKSPACE. Relative paths resolve from the
+                      invocation directory. --workspace=PATH also works.
+  --rm                Run Pi in a disposable container instead of the persistent
+                      service; the workspace state volumes are still used.
+  --host              Run native Pi on the host from the workspace, without Docker.
+                      Pi's installer launcher ${PI_CODING_AGENT_DIR:-~/.pi/agent}/bin/pi
+                      is preferred, then the first pi on PATH that is not this
+                      wrapper. If neither exists, offer to run
+                      curl -fsSL https://pi.dev/install.sh | sh. All remaining
+                      arguments, including wrapper command names, go to native Pi,
+                      which uses the host's ~/.pi/agent state, not workspace volumes.
+  --replace           Force-recreate the persistent workspace container.
+  --rebuild           Build the image with the Docker build cache before this launch;
+                      Compose recreates the service from it. Without it, existing
+                      images are reused and a missing image is built.
+  --keep-existing     When another workspace has the same basename, keep its
+                      container unchanged and give this workspace a disambiguated name.
+  --new-state         Run on this workspace's extra agent-state volume, created empty
+                      and never seeded, and recreate the container onto it. It never
+                      becomes the seed or the latest state, and the normal agent-state
+                      volume is untouched; omit the flag later to switch back.
+                      Launches warn while the extra volume exists.
+  --seed              Promote this workspace's agent state to the seed that new
+                      workspaces copy. The pointer is ~/.config/pi-agent-containers/seed;
+                      PI_AGENT_CONTAINERS_CONFIG_PATH overrides its directory.
+  --latest-state      On first initialization, copy the newest managed state volume
+                      instead of the seed. Once the workspace has state, it only warns.
+  --bash, --zsh       Use Bash or zsh for Pi and shell processes instead of the
+                      basename of the host SHELL value.
+  --no-rc-config      Start the selected shell without the generated host startup
+                      configuration.
+  --oauth [PORTS...]  Publish loopback ports for browser OAuth callbacks: 1455
+                      (OpenAI Codex), 53692 (Anthropic), and 51121 (pi-antigravity),
+                      plus comma- or space-separated PORTS and PI_OAUTH_CALLBACK_PORTS.
+                      A port something else listens on is refused; ports this
+                      workspace's running stack publishes are reused, but a --rm run
+                      cannot share them.
 
 Commands:
-  stop
-      Stop only the persistent Compose project for the current workspace.
-      Containers, networks, and named volumes are not removed. Fails when the
-      workspace has no stack.
+  stop                Stop the current workspace's stack; containers, networks, and
+                      volumes are kept. Fails when the workspace has no stack.
+  update              Rebuild the image with a fresh pull and no build cache, then
+                      force-recreate the persistent service.
+  update --extensions Start the persistent service and run Pi's extension update.
+  update --models     Start the persistent service and update Pi's model catalogs.
+                      The two flags can be combined.
+  list                List running and stopped persistent Pi stacks with workspace,
+                      project, created and started times, agent-state volumes, and
+                      seed/latest markers. It does not change Docker state.
+  remove [--all]      Remove the current workspace's stack. State volumes are kept,
+                      and a warning names a kept extra state volume. --all also
+                      removes them; host workspace files are never removed. When the
+                      seed is removed, the oldest remaining managed state becomes the
+                      seed, or the pointer is cleared. Without a stack, remove fails,
+                      and remove --all lists the leftover state volumes and asks
+                      whether to leave them (default), delete all, or delete some.
+  shell [--root|-r]   Open the selected Bash or zsh in the current workspace's Pi
+                      container, starting it when stopped. A current stack without
+                      the generated rc mount is first reconciled with Compose up. If
+                      no container matches the workspace, a picker lists all
+                      persistent Pi containers plus `0) Start a new project` and
+                      `X) Press Esc to cancel`. --root opens the shell as user 0
+                      (root) instead of the image's node user.
+  copy                Copy agent state between Pi workspace containers through a
+                      disposable helper container. The current workspace is the
+                      destination and a picker selects the source (--from); --to
+                      reverses that. Without -s/--sessions, -a/--auth, or
+                      -e/--extensions, sessions, provider auth, and extensions are
+                      all copied. --all skips the item pickers. Copies are additive;
+                      duplicates prompt r=replace, s=skip, a=replace all, q=cancel,
+                      and --override replaces them. Items are staged, then published;
+                      a failed publish restores the earlier items. Cancelling leaves
+                      the destination unchanged and exits with status 3. Symlinked
+                      state paths and overlapping source/destination are refused.
 
-  remove
-      Remove the current workspace's Compose project. Pi and browser state
-      volumes are preserved; when an extra state volume exists, a warning names
-      it as kept too. Fails when the workspace has no stack.
-
-  remove --all
-      Remove the current workspace's Compose project and its persisted Pi and
-      browser state volumes, including the extra state volume. Other workspace
-      state volumes are unaffected. The host workspace files are never removed.
-      When the workspace has no stack but still has state volumes, pi lists
-      them and asks whether to leave them (default), delete all, or delete
-      selected ones.
-
-  update
-      Rebuild the Pi image without using the Docker build cache, then
-      force-recreate the persistent service for the current workspace.
-
-  update --extensions
-      Start the persistent service and run Pi's extension update command.
-
-  update --models
-      Start the persistent service and update Pi's model catalogs.
-
-  update --extensions --models
-      Update both Pi-managed extensions and model catalogs.
-
-  list
-      List running and stopped persistent Pi stacks with workspace, project,
-      Docker creation/start timestamps, agent-state volume, and seed/latest markers.
-      The started timestamp uses Docker State.StartedAt; zero means started: never.
-      active-state says whether the container mounts the normal or extra agent
-      state, and extra-state names the workspace's extra state volume or none.
-
-  shell [--root|-r]
-      Open the selected interactive Bash or zsh in the current workspace's Pi
-      container. If no container matches the current workspace, show a picker
-      containing all existing persistent Pi containers. A stopped selection is started
-      before the shell opens. A current workspace stack that lacks the generated
-      rc mount is reconciled with Compose up before the shell opens. When no current workspace container exists, the picker
-      also offers `0) Start a new project` and ends with `X) Press Esc to cancel`.
-      Choosing 0 creates the workspace, starts its persistent Pi service, and opens
-      the shell there. A choice is a single key; when the shell and copy pickers
-      list ten or more containers, a choice starting with 1-9 is a number
-      confirmed with Enter (prompt: Choice (number, then Enter)).
-
-      -r, --root
-          Open the shell as Docker user 0 (root) instead of the image's node user.
-
-  copy [--from] [--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
-      Copy agent state between existing Pi workspace containers using a
-      disposable helper container. By default the current workspace is the
-      destination and a picker selects the source. --to makes the current
-      workspace the source and picks the destination; --from picks the source
-      (the default). --from and --to are mutually exclusive.
-      Without a category flag, sessions, provider auth, and extensions are
-      copied. Category flags restrict the copy. --all skips item pickers.
-      Copies are additive; duplicate items prompt with r=replace, s=skip,
-      a=replace all, q=cancel. --override replaces duplicates automatically.
-      Every selected item is staged inside the destination before it changes,
-      then published by rename; a failed publish restores the earlier items.
-      Cancelling a picker or prompt leaves the destination unchanged and exits
-      with status 3.
-      Symlinked state paths and overlapping source/destination are refused.
-
-Pi passthrough:
-  Arguments not recognized as wrapper options or commands are passed directly to
-  Pi inside the workspace container. For example:
-
-  pi install npm:pi-web-access
-      Install a Pi package into this workspace's persisted agent state.
-
-  Wrapper commands take precedence when names collide: stop, update, list, remove,
-  shell, and copy are handled by this wrapper rather than passed to Pi.
-
-  A leading `-` forces the following arguments through to Pi, even when the
-  first argument is also a wrapper command. For example, `pi - list` runs Pi's
-  `list` command inside the container; `pi list` runs this wrapper's inventory.
-
-Workspace:
-  PI_WORKSPACE=/path/to/project pi
-      Mount /path/to/project at /workspace inside its workspace container.
-
-  Without PI_WORKSPACE, the directory from which pi is invoked is used.
-
-  Workspace selection precedence is: --workspace PATH, then PI_WORKSPACE, then
-  the directory from which pi is invoked.
-
-  Persistent containers are named pi-agents-pi-<workspace-basename>. The
-  basename is lowercased and every character other than a-z, 0-9, _ and - is
-  replaced with -, so ~/src/my.project becomes pi-agents-pi-my-project. If two
-  different workspaces have the same basename, pi prompts before expanding
-  the names to pi-agents-pi-<first-differing-path-components>-<path-hash>.
-  Every expanded container name and Compose project is checked before the
-  first rename; if one is held by a different workspace, pi stops without
-  renaming anything. A workspace that already has a stack reuses it under its
-  current name without prompting, and two stacks claiming the same workspace
-  are refused as ambiguous.
-
-  Compose projects use the same name as the container. Pi, session, and
-  browser volumes retain stable internal namespaces so renaming the project
-  does not create fresh state.
-
-  Each workspace gets its own agent-state volume. On first creation, its agent
-  files are copied from an existing normal workspace state volume; the sessions
-  directory is intentionally excluded. Later changes stay isolated to that
-  workspace. Use --new-state to run on a separate, empty extra agent-state
-  volume instead; extra volumes are never seed or --latest-state sources.
-
-  Initialization is recorded in the agent-state volume: .container-initialization-pending
-  names the seed source while copying and .container-initialized marks completion.
-  An interrupted seed resumes from the recorded source on the next launch and
-  fails if that source no longer exists. Volumes from before these markers that
-  hold provider auth (a non-empty auth.json) or a defaultProvider/defaultModel
-  setting are marked initialized without being reseeded.
-
-  The first stack becomes the seed. Later stacks copy the seed by default.
-  Docker volume creation metadata identifies the latest-created state for
-  --latest-state. Use --seed to promote a workspace to the seed. If the seed
-  pointer is missing while managed state volumes exist, pi lists them with
-  their creation times, warns, proposes the oldest managed state volume as the
-  seed, and asks for confirmation (y or yes) before initializing a new
-  workspace, even with --latest-state. Launching an already-initialized
-  workspace leaves a missing pointer unset unless --seed is given.
-
-  Existing running and stopped containers are both considered during collision
-  checks. Containers created before the com.pi-agents.managed label existed
-  are still recognized by their workspace label.
-
-Host shell:
-  Foreground Pi commands and `pi shell` use Bash or zsh based on the basename
-  of the host SHELL value. Use --bash or --zsh to override that choice.
-  Commands that start no host-shell session (list, stop, remove, copy) do
-  not check SHELL.
-
-  For Bash, .bash_profile and .bashrc are startup roots. For zsh, .zshenv,
-  .zprofile, .zshrc, and .zlogin are startup roots. Statically identifiable
-  source and dot references are recursively resolved on the host into one
-  generated rc file, which is mounted read-only without mounting the host home.
-  Use --no-rc-config to disable rc generation, mounting, and startup-file loading.
-
-  Use --rebuild to explicitly build the image with the cache.
-  pi update performs a pull and no-cache rebuild. A stale image is reported
-  if it lacks pi-shell-launch; use pi update or --rebuild to recover.
-
-  The persistent container service bootstrap remains Bash; host-shell selection
-  applies only to foreground Pi commands and interactive shell attachment.
-
-Logging:
-  Persistent Pi session records are streamed as readable, colored events to
-  the Docker service log stream while Pi runs. Wrapper-managed package and model
-  update output is mirrored there too. The session volume remains the
-  durable JSONL source. Set PI_SESSION_LOG_FORMAT=raw for JSONL logs or
-  PI_SESSION_LOG_COLOR=never for plain text.
-
-  Follow it with:
-    docker compose --project-name <readable-workspace-project> logs --follow --timestamps pi
+  In the shell and copy pickers a choice is a single key; with ten or more
+  containers, a choice starting with 1-9 is a number confirmed with Enter.
 
 Examples:
-  pi                                 # Start or reuse the current workspace container.
-  pi "Inspect this project"          # Start Pi and send it an initial prompt.
-  pi --oauth                         # Publish known browser OAuth callback ports.
-  pi --oauth 7000,7001               # Also publish two custom callback ports.
-  pi --oauth 7000 7001               # Space-separated form of the same list.
-  pi --rm                            # Run Pi in a disposable one-off container.
-  pi --host                          # Run native host Pi without Docker.
-  pi --host update                   # Update the native Pi installation.
-  pi --rebuild                       # Build with cache before launching Pi.
-  pi --replace                       # Force-recreate the current workspace container.
-  pi --keep-existing                 # Preserve a colliding existing container.
-  pi --new-state                     # Use the empty extra state volume; normal state is kept.
-  pi --seed                          # Promote this workspace's state to the seed.
-  pi --latest-state                  # Copy latest state when initializing this workspace.
-  pi --workspace ~/src/project       # Use an explicit workspace path.
-  PI_WORKSPACE="$PWD" pi             # Use an explicit host directory as the workspace.
-  pi stop                            # Stop only the current workspace project.
-  pi update                          # Rebuild the image and recreate the service.
-  pi update --extensions             # Update Pi-managed extensions.
-  pi update --models                 # Update Pi's model catalogs.
-  pi list                             # Inventory persistent Pi stacks without changing Docker state.
-  pi remove                          # Remove the stack but preserve persisted state.
-  pi remove --all                    # Also remove Pi and browser persisted state.
-  pi shell                           # Open a shell in the current workspace container.
-  pi shell --root                    # Open the current or selected container as root.
-  pi copy                            # Pick a source and copy all state to this workspace.
-  pi copy --to                       # Pick a destination and copy all state from this workspace.
-  pi copy -s --all                   # Copy every session without selecting individual files.
-  pi copy --auth --override          # Copy provider auth and replace duplicates automatically.
-  pi - list                          # Run Pi's list command inside the container.
-
-Help behavior:
-  Exact `pi -h` and `pi --help` commands show this detailed help.
-
-  When a help flag is combined with another argument, pi prints only the brief
-  usage summary instead.
-
-  `pi --host - --help` shows native Pi's help instead.
+  pi                               # Start or reuse this workspace's container.
+  pi "Inspect this project"        # Start Pi with an initial prompt.
+  pi --workspace ~/src/project     # Use an explicit workspace.
+  pi --rm                          # Run Pi in a disposable container.
+  pi --host update                 # Update the native Pi installation.
+  pi --oauth 7000,7001             # Also publish two custom callback ports.
+  pi update --extensions           # Update Pi-managed extensions.
+  pi shell --root                  # Open a root shell in this workspace's container.
+  pi copy --auth --override        # Copy provider auth, replacing duplicates.
+  pi install npm:pi-web-access     # Pi's install command: add a package.
+  pi - update                      # Pi's update command, run in the container.
 
 Restrictions:
+  --bash and --zsh are mutually exclusive.
+  --replace and --keep-existing are mutually exclusive.
+  --new-state cannot be combined with --seed or --latest-state.
   --rm cannot be combined with stop, update, remove, list, shell, copy, --replace,
   --keep-existing, --seed, or --latest-state.
-  --replace and --keep-existing are mutually exclusive.
-  --host accepts only --workspace among wrapper options; container, state,
-  shell, and OAuth options are rejected. Wrapper commands are not interpreted
-  after --host.
-  --rebuild cannot be combined with update, stop, remove, list, or copy. With
-  `pi shell`, it can only rebuild the current workspace's image.
-  --oauth is optional; only one simultaneous stack can publish any selected host
-  callback port. PI_OAUTH_CALLBACK_PORTS accepts comma- or space-separated ports.
-  --replace and --keep-existing apply to persistent workspace containers only.
-  remove accepts only the optional --all flag; --all also removes persisted state.
-  list accepts no positional arguments and does not change Docker state.
-  shell accepts only -r/--root. When a current workspace container exists it
-  reuses or starts it; a current stack lacking the rc mount is reconciled with
-  Compose up. Otherwise it offers 0 to create/start the current workspace and
-  X/Escape to cancel.
-  copy cannot be combined with --rm, --rebuild, --replace, --keep-existing,
-  --new-state, --seed, --latest-state, or --oauth. --from and --to are mutually
-  exclusive.
-  --oauth cannot be combined with stop or remove.
-  --new-state cannot be combined with stop, remove, --seed, or --latest-state.
-  --latest-state only affects first initialization of a workspace and warns
-  after that workspace already has initialized state. It selects the newest
-  managed Docker state volume rather than a second pointer file.
-  --seed promotes the current state to the seed. The seed pointer is stored in
-  ~/.config/pi-agent-containers/seed by default.
-  PI_AGENT_CONTAINERS_CONFIG_PATH overrides the seed-pointer directory when needed.
-  If remove --all deletes the seed state, pi repoints the seed to the oldest
-  remaining managed state volume, or clears it when none remain.
-  A basename collision prompts for action and defaults to cancel.
+  --rebuild cannot be combined with stop, update, remove, list, or copy; with
+  shell it can only rebuild the current workspace's image.
+  --replace, --keep-existing, --new-state, --seed, --latest-state, and --oauth
+  cannot be combined with stop, remove, list, shell, or copy.
+  --host accepts only --workspace among wrapper options; container, state, shell,
+  and OAuth options are rejected. Wrapper commands are not interpreted after --host.
+  list accepts no arguments, rejects --workspace, and does not change Docker state.
+  remove accepts only --all, update only --extensions and --models, shell only
+  -r/--root, and copy only its listed options; --from and --to are mutually exclusive.
+  A basename collision with another workspace prompts for action and defaults to cancel.
+
+Passthrough and help:
+  Arguments that are not wrapper options or commands go to Pi; a leading `-` sends
+  everything after it to Pi, even a wrapper command name (`pi - update`).
+  Exact `pi -h` or `pi --help` shows this help; a help flag with other arguments
+  shows the brief usage; `pi --host - --help` shows native Pi's help.
 EOF
 }
 
@@ -430,55 +213,25 @@ Usage:
   pi [-h|--help]
   pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
      [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]
-  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]] --rm [PI_ARGS...]
+  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
+     --rm [PI_ARGS...]
   pi [--workspace PATH] --host [PI_ARGS...]
   pi [--workspace PATH] stop
   pi [--workspace PATH] update [--extensions] [--models]
   pi list
   pi [--workspace PATH] remove [--all]
   pi [--workspace PATH] shell [--root|-r]
-  pi [--workspace PATH] copy [--from|--to] [--sessions, -s] [--auth, -a] [--extensions, -e] [--all] [--override]
+  pi [--workspace PATH] copy [--from|--to] [-s|--sessions] [-a|--auth] [-e|--extensions]
+     [--all] [--override]
   pi [--workspace PATH] - PI_ARGS...
 
-Options:
-  -h, --help        Show detailed help when used alone.
-  --rm              Run Pi in a disposable one-off container.
-  --host            Run native host Pi without Docker; offers to install it if missing.
-  --replace         Force-recreate the current workspace container.
-  --rebuild         Build the image with cache for this launch.
-  --keep-existing   Preserve an existing colliding workspace container.
-  --workspace PATH  Use PATH as the workspace; it overrides PI_WORKSPACE.
-  --new-state       Use a separate, empty extra agent-state volume; normal state is kept.
-                    Cannot be combined with --seed or --latest-state.
-  --seed            Promote this workspace's state to the default seed state.
-  --latest-state    Copy the newest Docker-managed state when initializing.
-  --oauth [PORTS...] Publish known callback ports 1455/53692/51121; add comma- or
-                     space-separated custom ports. Ports already in use are refused.
-  --bash, --zsh      Force Bash or zsh instead of detecting SHELL.
-  --no-rc-config     Start the selected shell without host startup files or an rc mount.
-
-  Shell image        Reuses existing images; Compose builds if missing.
-                     `--rebuild` uses cache; `pi update` pulls and rebuilds without cache.
-
-  State volumes     Private per workspace; existing contents are preserved and
-                    permissions are repaired before Pi starts.
-  Browser integration Ensures pi-agent-browser-native is installed by default.
-  Logging           Streams session events and wrapper package/model update output
-                     to Docker logs; use PI_SESSION_LOG_FORMAT=raw for JSONL.
-  Shell             Detects Bash/zsh from SHELL and recursively resolves the
-                    matching host startup files into a read-only generated rc.
-  Pi passthrough     Other arguments are passed to Pi in the workspace container.
-                     Example: pi install npm:pi-web-access
-                     Use `pi - PI_ARGS...` to force wrapper command names through
-                     to Pi, for example: pi - list
-
 Commands:
-  stop              Stop the current workspace's persistent project.
-  update            Rebuild Pi or update extensions/models.
-  list              List running and stopped persistent Pi stacks (read-only).
-  remove [--all]    Remove the current stack; --all also removes persisted state.
+  stop              Stop the current workspace's persistent stack.
+  update            Rebuild the image, or update Pi extensions and model catalogs.
+  list              List persistent Pi stacks without changing Docker state.
+  remove [--all]    Remove the current stack; --all also removes its state volumes.
   shell [--root|-r] Open a shell in the current or selected Pi container.
-  copy              Copy selected agent state between existing Pi containers.
+  copy              Copy agent state between Pi workspaces.
 
 Run `pi --help` for detailed usage.
 EOF
