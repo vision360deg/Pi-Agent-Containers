@@ -284,12 +284,11 @@ reseeding from another volume if that source is gone. Agent-state volumes
 created before the markers that contain a non-empty `auth.json` or a
 `defaultProvider`/`defaultModel` setting are marked initialized unchanged.
 
-New agent, session, and browser volumes carry `com.pi-agents.*` labels for
-their workspace and kind, and a labelled volume belonging to another
-workspace is refused. Docker cannot label existing volumes, so unlabelled
-volumes from earlier releases continue to work. Containers carry
-`com.pi-agents.managed=true`; older containers without it are still found by
-their workspace label.
+Agent, session, and browser volumes carry `com.pi-agents.*` labels for their
+workspace and kind. State volumes and containers without matching labels are
+refused: a state volume must carry `com.pi-agents.managed=true` and this
+workspace's path and kind, and a container must carry
+`com.pi-agents.managed=true` to be treated as a workspace's stack.
 
 Use these options when creating a workspace:
 
@@ -337,9 +336,9 @@ later recreates the container on the normal agent state.
   `--new-state --latest-state` is rejected.
 - It is never the seed or a seed candidate, never the `latest` volume, and
   never a `--latest-state` source. `--seed --new-state` is rejected.
-- New extra volumes are labelled `com.pi-agents.state-kind=agent-extra` with
-  the usual managed, workspace, and project labels. Extra volumes created by
-  earlier releases carry the `agent` kind and are recognised by name.
+- Extra volumes are labelled `com.pi-agents.state-kind=agent-extra` with the
+  usual managed, workspace, and project labels; an extra volume with any other
+  kind is refused.
 - Whenever the workspace has an extra volume, every start or reuse of the
   persistent container, every `--rm` run, and `pi shell` when it starts or
   creates the stack prints a warning: either that the extra volume is in use
@@ -376,9 +375,8 @@ Copying is additive by default. Duplicate items offer `r` (replace), `s`
 automatically.
 
 Sessions live in each workspace's separate session volume, which the helper
-mounts at `sessions/` on both sides. It is located by its workspace label, or
-for older unlabelled volumes through the container's sessions mount; `pi copy`
-fails before copying if either session volume is missing. Copies that exclude
+mounts at `sessions/` on both sides. It is located by its managed workspace
+label; `pi copy` fails before copying unless each side has exactly one. Copies that exclude
 sessions (`--auth`, `--extensions`) do not need them.
 
 The copy is transactional per run. Every selected item, including each
