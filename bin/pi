@@ -2143,13 +2143,13 @@ session_volume_for_agent_volume() {
 # A running Pi keeps cached auth and extension metadata, so name every running
 # managed container whose agent state is the copy destination.
 warn_running_copy_destination() {
-  local target_agent="$1" name mounted
-  while IFS=$'\t' read -r name mounted; do
-    [[ -n "$name" && "$mounted" == "$target_agent" ]] || continue
-    printf 'pi: warning: %s is mounted by running container %s; restart it to pick up copied auth or extensions\n' \
-      "$target_agent" "$name" >&2
-  done < <(docker ps --filter 'label=com.pi-agents.managed=true' \
-    --format '{{.Names}}\t{{range .Mounts}}{{if eq .Destination "/home/node/.pi/agent"}}{{.Name}}{{end}}{{end}}')
+  local destination="$1" name mounted
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    mounted="$(mounted_agent_state_volume "$name")"
+    [[ "$mounted" == "$destination" ]] || continue
+    printf 'pi: warning: %s is mounted by running container %s; restart it to pick up copied auth or extensions\n' "$destination" "$name" >&2
+  done < <(docker ps --filter 'label=com.pi-agents.managed=true' --format '{{.Names}}')
 }
 
 copy_agent_state() {
