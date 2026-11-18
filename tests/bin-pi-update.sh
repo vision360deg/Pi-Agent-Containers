@@ -52,6 +52,7 @@ assert_log_lacks ' up --build '
 assert_log_has "$COMPOSE_FILES $LOGGED_PI install npm:pi-agent-browser-native"
 assert_workspace_propagated "$WS"
 volume_has_file "$(agent_volume "$WS")" .container-initialized || fail 'update must initialize new state'
+assert_eq "$(seed_value)" "$(agent_volume "$WS")" 'update records the seed'
 
 # --extensions, --models, and both run Pi's own update through the logged
 # launcher in the started service, without rebuilding or recreating it.
