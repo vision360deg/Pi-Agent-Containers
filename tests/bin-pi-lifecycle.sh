@@ -49,6 +49,7 @@ NORMAL_1=$(agent_volume "$PATH_1")
 SESSIONS_1=$(session_volume "$PATH_1")
 BROWSER_1=$(browser_volume "$PATH_1")
 EXTRA_1=$(extra_volume "$PATH_1")
+NORMAL_2=$(agent_volume "$PATH_2")
 
 # stack_1: PATH_1's running stack under the basename project, without state volumes.
 stack_1() {
@@ -57,13 +58,28 @@ stack_1() {
   fake_container "$BASE" "$PATH_1" running
 }
 
-# leftovers: PATH_1's four state volumes and no stack.
+# leftovers: PATH_1's four state volumes and a legacy managed session volume
+# labelled for it, and no stack.
 leftovers() {
   reset_docker
   fake_volume "$NORMAL_1" "$PATH_1" agent 2026-01-01T00:00:00Z
   fake_volume "$SESSIONS_1" "$PATH_1" sessions 2026-01-01T00:00:01Z
   fake_volume "$BROWSER_1" "$PATH_1" browser 2026-01-01T00:00:02Z
   fake_volume "$EXTRA_1" "$PATH_1" agent-extra 2026-01-01T00:00:03Z
+  fake_volume legacy-sessions "$PATH_1" sessions 2026-01-01T00:00:04Z
+}
+
+write_seed() {
+  mkdir -p -- "$CONFIG_DIR"
+  printf '%s\n' "$1" > "$SEED_FILE"
+}
+
+# leftovers_seeded: the leftovers beside PATH_2's newer state, with PATH_1's
+# agent volume as the seed.
+leftovers_seeded() {
+  leftovers
+  fake_state "$PATH_2" 2026-01-02T00:00:00Z
+  write_seed "$NORMAL_1"
 }
 
 stack_1
@@ -85,6 +101,15 @@ assert_log_lacks "compose --project-name $BASE "
 assert_log_lacks 'rename'
 assert_eq "$(container_field "$BASE" state)" running 'the other workspace stack state'
 
+stack_1
+fake_container "$TARGET_2" "$PATH_2" running
+run_pi "$PATH_2" remove
+assert_status 0
+assert_log_has "compose --project-name $TARGET_2"
+assert_log_lacks "compose --project-name $BASE "
+! container_exists "$TARGET_2" || fail 'remove must delete the workspace stack'
+container_exists "$BASE" || fail 'remove must keep the other workspace stack'
+
 # Without a stack, stop and remove fail instead of acting on a computed name.
 for command in stop remove; do
   stack_1
@@ -92,6 +117,7 @@ for command in stop remove; do
   assert_status 2
   assert_output_has "pi: no stack found for workspace: $PATH_2"
   assert_log_lacks 'docker compose'
+  assert_eq "$(container_field "$BASE" state)" running 'the other workspace stack state'
 done
 
 # Two stacks for one workspace are ambiguous.
@@ -139,10 +165,63 @@ assert_log_has "volume rm $EXTRA_1"
 assert_output_lacks 'extra state volume'
 ! volume_exists "$EXTRA_1" || fail 'remove --all must delete the extra state volume'
 
+# remove --all removes exactly this workspace's volumes and repoints a seed
+# that referenced them to the oldest remaining agent volume; extra state
+# volumes are never seed candidates.
+PATH_3=$(make_workspace "$TEST_HOME/path-3/elsewhere")
+stack_1
+fake_state "$PATH_1" 2026-01-01T00:00:00Z
+fake_volume "$EXTRA_1" "$PATH_1" agent-extra 2026-01-01T00:00:00Z
+fake_state "$PATH_2" 2026-01-02T00:00:00Z
+fake_state "$PATH_3" 2026-01-03T00:00:00Z
+fake_volume "$(extra_volume "$PATH_3")" "$PATH_3" agent-extra 2025-12-01T00:00:00Z
+write_seed "$NORMAL_1"
+run_pi "$PATH_1" remove --all
+assert_status 0
+for volume in "$NORMAL_1" "$EXTRA_1" "$SESSIONS_1" "$BROWSER_1"; do
+  assert_log_has "volume rm $volume"
+  ! volume_exists "$volume" || fail "remove --all must remove $volume"
+done
+volume_exists "$NORMAL_2" || fail 'remove --all must keep other workspaces'
+assert_eq "$(seed_value)" "$NORMAL_2" 'seed must move to the oldest remaining agent volume'
+
+# A seed that references another workspace is left alone.
+fake_container pi-agents-pi-elsewhere "$PATH_3" running
+run_pi "$PATH_3" remove --all
+assert_status 0
+assert_eq "$(seed_value)" "$NORMAL_2" 'unrelated seed must be unchanged'
+! volume_exists "$(extra_volume "$PATH_3")" || fail 'remove --all must remove the extra state volume'
+
+# Missing volumes are skipped. A failed removal still moves a seed whose
+# volume is gone, and keeps a seed whose volume survived.
+stack_1
+fake_state "$PATH_1" 2026-01-01T00:00:00Z
+fake_state "$PATH_2" 2026-01-02T00:00:00Z
+rm -f -- "$FAKE_DOCKER_STATE/volumes/$BROWSER_1"
+write_seed "$NORMAL_1"
+EXTRA_ENV=(FAKE_VOLUME_RM_FAIL="$SESSIONS_1")
+run_pi "$PATH_1" remove --all
+EXTRA_ENV=()
+assert_status 1
+assert_log_has "volume rm $NORMAL_1"
+assert_log_lacks "volume rm $BROWSER_1"
+assert_eq "$(seed_value)" "$NORMAL_2" 'a removed seed volume must move the seed despite another failure'
+assert_output_has "pi: the previous seed was removed; seed reassigned to oldest state $NORMAL_2"
+
+stack_1
+fake_state "$PATH_1" 2026-01-01T00:00:00Z
+fake_state "$PATH_2" 2026-01-02T00:00:00Z
+write_seed "$NORMAL_1"
+EXTRA_ENV=(FAKE_VOLUME_RM_FAIL="$NORMAL_1")
+run_pi "$PATH_1" remove --all
+EXTRA_ENV=()
+assert_status 1
+assert_eq "$(seed_value)" "$NORMAL_1" 'a seed whose volume survived must stay'
+
 # remove --all without a stack offers the workspace's leftover volumes.
 reset_docker
 run_pi "$PATH_1" remove --all
-[[ $STATUS -ne 0 ]] || fail 'remove --all without stack or volumes unexpectedly succeeded'
+assert_status 2
 assert_output_has "pi: no stack or state volumes found for workspace: $PATH_1"
 assert_log_lacks 'volume rm'
 assert_log_lacks 'docker compose'
@@ -151,10 +230,12 @@ assert_log_lacks 'docker compose'
 for INPUT in 'l\n' '\n' ''; do
   leftovers
   run_pi "$PATH_1" remove --all
+  assert_status 0
   assert_output_has "pi: no stack found for workspace: $PATH_1"
   assert_output_has "1) $NORMAL_1"
   assert_output_has "4) $EXTRA_1"
   assert_output_has 'kind: agent-extra'
+  assert_output_has '5) legacy-sessions'
   assert_output_has 'state volumes left unchanged'
   assert_log_lacks 'volume rm'
   assert_log_lacks 'docker compose'
@@ -162,12 +243,11 @@ done
 
 # Deleting the seed volume deletes the seed pointer when no other state remains.
 leftovers
-mkdir -p "$CONFIG_DIR"
-printf '%s\n' "$NORMAL_1" > "$SEED_FILE"
+write_seed "$NORMAL_1"
 INPUT='a\n'
 run_pi "$PATH_1" remove --all
 assert_status 0
-for volume in "$NORMAL_1" "$SESSIONS_1" "$BROWSER_1" "$EXTRA_1"; do
+for volume in "$NORMAL_1" "$SESSIONS_1" "$BROWSER_1" "$EXTRA_1" legacy-sessions; do
   assert_log_has "volume rm $volume"
   assert_output_has "pi: removed state volume $volume"
   ! volume_exists "$volume" || fail "$volume must be removed"
@@ -175,7 +255,19 @@ done
 assert_log_lacks 'docker compose'
 [[ ! -e $SEED_FILE ]] || fail "seed pointer was not deleted with its volume: $(seed_value)"
 
-leftovers
+# Deleting all of them beside other state removes only this workspace's
+# volumes and moves the seed to the oldest remaining agent volume.
+leftovers_seeded
+INPUT='a\n'
+run_pi "$PATH_1" remove --all
+assert_status 0
+! volume_exists "$NORMAL_1" || fail "delete all must remove $NORMAL_1"
+volume_exists "$NORMAL_2" || fail 'delete all must keep other workspaces'
+assert_eq "$(seed_value)" "$NORMAL_2" 'seed must move to the oldest remaining agent volume'
+assert_log_lacks 'docker compose'
+
+# Selected volumes are deleted alone; a kept agent volume stays the seed.
+leftovers_seeded
 INPUT='s\n2, 4\n'
 run_pi "$PATH_1" remove --all
 assert_status 0
@@ -183,6 +275,8 @@ assert_log_has "volume rm $SESSIONS_1"
 assert_log_has "volume rm $EXTRA_1"
 assert_log_lacks "volume rm $NORMAL_1"
 assert_log_lacks "volume rm $BROWSER_1"
+assert_log_lacks 'volume rm legacy-sessions'
+assert_eq "$(seed_value)" "$NORMAL_1" 'a kept agent volume must stay the seed'
 
 leftovers
 INPUT='s\n\n'
@@ -190,15 +284,22 @@ run_pi "$PATH_1" remove --all
 assert_output_has 'state volumes left unchanged'
 assert_log_lacks 'volume rm'
 
-for INPUT in 's\n5\n' 's\n1 x\n' 's\n1,1\n' 'd\n'; do
+while IFS='|' read -r INPUT message; do
   leftovers
   run_pi "$PATH_1" remove --all
   assert_status 2
+  assert_output_has "pi: $message"
   assert_log_lacks 'volume rm'
-done
+done <<'EOF'
+s\n6\n|invalid volume selection: 6
+s\n1 x\n|invalid volume selection: x
+s\n1,1\n|duplicate volume selection: 1
+d\n|invalid choice: d
+EOF
 
-# A failed removal is reported, the others still go, and the status is 1.
-leftovers
+# A failed removal is reported, the others still go, and the status is 1; the
+# seed still moves because its volume is gone.
+leftovers_seeded
 INPUT='a\n'
 EXTRA_ENV=("FAKE_VOLUME_RM_FAIL=$SESSIONS_1")
 run_pi "$PATH_1" remove --all
@@ -207,6 +308,7 @@ assert_status 1
 assert_output_has "pi: could not remove state volume $SESSIONS_1"
 assert_log_has "volume rm $BROWSER_1"
 assert_log_has "volume rm $EXTRA_1"
+assert_eq "$(seed_value)" "$NORMAL_2" 'a removed seed volume must move the seed despite another failure'
 INPUT=''
 
 # Repointing considers every managed normal state, including this workspace's
