@@ -552,4 +552,19 @@ bash "$RESOLVER" --shell bash --home "$HOME_ROOT" --output "$OUTPUT_DIR" 2>"$TMP
 assert_file_has "$TMP_DIR/output-dir.err" "pi-shell-rc: output must be a file path: $OUTPUT_DIR"
 [[ -z $(ls -A "$OUTPUT_DIR") ]] || fail "directory --output must not write into the directory"
 
+# Other invalid arguments fail with status 2 and write nothing.
+expect_error() {
+  local message=$1 status=0
+  shift
+  bash "$RESOLVER" "$@" 2>"$TMP_DIR/error" || status=$?
+  assert_eq "$status" 2 "exit status for: $*"
+  assert_file_has "$TMP_DIR/error" "$message"
+}
+expect_error 'pi-shell-rc: unsupported shell: fish' --shell fish --home "$HOME_ROOT" --output "$TMP_DIR/x.rc"
+expect_error 'pi-shell-rc: home must be absolute: relative' --shell bash --home relative --output "$TMP_DIR/x.rc"
+expect_error 'pi-shell-rc: output must be absolute: x.rc' --shell bash --home "$HOME_ROOT" --output x.rc
+expect_error 'pi-shell-rc: home must be a readable directory' --shell bash --home "$TMP_DIR/nowhere" --output "$TMP_DIR/x.rc"
+expect_error 'usage: pi-shell-rc' --shell bash
+[[ ! -e $TMP_DIR/x.rc ]] || fail 'failed resolution must not write output'
+
 pass
