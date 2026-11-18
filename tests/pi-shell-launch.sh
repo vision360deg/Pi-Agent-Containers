@@ -77,6 +77,8 @@ PI_HOST_SHELL=zsh PI_HOST_RC_FILE="$TMP_DIR/rc" PI_NO_RC_CONFIG=1 run_launcher c
 assert_contains "$TMP_DIR/log" 'shell=zsh'
 assert_contains "$TMP_DIR/log" 'arg=-f'
 assert_contains "$TMP_DIR/log" 'arg=-i'
+assert_contains "$TMP_DIR/log" 'zdotdir='
+if grep -Fq 'zshrc=' "$TMP_DIR/log"; then fail 'zsh no-rc mode must not get a private rc'; fi
 if grep -Fq "arg=$TMP_DIR/rc" "$TMP_DIR/log"; then fail 'zsh no-rc mode must not use the rc file'; fi
 
 PI_HOST_SHELL=bash PI_HOST_RC_FILE="$TMP_DIR/rc" PI_NO_RC_CONFIG=1 run_launcher command
@@ -85,6 +87,13 @@ assert_contains "$TMP_DIR/log" 'arg=--noprofile'
 assert_contains "$TMP_DIR/log" 'arg=--norc'
 assert_contains "$TMP_DIR/log" 'arg=-i'
 if grep -Fq "arg=$TMP_DIR/rc" "$TMP_DIR/log"; then fail 'bash no-rc mode must not use the rc file'; fi
+PI_HOST_SHELL=bash PI_NO_RC_CONFIG=1 run_launcher
+assert_eq "$(sed -n 's/^arg=//p' "$TMP_DIR/log" | paste -sd '|' -)" '--noprofile|--norc|-i' 'interactive bash no-rc arguments'
+
+# Defaults: bash with the mounted rc path.
+(unset PI_HOST_SHELL PI_HOST_RC_FILE PI_NO_RC_CONFIG; run_launcher)
+assert_contains "$TMP_DIR/log" 'shell=bash'
+assert_eq "$(sed -n 's/^arg=//p' "$TMP_DIR/log" | paste -sd '|' -)" '--rcfile|/tmp/pi-host-shellrc/rc|-i' 'default shell arguments'
 
 # Without PI_HOST_RC_FILE the launcher uses the rc file the shell-rc Compose
 # override mounts (inside /tmp/pi-host-shellrc), not the mount directory. The
@@ -94,15 +103,16 @@ assert_contains "$TMP_DIR/log" 'arg=/tmp/pi-host-shellrc/rc'
 (unset PI_HOST_RC_FILE; PI_HOST_SHELL=zsh PI_NO_RC_CONFIG=0 run_launcher)
 assert_contains "$TMP_DIR/log" 'zshrc=/tmp/pi-host-shellrc/rc'
 
-: > "$TMP_DIR/rc"
+# A real bash runs the command after loading the rc file.
+printf 'export PI_RC_LOADED=yes\n' > "$TMP_DIR/rc"
 PI_HOST_SHELL=bash PI_HOST_RC_FILE="$TMP_DIR/rc" PI_NO_RC_CONFIG=0 \
-  gtimeout 5 /bin/bash "$LAUNCHER" /usr/bin/printf 'bash-real-launch' >"$TMP_DIR/bash-real.out" 2>"$TMP_DIR/bash-real.err" \
+  gtimeout 5 /bin/bash "$LAUNCHER" /bin/bash -c 'printf "bash-real-launch rc=%s\n" "$PI_RC_LOADED"' >"$TMP_DIR/bash-real.out" 2>"$TMP_DIR/bash-real.err" </dev/null \
   || fail "real bash command must exit successfully: $(<"$TMP_DIR/bash-real.err")"
-grep -Fqx 'bash-real-launch' "$TMP_DIR/bash-real.out" || fail 'real bash must execute command arguments'
+grep -Fqx 'bash-real-launch rc=yes' "$TMP_DIR/bash-real.out" || fail "real bash must load the rc and execute command arguments: $(<"$TMP_DIR/bash-real.out")"
 
-if PI_HOST_SHELL=fish PI_NO_RC_CONFIG=1 /bin/bash "$LAUNCHER" >/dev/null 2>"$TMP_DIR/error"; then
-  fail 'unsupported shell must fail'
-fi
-[[ $(<"$TMP_DIR/error") == *'unsupported shell'* ]] || fail 'unsupported shell error is missing'
+status=0
+PI_HOST_SHELL=fish PI_NO_RC_CONFIG=1 /bin/bash "$LAUNCHER" >/dev/null 2>"$TMP_DIR/error" || status=$?
+assert_eq "$status" 2 'unsupported shell status'
+assert_file_has "$TMP_DIR/error" 'pi-shell-launch: unsupported shell: fish'
 
 pass

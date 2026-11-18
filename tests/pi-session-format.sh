@@ -37,6 +37,24 @@ if grep -Fq -- $'\033[' "$PLAIN"; then
   fail 'plain pretty output unexpectedly contains ANSI color codes'
 fi
 
+# Color is on by default.
+PI_SESSION_LOG_FORMAT=pretty bash "$ROOT/bin/pi-session-format" < "$INPUT" > "$TMP_DIR/default.log"
+grep -Fq -- $'\033[36m' "$TMP_DIR/default.log" || fail 'color must be on by default'
+
+# Auto colors only a terminal; this output is a file.
+PI_SESSION_LOG_FORMAT=pretty PI_SESSION_LOG_COLOR=auto \
+  bash "$ROOT/bin/pi-session-format" < "$INPUT" > "$TMP_DIR/auto.log"
+cmp -s "$PLAIN" "$TMP_DIR/auto.log" || fail 'auto color mode on a non-terminal must match plain output'
+
+# An unsupported color mode is refused before any output.
+if PI_SESSION_LOG_COLOR=sometimes bash "$ROOT/bin/pi-session-format" < "$INPUT" > "$TMP_DIR/invalid" 2> "$TMP_DIR/invalid.err"; then
+  fail 'unsupported color mode must fail'
+else
+  assert_eq "$?" 2 'unsupported color mode exit status'
+fi
+assert_file_has "$TMP_DIR/invalid.err" 'pi-session-format: unsupported color mode: sometimes'
+[[ ! -s $TMP_DIR/invalid ]] || fail "unsupported color mode must not format: $(cat "$TMP_DIR/invalid")"
+
 PI_SESSION_LOG_FORMAT=raw \
   bash "$ROOT/bin/pi-session-format" < "$INPUT" > "$RAW"
 cmp -s "$INPUT" "$RAW"

@@ -55,6 +55,7 @@ start_forwarder() {
 
 # Existing sessions are history and must not be replayed when the service starts.
 printf '%s\n' '{"session":"old","event":"history"}' > "$SESSION_DIR/old.jsonl"
+printf '%s\n' 'not a session' > "$SESSION_DIR/notes.txt"
 
 start_forwarder
 
@@ -87,6 +88,11 @@ wait_for_line '{"session":"old","event":"new_append"}'
 if grep -Fq -- '{"session":"old","event":"history"}' "$OUTPUT_LOG"; then
   fail 'existing session history was replayed into the Docker log'
 fi
+
+# Non-session files are ignored.
+printf '%s\n' 'more notes' >> "$SESSION_DIR/notes.txt"
+sleep 0.3
+assert_file_lacks "$OUTPUT_LOG" 'notes'
 
 # Termination exits cleanly and leaves no tail, formatter, or runtime
 # directory behind.
