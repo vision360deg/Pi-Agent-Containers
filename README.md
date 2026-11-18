@@ -370,40 +370,45 @@ By default, `pi copy` treats the current workspace as the destination and lets
 you pick the source. `pi copy --to` treats the current workspace as the source
 and lets you pick the destination. The current workspace's state volumes are
 created first when missing. The picker lists every other managed agent-state
-volume with its workspace and creation time, then `X) Cancel (or Esc)`;
-cancelling exits with status 3, and any other invalid choice exits with status
-2. `--from` explicitly selects the source (the default); `--from` and `--to`
-are mutually exclusive. `copy` refuses `--rm`, `--rebuild`, `--replace`,
-`--keep-existing`, `--new-state`, `--seed`, `--latest-state`, and `--oauth`.
+volume with its workspace and creation time, then `X) Cancel (or Esc)`; `x`,
+Esc, or end of input prints `pi: copy cancelled` and exits with status 3, and
+any other invalid choice exits with status 2. `--from` explicitly selects the
+source (the default); `--from` and `--to` are mutually exclusive. `copy`
+refuses `--rm`, `--rebuild`, `--replace`, `--keep-existing`, `--new-state`,
+`--seed`, `--latest-state`, and `--oauth`. The wrapper reports `copying agent
+state from SOURCE to DESTINATION` before the copy and `agent-state copy
+complete` after it.
 
 The category flags are `--sessions`/`-s`, `--auth`/`-a`, and
 `--extensions`/`-e`. Without category flags, all categories are copied. Without
-`--all`, Pi lets you select individual sessions, providers, or extensions;
-`--all` copies every item in the selected categories.
+`--all`, `pi copy` lets you select individual sessions, providers, or
+extensions; `--all` copies every item in the selected categories.
 
 ```bash
 pi copy --sessions --auth --extensions --all
 pi copy --extensions --override
 ```
 
-Copying is additive by default. Duplicate items offer `r` (replace), `s`
-(skip), `a` (replace all), or `q` (cancel). `--override` replaces duplicates
-automatically.
+Copying is additive by default: copies add individual records and preserve
+records that exist only in the destination. Duplicate items offer `r`
+(replace), `s` (skip), `a` (replace all), or `q` (cancel). `--override`
+replaces duplicates automatically.
 
 Sessions live in each workspace's separate session volume, which the helper
 mounts at `sessions/` on both sides. It is located by the workspace label of
 its agent-state volume; `pi copy` fails before copying unless each side has
-exactly one. Copies that exclude
-sessions (`--auth`, `--extensions`) do not need them.
+exactly one. Copies that exclude sessions (`--auth`, `--extensions`) do not
+need them.
 
 The copy is transactional per run. Every selected item, including each
 duplicate decision, is staged in a temporary directory inside the destination
 before the destination changes. Staged items are then published by rename,
 each previous item kept as a backup until all items are in place; a failure or
-interruption while publishing restores the previous items. Cancelling a picker
-or a duplicate prompt (`q`) exits with status 3 and leaves the destination
-unchanged. Symlinked state paths on either side, and overlapping
-source/destination directories, are refused.
+interruption while publishing restores the previous items, and if that restore
+fails the original is kept in a `.pi-state-copy-backup.*` entry beside it.
+Cancelling a picker or a duplicate prompt (`q` or end of input) exits with
+status 3 and leaves the destination unchanged. Symlinked state paths on either
+side, and overlapping source/destination directories, are refused.
 
 When a running container mounts the destination state volume, copied files are
 immediately present in it, but Pi may still hold cached authentication or
