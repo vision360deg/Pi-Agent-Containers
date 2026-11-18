@@ -37,14 +37,45 @@ run_copy() {
   bash "$ROOT/bin/pi-state-copy" --source "$SOURCE" --target "$TARGET" "$@"
 }
 
+# Usage and argument validation.
+bash "$ROOT/bin/pi-state-copy" --help > "$TMP_DIR/help" || fail '--help must succeed'
+assert_file_has "$TMP_DIR/help" 'usage: pi-state-copy --source PATH --target PATH'
+if run_copy --bogus 2>"$TMP_DIR/usage.err"; then fail 'an unsupported option must fail'; fi
+assert_file_has "$TMP_DIR/usage.err" 'pi-state-copy: unsupported option: --bogus'
+if bash "$ROOT/bin/pi-state-copy" --source "$TMP_DIR/missing" --target "$TARGET" 2>"$TMP_DIR/usage.err"; then fail 'a missing source must fail'; fi
+assert_file_has "$TMP_DIR/usage.err" "pi-state-copy: source is not a directory: $TMP_DIR/missing"
+
 # Additive session copy: skip the duplicate, copy the new file.
 printf 's' | run_copy --sessions --all
 grep -Fqx -- '{"session":"keep","value":"target"}' "$TARGET/sessions/keep.jsonl"
 grep -Fqx -- '{"session":"new","value":"new"}' "$TARGET/sessions/new.jsonl"
 
-# --override replaces a duplicate without prompting.
-run_copy --sessions --all --override
+# Duplicates prompt: replace overwrites one, replace-all stops prompting, and
+# end of input cancels with status 3. Destination-only records survive.
+printf '%s\n' '{"session":"new","value":"target"}' > "$TARGET/sessions/new.jsonl"
+printf '%s\n' '{"session":"target-only"}' > "$TARGET/sessions/target-only.jsonl"
+printf 'r\ns\ns\n' | run_copy --sessions --all 2>"$TMP_DIR/duplicates.err"
 grep -Fqx -- '{"session":"keep","value":"source"}' "$TARGET/sessions/keep.jsonl"
+grep -Fqx -- '{"session":"new","value":"target"}' "$TARGET/sessions/new.jsonl"
+assert_file_has "$TMP_DIR/duplicates.err" 'Duplicate session "keep.jsonl": [r]eplace, [s]kip, replace [a]ll, [q]uit?'
+assert_file_has "$TMP_DIR/duplicates.err" 'Duplicate session "new.jsonl"'
+printf '%s\n' '{"session":"keep","value":"target"}' > "$TARGET/sessions/keep.jsonl"
+printf 'a\n' | run_copy --sessions --all 2>"$TMP_DIR/duplicates.err"
+assert_file_count "$TMP_DIR/duplicates.err" 'Duplicate session' 1
+grep -Fqx -- '{"session":"keep","value":"source"}' "$TARGET/sessions/keep.jsonl"
+grep -Fqx -- '{"session":"new","value":"new"}' "$TARGET/sessions/new.jsonl"
+printf '%s\n' '{"session":"keep","value":"target"}' > "$TARGET/sessions/keep.jsonl"
+status=0
+run_copy --sessions --all </dev/null 2>/dev/null || status=$?
+assert_eq "$status" 3 'end of input at a duplicate prompt'
+grep -Fqx -- '{"session":"keep","value":"target"}' "$TARGET/sessions/keep.jsonl"
+
+# --override replaces a duplicate without prompting.
+run_copy --sessions --all --override 2>"$TMP_DIR/override.err"
+grep -Fqx -- '{"session":"keep","value":"source"}' "$TARGET/sessions/keep.jsonl"
+assert_file_lacks "$TMP_DIR/override.err" 'Duplicate session'
+grep -Fqx -- '{"session":"target-only"}' "$TARGET/sessions/target-only.jsonl"
+rm -f "$TARGET/sessions/target-only.jsonl"
 
 # Without --all, the helper presents an item picker.
 rm -f "$TARGET/sessions/picked.jsonl"
@@ -101,6 +132,19 @@ snapshot_target "$TMP_DIR/after-cancel"
 cmp -s "$TMP_DIR/before-cancel" "$TMP_DIR/after-cancel" || fail 'cancelled copy changed the target'
 assert_no_copy_leftovers
 rm -f "$SOURCE/sessions/a-cancel.jsonl"
+
+# Every duplicate decision is collected before anything is published, so
+# quitting after an earlier replace leaves the destination unchanged.
+printf '%s\n' '{"session":"keep","value":"target"}' > "$TARGET/sessions/keep.jsonl"
+printf '%s\n' '{"session":"new","value":"target"}' > "$TARGET/sessions/new.jsonl"
+snapshot_target "$TMP_DIR/before-replace-quit"
+status=0
+printf 'r\nq\n' | run_copy --sessions --all 2>/dev/null || status=$?
+assert_eq "$status" 3 'quitting after a replace'
+snapshot_target "$TMP_DIR/after-replace-quit"
+cmp -s "$TMP_DIR/before-replace-quit" "$TMP_DIR/after-replace-quit" || fail 'quitting after a replace changed the target'
+assert_no_copy_leftovers
+run_copy --sessions --all --override
 
 # A publish failure part-way through restores every item already published.
 # Renaming a directory into the backup needs write access to the directory
