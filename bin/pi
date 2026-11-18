@@ -152,11 +152,12 @@ Commands:
                       the generated rc mount is first reconciled with Compose up. If
                       no container matches the workspace, a picker lists all
                       persistent Pi containers plus `0) Start a new project` and
-                      `X) Press Esc to cancel`. --root opens the shell as user 0
+                      `X) Cancel (or Esc)`. --root opens the shell as user 0
                       (root) instead of the image's node user.
-  copy                Copy agent state between Pi workspace containers through a
-                      disposable helper container. The current workspace is the
-                      destination and a picker selects the source (--from); --to
+  copy                Copy agent state between Pi workspace state volumes through a
+                      disposable helper container; neither workspace needs a container.
+                      The current workspace is the destination and a picker of the
+                      other managed state volumes selects the source (--from); --to
                       reverses that. Without -s/--sessions, -a/--auth, or
                       -e/--extensions, sessions, provider auth, and extensions are
                       all copied. --all skips the item pickers. Copies are additive;
@@ -165,9 +166,12 @@ Commands:
                       a failed publish restores the earlier items. Cancelling leaves
                       the destination unchanged and exits with status 3. Symlinked
                       state paths and overlapping source/destination are refused.
+                      A warning names each running container that mounts the
+                      destination state; restart it to pick up copied auth or extensions.
 
   In the shell and copy pickers a choice is a single key; with ten or more
-  containers, a choice starting with 1-9 is a number confirmed with Enter.
+  entries, a choice starting with 1-9 is a number confirmed with Enter. Each
+  picker ends with `X) Cancel (or Esc)`.
 
 Examples:
   pi                               # Start or reuse this workspace's container.

@@ -161,9 +161,9 @@ mount; otherwise it offers a picker for existing persistent Pi containers and
 starts a stopped selection before opening the shell. Use `pi shell --root` or
 `pi shell -r` for a root shell. When no current workspace container exists, the
 picker offers `0) Start a new project`; choosing it creates the directory if
-needed, starts the persistent service, and opens the shell. The picker ends
-with `X) Press Esc to cancel`. Choices are single keys; when the `pi shell` or
-`pi copy` picker lists ten or more containers, a choice starting with 1-9 is a
+needed, starts the persistent service, and opens the shell. Every picker, in
+`pi shell` and `pi copy`, ends with `X) Cancel (or Esc)`. Choices are single
+keys; when a picker lists ten or more entries, a choice starting with 1-9 is a
 number confirmed with Enter.
 
 ### Host shell configuration
@@ -348,17 +348,22 @@ later recreates the container on the normal agent state.
 
 ### Copying agent state
 
-`pi copy` uses a disposable Docker helper with the source state volume mounted
-read-only and the destination state volume mounted read-write. It works whether
-the selected containers are running or stopped and never shares their volumes
-afterward. Project files are never copied.
+`pi copy` copies between Pi state volumes: the managed agent-state volumes
+labelled with their workspace. It uses a disposable Docker helper with the
+source state volume mounted read-only and the destination state volume mounted
+read-write, and never shares the volumes afterward. Neither workspace needs a
+container, and containers that exist may be running or stopped. Project files
+are never copied.
 
 By default, `pi copy` treats the current workspace as the destination and lets
 you pick the source. `pi copy --to` treats the current workspace as the source
-and lets you pick the destination. `--from` explicitly selects the source (the
-default); `--from` and `--to` are mutually exclusive. `copy` refuses `--rm`,
-`--rebuild`, `--replace`, `--keep-existing`, `--new-state`, `--seed`,
-`--latest-state`, and `--oauth`.
+and lets you pick the destination. The current workspace's state volumes are
+created first when missing. The picker lists every other managed agent-state
+volume with its workspace and creation time, then `X) Cancel (or Esc)`;
+cancelling exits with status 3, and any other invalid choice exits with status
+2. `--from` explicitly selects the source (the default); `--from` and `--to`
+are mutually exclusive. `copy` refuses `--rm`, `--rebuild`, `--replace`,
+`--keep-existing`, `--new-state`, `--seed`, `--latest-state`, and `--oauth`.
 
 The category flags are `--sessions`/`-s`, `--auth`/`-a`, and
 `--extensions`/`-e`. Without category flags, all categories are copied. Without
@@ -375,8 +380,9 @@ Copying is additive by default. Duplicate items offer `r` (replace), `s`
 automatically.
 
 Sessions live in each workspace's separate session volume, which the helper
-mounts at `sessions/` on both sides. It is located by its managed workspace
-label; `pi copy` fails before copying unless each side has exactly one. Copies that exclude
+mounts at `sessions/` on both sides. It is located by the workspace label of
+its agent-state volume; `pi copy` fails before copying unless each side has
+exactly one. Copies that exclude
 sessions (`--auth`, `--extensions`) do not need them.
 
 The copy is transactional per run. Every selected item, including each
@@ -388,9 +394,10 @@ or a duplicate prompt (`q`) exits with status 3 and leaves the destination
 unchanged. Symlinked state paths on either side, and overlapping
 source/destination directories, are refused.
 
-When the destination container is running, copied files are immediately
-present in its mounted state volume. Pi may still need a reload or restart to
-notice cached authentication or extension metadata.
+When a running container mounts the destination state volume, copied files are
+immediately present in it, but Pi may still hold cached authentication or
+extension metadata; `pi copy` names each such container in a warning to restart
+it.
 
 ## Authentication and OAuth
 
