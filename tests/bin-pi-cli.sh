@@ -45,10 +45,9 @@ assert_workspace_propagated() {
 # and Pi runs with ARGUMENTS through the logged launcher.
 expect_persistent_launch() {
   assert_status 0
-  assert_eq "$(docker_actions)" $'run\nrun\ncompose up --detach\ncompose exec -T\ncompose exec -T\ncompose exec pi\ncompose exec pi' 'docker actions'
+  assert_eq "$(docker_actions)" $'run\nrun\ncompose up --detach\ncompose exec -T\ncompose exec pi\ncompose exec pi' 'docker actions'
   assert_log_has "$COMPOSE_A up --detach pi"
   assert_log_lacks ' up --build '
-  assert_log_has "$COMPOSE_A exec -T pi test -x /usr/local/bin/pi-shell-launch"
   assert_log_has "$COMPOSE_A exec -T pi sh -c"
   assert_log_has 'pi-agents managed host shell aliases'
   assert_log_has "$COMPOSE_A exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"

@@ -181,11 +181,10 @@ fake_state() {
   fake_volume_file "$(agent_volume "$workspace")" .container-initialized complete
 }
 
-# fake_image PROJECT [stale]: mark the project's service image as already built;
-# a stale image lacks pi-shell-launch until the next build.
+# fake_image PROJECT: mark the project's service image as already built.
 fake_image() {
   mkdir -p -- "$FAKE_DOCKER_STATE/images"
-  printf '%s\n' "${2:-current}" > "$FAKE_DOCKER_STATE/images/$1-pi"
+  printf 'current\n' > "$FAKE_DOCKER_STATE/images/$1-pi"
 }
 
 seed_value() { [[ ! -e $SEED_FILE ]] || cat -- "$SEED_FILE"; }

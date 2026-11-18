@@ -53,7 +53,7 @@ assert_workspace_propagated "$WS"
 fresh_stack
 run_pi "$WS" --rebuild --version
 assert_status 0
-assert_actions $'compose build pi\nrun\nrun\ncompose up --detach\ncompose exec -T\ncompose exec -T\ncompose exec pi\ncompose exec pi'
+assert_actions $'compose build pi\nrun\nrun\ncompose up --detach\ncompose exec -T\ncompose exec pi\ncompose exec pi'
 assert_log_has "$FILES build pi"
 assert_log_has "$FILES up --detach pi"
 assert_log_lacks ' up --build '

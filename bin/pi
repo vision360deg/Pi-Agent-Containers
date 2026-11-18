@@ -1416,11 +1416,6 @@ start_persistent_service() {
   up_args+=(pi)
   run_compose "${up_args[@]}"
   warn_extra_state_volume
-
-  if ! run_compose exec -T pi test -x /usr/local/bin/pi-shell-launch >/dev/null 2>&1; then
-    printf 'pi: image lacks pi-shell-launch; run `pi update` to pull and rebuild it, or use `--rebuild` for a cache-aware build\n' >&2
-    return 2
-  fi
 }
 
 pi_shell_alias_setup_script() {
@@ -2223,7 +2218,7 @@ if [[ "$REMOVE_AFTER_RUN" == true ]]; then
     shell_alias_setup_script="$(pi_shell_alias_setup_script)"
   fi
   run_compose run --rm --entrypoint /bin/sh pi -c \
-    'if [ ! -x /usr/local/bin/pi-shell-launch ]; then printf "%s\n" "pi: image lacks pi-shell-launch; run pi update or use --rebuild" >&2; exit 2; fi; if [ -n "$1" ]; then sh -c "$1"; fi; exec pi-shell-launch pi install "$2"' \
+    'if [ -n "$1" ]; then sh -c "$1"; fi; exec pi-shell-launch pi install "$2"' \
     pi "$shell_alias_setup_script" "$PI_BROWSER_EXTENSION_SOURCE"
   run_compose run --rm --service-ports pi pi-shell-launch pi "$@"
   exit $?

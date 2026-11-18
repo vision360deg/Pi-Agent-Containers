@@ -45,7 +45,7 @@ fresh_stack() {
 fresh_stack
 run_pi "$WS" update
 assert_status 0
-assert_actions $'compose build --pull\nrun\nrun\ncompose up --detach\ncompose exec -T\ncompose exec pi'
+assert_actions $'compose build --pull\nrun\nrun\ncompose up --detach\ncompose exec pi'
 assert_log_has "$COMPOSE_FILES build --pull --no-cache pi"
 assert_log_has "$COMPOSE_FILES up --detach --force-recreate pi"
 assert_log_lacks ' up --build '
@@ -60,7 +60,7 @@ for arguments in --extensions --models '--extensions --models'; do
   # shellcheck disable=SC2086
   run_pi "$WS" update $arguments
   assert_status 0
-  assert_actions $'run\nrun\ncompose up --detach\ncompose exec -T\ncompose exec pi\ncompose exec pi'
+  assert_actions $'run\nrun\ncompose up --detach\ncompose exec pi\ncompose exec pi'
   assert_log_has "$COMPOSE_FILES up --detach pi"
   assert_log_lacks ' up --build '
   assert_log_lacks ' build '

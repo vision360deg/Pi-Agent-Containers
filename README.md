@@ -194,9 +194,7 @@ exits, preserving zsh's exit status.
 
 Missing images are built before use; `--rebuild` builds once with the cache
 and Compose recreates the service from the result, while `pi update` pulls and
-rebuilds without the cache. An image that lacks `pi-shell-launch` is reported
-as stale; run `pi update` or use `--rebuild` to recover. `pi shell` repairs the
-current workspace image when needed.
+rebuilds without the cache.
 
 ### Native Pi on the host
 

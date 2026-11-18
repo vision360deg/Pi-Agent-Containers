@@ -29,17 +29,6 @@ existing_stack() {
   fake_container "$NAME" "$WS" running "$@"
 }
 
-# stale_image: the service image and its container lack pi-shell-launch.
-stale_image() {
-  fake_image "$NAME" stale
-  [[ ! -e $FAKE_DOCKER_STATE/containers/$NAME ]] || fake_record "$FAKE_DOCKER_STATE/containers/$NAME" image-id=stale
-}
-
-current_image() {
-  fake_image "$NAME"
-  [[ ! -e $FAKE_DOCKER_STATE/containers/$NAME ]] || fake_record "$FAKE_DOCKER_STATE/containers/$NAME" image-id=current
-}
-
 # expect_alias PREFIX RC_FILE TEXT: Pi's shell command prefix expands the host
 # ll alias from RC_FILE, printing TEXT, and loads no aliases without rc config.
 expect_alias() {
@@ -84,16 +73,6 @@ assert_log_lacks '--build'
 assert_eq "$(container_field "$NAME" mount./tmp/pi-host-shellrc)" "$RC_SOURCE" 'rc mount source'
 assert_log_has 'exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native'
 assert_log_has 'exec pi pi-shell-launch pi-session-log --version'
-
-# A stale image is reported without an implicit rebuild.
-stale_image
-run_pi "$WS" --version
-assert_status 2
-assert_output_has 'image lacks pi-shell-launch'
-assert_output_has 'pi update'
-assert_log_lacks 'up --build'
-assert_log_lacks 'install npm:pi-agent-browser-native'
-current_image
 
 # Explicit overrides win over SHELL and rewrite the same rc source file, so an
 # already-running container's read-only mount sees the selected shell's config.
@@ -152,22 +131,12 @@ run_pi "$WS" --rm --version
 assert_status 0
 assert_log_has 'run --rm --entrypoint /bin/sh pi -c'
 assert_log_has 'pi-agents managed host shell aliases'
-assert_log_has '[ ! -x /usr/local/bin/pi-shell-launch ]'
-assert_log_has 'run pi update or use --rebuild'
 assert_log_has 'run --rm --service-ports pi pi-shell-launch pi --version'
 assert_log_lacks 'run --build'
 assert_eq "$(grep -Ec '^docker compose .* run --' "$DOCKER_LOG" || true)" 2 'compose run count'
 RM_PREFIX=$(jq -r '.shellCommandPrefix' "$SETTINGS")
 [[ $RM_PREFIX == *'rm-custom-prefix'* ]] || fail 'custom shellCommandPrefix was lost by the one-off'
 expect_alias "$RM_PREFIX" "$RC_SOURCE/rc" rm-host-ll
-
-stale_image
-run_pi "$WS" --rm --version
-assert_status 2
-assert_output_has 'image lacks pi-shell-launch'
-assert_output_has 'pi update'
-assert_log_lacks 'run --build'
-assert_log_lacks 'build pi'
 
 run_pi "$WS" --rebuild --rm --version
 assert_status 0
