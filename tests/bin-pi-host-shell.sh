@@ -59,6 +59,7 @@ rc_dirs=("$CONFIG_DIR"/shell-rc/*)
 [[ ${#rc_dirs[@]} -eq 1 && ${rc_dirs[0]} == "$RC_SOURCE" && -f $RC_SOURCE/rc ]] || fail "expected one rc directory: ${rc_dirs[*]}"
 assert_file_has "$RC_SOURCE/rc" 'export FROM_PROFILE=yes'
 assert_file_has "$RC_SOURCE/rc" 'export FROM_ZSHRC=yes'
+assert_file_lacks "$RC_SOURCE/rc" 'FROM_BASHRC'
 SHELL_COMMAND_PREFIX=$(jq -r '.shellCommandPrefix' "$SETTINGS")
 [[ $SHELL_COMMAND_PREFIX == *'printf custom-prefix'* ]] || fail 'custom shellCommandPrefix was lost'
 [[ $SHELL_COMMAND_PREFIX == *'shopt -s expand_aliases'* ]] || fail 'alias expansion is not enabled'
@@ -84,18 +85,20 @@ rc_dirs=("$CONFIG_DIR"/shell-rc/*)
 assert_file_has "$RC_SOURCE/rc" 'export FROM_BASH_PROFILE=yes'
 assert_file_has "$RC_SOURCE/rc" 'export FROM_BASHRC=yes'
 assert_file_has "$RC_SOURCE/rc" 'alias ll="printf host-ll"'
+assert_file_lacks "$RC_SOURCE/rc" 'FROM_ZSHRC'
 expect_alias "$SHELL_COMMAND_PREFIX" "$RC_SOURCE/rc" host-ll
 assert_log_has "shell=bash rc-source=$RC_SOURCE rc-file="
 
 EXTRA_ENV=(SHELL=/bin/bash)
 run_pi "$WS" --zsh --version
 assert_status 0
+assert_file_has "$RC_SOURCE/rc" 'export FROM_ZSHRC=yes'
 assert_log_has 'shell=zsh rc-source='
 
 # --rebuild builds the service image once; Compose then recreates from it.
 run_pi "$WS" --rebuild --version
 assert_status 0
-assert_log_has ' build pi'
+assert_file_count "$DOCKER_LOG" ' build pi' 1
 assert_log_has 'up --detach pi'
 assert_log_lacks 'up --build'
 assert_log_lacks '--no-cache'
@@ -103,6 +106,15 @@ assert_log_lacks ' --pull '
 
 # Repeated launches keep a single managed alias block.
 assert_eq "$(jq -r '.shellCommandPrefix' "$SETTINGS" | grep -Fc 'pi-agents managed host shell aliases')" 1 'managed alias blocks'
+
+# The generated rc is kept in the config directory, and dropping the rc mount
+# recreates the running stack without it.
+run_pi "$WS" --version
+assert_status 0
+[[ -f $RC_SOURCE/rc ]] || fail 'generated shell rc must be kept in the config directory'
+run_pi "$WS" --no-rc-config --version
+assert_status 0
+assert_eq "$(container_field "$NAME" mount./tmp/pi-host-shellrc)" '' 'rc mount after --no-rc-config'
 
 # No-rc mode selects the shell without generating or mounting an rc file.
 reset_docker
@@ -140,7 +152,7 @@ expect_alias "$RM_PREFIX" "$RC_SOURCE/rc" rm-host-ll
 
 run_pi "$WS" --rebuild --rm --version
 assert_status 0
-assert_log_has 'build pi'
+assert_file_count "$DOCKER_LOG" ' build pi' 1
 assert_log_has 'run --rm --service-ports pi pi-shell-launch pi --version'
 assert_log_lacks 'run --build'
 assert_log_lacks '--no-cache'
@@ -172,9 +184,14 @@ assert_eq "$(container_field "$NAME" port | LC_ALL=C sort)" $'127.0.0.1:1455:145
 assert_eq "$(container_field "$NAME" created)" 2026-01-01T00:00:00Z 'container must not be recreated'
 assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI_NO_RC_CONFIG=0 $NAME pi-shell-launch"
 
-# Normal shell attachment reconciles a current container previously created
-# with --no-rc-config before trying to source the generated rc.
+# A current container previously created with --no-rc-config is attached as
+# is with --no-rc-config; normal shell attachment reconciles it before trying
+# to source the generated rc.
 existing_stack -mount./tmp/pi-host-shellrc
+run_pi "$WS" --no-rc-config shell
+assert_status 0
+assert_log_lacks ' up '
+assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI_NO_RC_CONFIG=1 $NAME pi-shell-launch"
 run_pi "$WS" shell
 assert_status 0
 assert_log_has 'compose.shell-rc.yml'
