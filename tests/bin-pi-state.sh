@@ -82,15 +82,27 @@ assert_log_matches '^docker run .* pi-agents-pi-workspace-pi sh -c'
 assert_log_has "state-initialization pending $SOURCE"
 assert_log_has 'state-initialization complete'
 assert_log_order "state-initialization pending $SOURCE" "$SOURCE:/state-source:ro"
+assert_log_order "$SOURCE:/state-source:ro" 'state-initialization complete'
 assert_eq "$(cat -- "$FAKE_DOCKER_STATE/volume-data/$TARGET/.container-initialized")" complete 'target marker'
+! volume_has_file "$TARGET" .container-initialization-pending || fail 'pending marker must be cleared'
+assert_eq "$(seed_value)" "$SOURCE" 'inheriting must not move the seed'
 assert_log_lacks 'pi-agents_pi-agent-state'
 
 # A labelled state volume that belongs to another workspace is refused.
 seed_source
 fake_volume "$TARGET" /elsewhere agent 2026-08-02T12:00:00Z
 run_pi "$WS" --version
-[[ $STATUS -ne 0 ]] || fail 'foreign labelled state volume unexpectedly accepted'
-assert_output_has 'state volume workspace label does not match'
+assert_status 2
+assert_output_has "state volume workspace label does not match: $TARGET"
+assert_log_lacks ' up '
+
+# A state volume labelled with another kind is refused.
+seed_source
+fake_volume "$TARGET" "$WS" browser 2026-08-02T12:00:00Z
+run_pi "$WS" --version
+assert_status 2
+assert_output_has "state volume kind label does not match: $TARGET"
+assert_log_lacks ' up '
 
 # Agent, session, and browser volumes without the managed labels are refused
 # before anything starts.
@@ -118,6 +130,28 @@ fake_volume "$TARGET" "$WS" agent 2026-08-02T12:00:00Z
 run_pi "$WS" --version
 assert_status 0
 assert_source "$SOURCE"
+
+# Initialization probe failures stop the launch.
+seed_source
+fake_volume "$TARGET" "$WS" agent 2026-08-02T12:00:00Z
+EXTRA_ENV=(FAKE_INIT_PROBE_STATUS=43)
+run_pi "$WS" --version
+EXTRA_ENV=()
+assert_status 2
+assert_output_has 'pi: could not inspect agent-state initialization status'
+assert_no_source_copy
+assert_log_lacks ' up '
+
+# An unmanaged seed pointer is replaced by the launched workspace when no
+# other managed state exists.
+reset_docker
+fake_volume "$SOURCE" /elsewhere agent 2026-08-01T12:00:00Z label.com.pi-agents.managed=false
+set_seed "$SOURCE"
+run_pi "$WS" --version
+assert_status 0
+assert_output_lacks 'use it as the seed for this new workspace'
+assert_no_source_copy
+assert_eq "$(seed_value)" "$TARGET" 'invalid seed is replaced on launch'
 
 # Without a seed, a new workspace starts empty on its own volume and never
 # touches the old shared default volume.
@@ -154,12 +188,18 @@ assert_log_lacks "$NORMAL"
 assert_log_has "sessions=$(session_volume "$WS")"
 assert_log_has 'up --detach --force-recreate pi'
 assert_log_lacks 'up --build'
+assert_eq "$(container_field pi-agents-pi-workspace mount./home/node/.pi/agent)" "$EXTRA" 'container must mount the extra state volume'
+assert_eq "$(container_field pi-agents-pi-workspace mount./home/node/.pi/agent/sessions)" "$(session_volume "$WS")" 'sessions stay normal'
+volume_has_file "$EXTRA" .container-initialized || fail 'extra state volume must be marked initialized'
 
-# Each start on the extra volume says so and names the untouched normal state.
+# Each start on the extra volume says so and names the untouched normal state;
+# the extra volume is never initialized again.
 run_pi "$WS" --new-state
 assert_status 0
 assert_output_has "pi: warning: using the extra state volume $EXTRA; the normal state volume $NORMAL is untouched"
 assert_log_lacks 'com.pi-agents.state-kind=agent-extra'
+assert_log_lacks 'state-initialization'
+assert_no_source_copy
 assert_log_has 'up --detach --force-recreate pi'
 
 # Omitting --new-state moves a container mounted on the extra volume back to
@@ -170,6 +210,7 @@ assert_eq "$(target_volume)" "$NORMAL" 'agent state volume'
 assert_log_has 'up --detach --force-recreate pi'
 assert_eq "$(container_field pi-agents-pi-workspace mount./home/node/.pi/agent)" "$NORMAL" 'mounted agent state'
 assert_output_has "pi: warning: an extra state volume $EXTRA exists and is not in use; use it with --new-state, or remove it with \`pi remove --all\` (also removes the normal state volumes)"
+volume_exists "$EXTRA" || fail 'switching back must keep the extra state volume'
 
 # A container already on the normal volume is reused, still with the warning.
 run_pi "$WS"
@@ -178,11 +219,24 @@ assert_log_has 'up --detach pi'
 assert_log_lacks 'force-recreate'
 assert_output_has "pi: warning: an extra state volume $EXTRA exists and is not in use"
 
-# Disposable runs warn too.
+# Disposable runs honour and warn about the extra state volume too.
 run_pi "$WS" --rm --new-state
 assert_status 0
 assert_eq "$(target_volume)" "$EXTRA" 'agent state volume'
-assert_output_has "pi: warning: using the extra state volume $EXTRA"
+assert_output_has "pi: warning: using the extra state volume $EXTRA; the normal state volume $NORMAL is untouched"
+run_pi "$WS" --rm
+assert_status 0
+assert_eq "$(target_volume)" "$NORMAL" 'agent state volume'
+assert_output_has "pi: warning: an extra state volume $EXTRA exists and is not in use"
+
+# The extra state volume is not offered by copy.
+OTHER_WS=$(make_workspace "$TEST_HOME/projects/other")
+INPUT='x'
+run_pi "$OTHER_WS" copy --from
+INPUT=''
+assert_status 3
+assert_output_has ") $NORMAL"$'\n'"   workspace: $WS"
+assert_output_lacks "$EXTRA"
 
 # Without an extra volume there is no warning.
 reset_docker
@@ -213,6 +267,17 @@ assert_status 0
 THIRD=$(target_volume)
 assert_source "$SECOND"
 assert_eq "$(seed_value)" "$FIRST" 'seed after --latest-state'
+
+# --latest-state only applies during first initialization.
+run_pi "$WS_B" --latest-state --version
+assert_status 0
+assert_output_has 'pi: warning: --latest-state has no effect; this workspace already has initialized agent state'
+assert_no_source_copy
+
+# A rejected --seed --new-state does not move the seed.
+run_pi "$WS_D" --seed --new-state --version
+assert_fails_with 2 'pi: --new-state and --seed are mutually exclusive; the extra state volume is never a seed'
+assert_eq "$(seed_value)" "$FIRST" 'rejected --seed --new-state must not move the seed'
 
 run_pi "$WS_D" --new-state --version
 assert_status 0
@@ -264,6 +329,20 @@ assert_status 0
 assert_source "$SECOND"
 assert_log_has "state-initialization pending $SECOND"
 assert_log_has 'state-initialization complete'
+volume_has_file "$SIXTH" .container-initialized || fail 'resumed initialization must complete'
+! volume_has_file "$SIXTH" .container-initialization-pending || fail 'resumed initialization must clear the pending marker'
+# State probes run as root so they can read any volume contents.
+assert_log_has "docker run --rm --user 0:0 -v $SIXTH:/state:ro pi-agents-pi-workspace-f-pi sh -c [ -d /state ] || exit 43; [ ! -f /state/.container-initialized ]"
+assert_log_has "docker run --rm --user 0:0 -v $SIXTH:/state:ro pi-agents-pi-workspace-f-pi cat /state/.container-initialization-pending"
+
+# --latest-state does not change the recorded source.
+restore lineage
+rm -f -- "$FAKE_DOCKER_STATE/volume-data/$SIXTH/.container-initialized"
+fake_volume_file "$SIXTH" .container-initialization-pending "$SECOND"
+run_pi "$WS_F" --latest-state --version
+assert_status 0
+assert_source "$SECOND"
+assert_log_lacks "$FIFTH:/state-source:ro"
 
 # A pending seed whose recorded source vanished, or is no longer a managed
 # normal state volume, is refused, not restarted.
@@ -302,6 +381,38 @@ EXPECTED_PROMPT+=$'\npi: the oldest managed agent-state volume is:\n  '"$FIRST"
 EXPECTED_PROMPT+=$'\npi: use it as the seed for this new workspace? [y/N] pi: seed selection cancelled; workspace was not started'
 [[ $(cat -- "$OUTPUT_LOG") == *$'\n'"$EXPECTED_PROMPT" ]] ||
   fail "missing-seed prompt"$'\n'"expected:"$'\n'"$EXPECTED_PROMPT"$'\n'"$(show_run)"
+assert_log_lacks 'volume create'
+
+# A pointer naming a volume that is gone asks too; declining, or no answer,
+# leaves the pointer and starts nothing.
+for input in 'n\n' ''; do
+  restore recovery
+  set_seed pi-agents-ws-gone_pi-agent-state
+  INPUT=$input
+  run_pi "$WS_G" --version
+  INPUT=''
+  assert_status 2
+  assert_output_has 'pi: warning: the seed pointer was not found.'
+  assert_output_has 'pi: seed selection cancelled; workspace was not started'
+  assert_eq "$(seed_value)" pi-agents-ws-gone_pi-agent-state 'declined selection must not rewrite the seed'
+  assert_log_lacks 'volume create'
+  assert_log_lacks ' up '
+done
+
+# --latest-state still confirms a missing seed first; declining copies nothing
+# and writes no pointer.
+for input in 'n\n' ''; do
+  restore recovery
+  rm -f -- "$SEED_FILE"
+  INPUT=$input
+  run_pi "$WS_G" --latest-state --version
+  INPUT=''
+  assert_status 2
+  assert_output_has 'pi: warning: the seed pointer was not found.'
+  assert_output_has 'seed selection cancelled; workspace was not started'
+  assert_no_source_copy
+  [[ ! -e $SEED_FILE ]] || fail 'a declined --latest-state seed must not be written'$'\n'"$(show_run)"
+done
 
 # The prompt also accepts yes/YES, and still runs with --latest-state.
 for answer in yes YES; do
@@ -312,6 +423,7 @@ for answer in yes YES; do
   assert_status 0
   assert_output_has 'seed pointer was not found'
   assert_eq "$(seed_value)" "$FIRST" "seed after answering $answer"
+  assert_source "$SIXTH"
 done
 
 restore recovery
@@ -363,6 +475,13 @@ for arguments in "$WS_H --version" "$WS_I update"; do
   run_pi $arguments
   assert_status 0
   assert_source "$FIRST"
+  assert_log_lacks 'alpine'
+  if grep -E '^docker run ' "$DOCKER_LOG" | grep -Fv -- '--user ' | grep -q .; then
+    fail 'helper containers must run with an explicit user'$'\n'"$(show_run)"
+  fi
+  if grep -E '^docker run ' "$DOCKER_LOG" | grep -Ev -- ' pi-agents-pi-workspace-[hi]-pi ' | grep -q .; then
+    fail 'helper containers must use the Pi service image'$'\n'"$(show_run)"
+  fi
   assert_log_order 'docker volume create' 'docker run '
   assert_log_order "$FIRST:/state-source:ro" ' up '
   assert_log_order 'state-initialization complete' ' up '
