@@ -139,7 +139,8 @@ Commands:
                       The two flags can be combined.
   list                List running and stopped persistent Pi stacks with workspace,
                       project, created and started times, agent-state volumes, and
-                      seed/latest markers. It does not change Docker state.
+                      seed/latest markers, then state volumes left without a stack.
+                      It does not change Docker state.
   remove [--all]      Remove the current workspace's stack. State volumes are kept,
                       and a warning names a kept extra state volume. --all also
                       removes them; host workspace files are never removed. When the
@@ -1331,84 +1332,82 @@ repoint_seed_after_removal() {
 }
 
 list_stacks() {
-  local temp_dir
-  local ids
-  local id
-  local record
-  local name
-  local status
-  local created
-  local started
-  local workspace
-  local project
-  local agent_state
-  local active_state
-  local extra_state
-  local seed
-  local latest
-  local marker
-  local marker_text
-  local inspect_format
+  local names name record status created started workspace project agent sessions browser seed latest marker_text
+  local normal_agent extra_agent extra_text active_text marker_volume
   local delimiter=$'\037'
   local -a markers
-
-  temp_dir="$(mktemp -d)"
-  TEMPORARY_DIRECTORIES+=("$temp_dir")
-  inspect_format="{{.Name}}${delimiter}{{.State.Status}}${delimiter}{{.Created}}${delimiter}{{.State.StartedAt}}${delimiter}{{index .Config.Labels \"com.pi-agents.workspace\"}}${delimiter}{{index .Config.Labels \"com.docker.compose.project\"}}${delimiter}{{range .Mounts}}{{if and (eq .Type \"volume\") (eq .Destination \"/home/node/.pi/agent\")}}{{.Name}}{{end}}{{end}}"
-
-  ids="$(docker ps -a --filter 'label=com.pi-agents.managed=true' --filter 'label=com.pi-agents.workspace' --filter 'label=com.docker.compose.oneoff=False' --format '{{.ID}}')"
-  if [[ -z "$ids" ]]; then
-    printf 'No Pi stacks found.\n'
-    return 0
-  fi
-
+  LISTED_MANAGED_VOLUME_NAMES=$'\n'
+  names="$(docker ps -a --filter 'label=com.pi-agents.managed=true' --filter 'label=com.pi-agents.workspace' \
+    --filter 'label=com.docker.compose.oneoff=False' --format '{{.Names}}' | sort)"
   seed="$(read_seed_pointer)"
-  ! is_extra_agent_state_volume "$seed" || seed=""
   latest="$(find_agent_state_volume_by_age newest)"
+  if [[ -z "$names" ]]; then
+    printf 'No Pi stacks found.\n'
+  else
+    while IFS= read -r name; do
+      [[ -n "$name" ]] || continue
+      record="$(docker inspect --format "{{.Name}}${delimiter}{{.State.Status}}${delimiter}{{.Created}}${delimiter}{{.State.StartedAt}}${delimiter}{{index .Config.Labels \"com.pi-agents.workspace\"}}${delimiter}{{index .Config.Labels \"com.docker.compose.project\"}}${delimiter}{{range .Mounts}}{{if eq .Destination \"/home/node/.pi/agent\"}}{{.Name}}{{end}}{{end}}${delimiter}{{range .Mounts}}{{if eq .Destination \"/home/node/.pi/agent/sessions\"}}{{.Name}}{{end}}{{end}}${delimiter}{{range .Mounts}}{{if eq .Destination \"/home/node/.agent-browser\"}}{{.Name}}{{end}}{{end}}" -- "$name")"
+      IFS="$delimiter" read -r name status created started workspace project agent sessions browser <<< "$record"
+      name="${name#/}"
+      [[ "$started" != 0001-* ]] || started=never
+      # Seed and latest only ever point at normal agent volumes; a stack running
+      # on its extra volume still owns its normal one.
+      normal_agent="pi-agents-ws-$(workspace_hash "$workspace")_pi-agent-state"
+      extra_agent="$(extra_agent_state_volume_for_workspace "$workspace")"
+      extra_text=none
+      ! volume_exists "$extra_agent" || extra_text="$extra_agent"
+      case "$agent" in
+        '') active_text=none ;;
+        "$extra_agent") active_text=extra ;;
+        "$normal_agent") active_text=normal ;;
+        *) active_text=unknown ;;
+      esac
+      LISTED_MANAGED_VOLUME_NAMES+="${agent:-}"$'\n'"${sessions:-}"$'\n'"${browser:-}"$'\n'"$normal_agent"$'\n'"$extra_agent"$'\n'
+      marker_volume="$agent"
+      [[ "$agent" != "$extra_agent" ]] || marker_volume="$normal_agent"
+      markers=()
+      [[ -z "$marker_volume" || "$marker_volume" != "$seed" ]] || markers+=(seed)
+      [[ -z "$marker_volume" || "$marker_volume" != "$latest" ]] || markers+=(latest)
+      marker_text=-
+      if ((${#markers[@]})); then
+        marker_text="${markers[0]}"
+        [[ ${#markers[@]} -lt 2 ]] || marker_text+=",${markers[1]}"
+      fi
+      printf 'STACK: %s\n  status: %s\n  workspace: %s\n  project: %s\n  created: %s\n  started: %s\n  agent-state: %s\n  active-state: %s\n  extra-state: %s\n  session-state: %s\n  browser-state: %s\n  markers: %s\n' \
+        "$name" "$status" "$workspace" "$project" "$created" "$started" "${agent:-none}" "$active_text" "$extra_text" "${sessions:-none}" "${browser:-none}" "$marker_text"
+    done <<< "$names"
+  fi
+  list_orphaned_volumes "$seed" "$latest"
+}
 
-  while IFS= read -r id; do
-    [[ -n "$id" ]] || continue
-    record="$(docker inspect --format "$inspect_format" -- "$id")"
-    IFS="$delimiter" read -r name status created started workspace project agent_state <<< "$record"
-    name="${name#/}"
-    [[ "$started" == 0001-* ]] && started="never"
-    if [[ -n "$agent_state" ]] && ! volume_exists "$agent_state"; then
-      agent_state=""
-    fi
-    extra_state=""
-    if [[ -n "$workspace" ]]; then
-      extra_state="$(extra_agent_state_volume_for_workspace "$workspace")"
-      volume_exists "$extra_state" || extra_state=""
-    fi
-    printf '%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n' \
-      "$name" "$delimiter" "$status" "$delimiter" "$created" "$delimiter" "$started" \
-      "$delimiter" "$workspace" "$delimiter" "$project" "$delimiter" "$agent_state" \
-      "$delimiter" "$extra_state" >> "$temp_dir/records"
-  done <<< "$ids"
-
-  while IFS="$delimiter" read -r name status created started workspace project agent_state extra_state; do
+# Managed state volumes that no listed stack mounts or owns.
+list_orphaned_volumes() {
+  local seed="$1" latest="$2" volumes volume record created workspace project kind marker_text
+  local delimiter=$'\037' printed=false
+  local -a markers
+  volumes="$(docker volume ls --filter 'label=com.pi-agents.managed=true' --format '{{.Name}}')"
+  while IFS= read -r volume; do
+    [[ -n "$volume" ]] || continue
+    [[ "$LISTED_MANAGED_VOLUME_NAMES" != *$'\n'"$volume"$'\n'* ]] || continue
+    record="$(docker volume inspect --format "{{.Name}}${delimiter}{{.CreatedAt}}${delimiter}{{index .Labels \"com.pi-agents.workspace\"}}${delimiter}{{index .Labels \"com.pi-agents.project\"}}${delimiter}{{index .Labels \"com.pi-agents.state-kind\"}}" "$volume")"
+    IFS="$delimiter" read -r volume created workspace project kind <<< "$record"
     markers=()
-    [[ -n "$agent_state" && "$agent_state" == "$seed" ]] && markers+=(seed)
-    [[ -n "$agent_state" && "$agent_state" == "$latest" ]] && markers+=(latest)
-    marker_text=""
-    for marker in "${markers[@]}"; do
-      [[ -n "$marker_text" ]] && marker_text+=", "
-      marker_text+="$marker"
-    done
-    [[ -n "$marker_text" ]] || marker_text="-"
-    if [[ -z "$agent_state" ]]; then
-      agent_state="none"
-      active_state="none"
-    elif is_extra_agent_state_volume "$agent_state"; then
-      active_state="extra"
-    else
-      active_state="normal"
+    if [[ "$kind" == agent ]]; then
+      [[ "$volume" != "$seed" ]] || markers+=(seed)
+      [[ "$volume" != "$latest" ]] || markers+=(latest)
     fi
-    [[ -n "$extra_state" ]] || extra_state="none"
-
-    printf 'STACK: %s\n  status: %s\n  workspace: %s\n  project: %s\n  created: %s\n  started: %s\n  agent-state: %s\n  active-state: %s\n  extra-state: %s\n  markers: %s\n' \
-      "$name" "$status" "$workspace" "$project" "$created" "$started" "$agent_state" "$active_state" "$extra_state" "$marker_text"
-  done < <(sort -t "$delimiter" -k1,1 "$temp_dir/records")
+    marker_text=-
+    if ((${#markers[@]})); then
+      marker_text="${markers[0]}"
+      [[ ${#markers[@]} -lt 2 ]] || marker_text+=",${markers[1]}"
+    fi
+    if [[ "$printed" == false ]]; then
+      printf 'ORPHAN VOLUMES:\n'
+      printed=true
+    fi
+    printf 'VOLUME: %s\n  kind: %s\n  workspace: %s\n  project: %s\n  created: %s\n  markers: %s\n' \
+      "$volume" "${kind:-unknown}" "${workspace:-unknown}" "${project:-unknown}" "$created" "$marker_text"
+  done <<< "$volumes"
 }
 
 # The agent-state volume the workspace container currently mounts, if any.

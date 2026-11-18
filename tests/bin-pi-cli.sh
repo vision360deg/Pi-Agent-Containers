@@ -99,7 +99,7 @@ help_has 'Fails when the workspace has no stack.'
 help_has 'Rebuild the image with a fresh pull and no build cache, then'
 help_has "update --extensions Start the persistent service and run Pi's extension update."
 help_has "update --models     Start the persistent service and update Pi's model catalogs."
-help_has 'seed/latest markers. It does not change Docker state.'
+help_has $'seed/latest markers, then state volumes left without a stack.\n                      It does not change Docker state.'
 help_has 'a warning names a kept extra state volume.'
 help_has 'the oldest remaining managed state becomes the'
 help_has 'whether to leave them (default), delete all, or delete some.'

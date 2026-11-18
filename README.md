@@ -318,11 +318,17 @@ pointer on its own; only `--seed` does. Removing the current seed with
 `pi remove --all` reassigns the pointer to the oldest remaining normal state,
 if one exists, and otherwise deletes the pointer file.
 
-`pi list` reports workspace paths, project/container names, Docker timestamps,
-the mounted agent-state volume, `active-state` (`normal` or `extra`), the
-workspace's `extra-state` volume (or `none`), and seed/latest markers.
-`started` comes from Docker's `State.StartedAt`; a container that has never
-started is shown as `never`.
+`pi list` reports each stack, sorted by container name, with its workspace
+path, project/container names, Docker timestamps, the mounted `agent-state`
+volume, `active-state` (`normal`, `extra`, `unknown`, or `none`), the
+workspace's `extra-state` volume (or `none`), the mounted `session-state` and
+`browser-state` volumes, and seed/latest markers. `started` comes from Docker's
+`State.StartedAt`; a container that has never started is shown as `never`.
+Markers only ever name normal agent-state volumes, so a stack running on its
+extra volume is marked through its normal one. After the stacks, or after
+`No Pi stacks found.`, an `ORPHAN VOLUMES:` section lists managed state volumes
+that no listed stack mounts or owns, with their `kind`, `workspace`, `project`,
+`created` time, and markers (only for kind `agent`).
 
 ### Extra state volume (`--new-state`)
 

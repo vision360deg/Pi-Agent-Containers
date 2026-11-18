@@ -240,31 +240,37 @@ for command in stop remove; do
 done
 
 # --- list ---
-# Alpha has an unused extra state volume; delta runs on its extra volume.
-ALPHA_EXTRA=$(extra_volume /tmp/workspaces/alpha)
-DELTA_EXTRA=$(extra_volume /tmp/workspaces/delta)
+# Alpha has an unused extra state volume; delta runs on its extra volume, which
+# is newer than every normal volume yet never latest. Orphan has state volumes
+# but no stack.
+L_ALPHA=$(make_workspace "$TEST_HOME/list/alpha")
+L_DELTA=$(make_workspace "$TEST_HOME/list/delta")
+L_NONE=$(make_workspace "$TEST_HOME/list/no-agent-state")
+L_ZETA=$(make_workspace "$TEST_HOME/list/zeta")
+L_ORPHAN=$(make_workspace "$TEST_HOME/list/orphan")
 
 list_stacks() {
   reset_docker
-  fake_container pi-agents-pi-alpha /tmp/workspaces/alpha running created=2026-08-08T08:00:00.000000000Z \
-    started=2026-08-08T09:15:00.000000000Z label.com.docker.compose.project= \
-    mount./home/node/.pi/agent=pi-agents-ws-alpha_pi-agent-state
-  fake_container pi-agents-pi-delta /tmp/workspaces/delta running created=2026-08-08T07:00:00.000000000Z \
-    started=2026-08-08T07:30:00.000000000Z "mount./home/node/.pi/agent=$DELTA_EXTRA"
-  fake_container pi-agents-pi-no-agent-state /tmp/workspaces/no-agent-state paused \
+  fake_container pi-agents-pi-zeta "$L_ZETA" exited created=2026-08-08T10:00:00.000000000Z \
+    started=0001-01-01T00:00:00Z
+  fake_container pi-agents-pi-alpha "$L_ALPHA" running created=2026-08-08T08:00:00.000000000Z \
+    started=2026-08-08T09:15:00.000000000Z label.com.docker.compose.project=
+  fake_container pi-agents-pi-delta "$L_DELTA" running created=2026-08-08T07:00:00.000000000Z \
+    started=2026-08-08T07:30:00.000000000Z "mount./home/node/.pi/agent=$(extra_volume "$L_DELTA")"
+  fake_container pi-agents-pi-no-agent-state "$L_NONE" paused \
     created=2026-08-08T09:00:00.000000000Z started=2026-08-08T09:30:00.000000000Z -mount./home/node/.pi/agent
-  fake_container pi-agents-pi-unresolvable /tmp/workspaces/unresolvable created \
-    created=2026-08-08T09:30:00.000000000Z started=0001-01-01T00:00:00Z \
-    mount./home/node/.pi/agent=pi-agents-ws-unresolvable_pi-agent-state
-  fake_container pi-agents-pi-zeta /tmp/workspaces/zeta exited created=2026-08-08T10:00:00.000000000Z \
-    started=0001-01-01T00:00:00Z mount./home/node/.pi/agent=pi-agents-ws-zeta_pi-agent-state
   # Real Docker lists --rm one-off containers unless the oneoff filter is set.
-  fake_container pi-agents-pi-run-1a2b3c /tmp/workspaces/alpha running label.com.docker.compose.project=pi-agents-pi-alpha \
-    label.com.docker.compose.oneoff=True mount./home/node/.pi/agent=pi-agents-ws-alpha_pi-agent-state
-  fake_volume pi-agents-ws-alpha_pi-agent-state /tmp/workspaces/alpha agent 2026-08-08T12:30:00Z
-  fake_volume pi-agents-ws-zeta_pi-agent-state /tmp/workspaces/zeta agent 2026-08-08T13:30:00Z
-  fake_volume "$ALPHA_EXTRA" /tmp/workspaces/alpha agent-extra 2026-08-09T12:30:00Z
-  fake_volume "$DELTA_EXTRA" /tmp/workspaces/delta agent-extra 2026-08-09T13:30:00Z
+  fake_container pi-agents-pi-run-1a2b3c "$L_ALPHA" running label.com.docker.compose.project=pi-agents-pi-alpha \
+    label.com.docker.compose.oneoff=True
+  fake_state "$L_ALPHA" 2026-01-01T00:00:00Z
+  fake_state "$L_ZETA" 2026-01-02T00:00:00Z
+  fake_volume "$(agent_volume "$L_DELTA")" "$L_DELTA" agent 2026-01-03T00:00:00Z
+  fake_volume "$(extra_volume "$L_ALPHA")" "$L_ALPHA" agent-extra 2026-01-05T00:00:00Z
+  fake_volume "$(extra_volume "$L_DELTA")" "$L_DELTA" agent-extra 2026-01-09T00:00:00Z
+  fake_volume "$(extra_volume "$L_ORPHAN")" "$L_ORPHAN" agent-extra 2026-01-04T00:00:00Z
+  fake_volume "$(agent_volume "$L_ORPHAN")" "$L_ORPHAN" agent 2026-01-04T00:00:00Z
+  fake_volume "$(session_volume "$L_ORPHAN")" "$L_ORPHAN" sessions 2026-01-04T00:00:00Z
+  fake_volume unmanaged "$L_ORPHAN" agent 2026-01-06T00:00:00Z label.com.pi-agents.managed=false
   mkdir -p "$CONFIG_DIR"
 }
 
@@ -279,50 +285,79 @@ assert_read_only_docker_calls() {
 }
 
 stack_block() {
-  printf 'STACK: %s\n  status: %s\n  workspace: %s\n  project: %s\n  created: %s\n  started: %s\n  agent-state: %s\n  active-state: %s\n  extra-state: %s\n  markers: %s\n' "$@"
+  printf 'STACK: %s\n  status: %s\n  workspace: %s\n  project: %s\n  created: %s\n  started: %s\n  agent-state: %s\n  active-state: %s\n  extra-state: %s\n  session-state: %s\n  browser-state: %s\n  markers: %s\n' "$@"
 }
 
+volume_block() {
+  printf 'VOLUME: %s\n  kind: %s\n  workspace: %s\n  project: %s\n  created: %s\n  markers: %s\n' "$@"
+}
+
+# expected_list ALPHA DELTA ZETA ORPHAN: the markers of each agent state.
 expected_list() {
-  stack_block pi-agents-pi-alpha running /tmp/workspaces/alpha '' \
+  stack_block pi-agents-pi-alpha running "$L_ALPHA" '' \
     2026-08-08T08:00:00.000000000Z 2026-08-08T09:15:00.000000000Z \
-    pi-agents-ws-alpha_pi-agent-state normal "$ALPHA_EXTRA" "$1"
-  stack_block pi-agents-pi-delta running /tmp/workspaces/delta pi-agents-pi-delta \
+    "$(agent_volume "$L_ALPHA")" normal "$(extra_volume "$L_ALPHA")" \
+    "$(session_volume "$L_ALPHA")" "$(browser_volume "$L_ALPHA")" "$1"
+  stack_block pi-agents-pi-delta running "$L_DELTA" pi-agents-pi-delta \
     2026-08-08T07:00:00.000000000Z 2026-08-08T07:30:00.000000000Z \
-    "$DELTA_EXTRA" extra "$DELTA_EXTRA" -
-  stack_block pi-agents-pi-no-agent-state paused /tmp/workspaces/no-agent-state pi-agents-pi-no-agent-state \
-    2026-08-08T09:00:00.000000000Z 2026-08-08T09:30:00.000000000Z none none none -
-  stack_block pi-agents-pi-unresolvable created /tmp/workspaces/unresolvable pi-agents-pi-unresolvable \
-    2026-08-08T09:30:00.000000000Z never none none none -
-  stack_block pi-agents-pi-zeta exited /tmp/workspaces/zeta pi-agents-pi-zeta \
-    2026-08-08T10:00:00.000000000Z never pi-agents-ws-zeta_pi-agent-state normal none "$2"
+    "$(extra_volume "$L_DELTA")" extra "$(extra_volume "$L_DELTA")" \
+    "$(session_volume "$L_DELTA")" "$(browser_volume "$L_DELTA")" "$2"
+  stack_block pi-agents-pi-no-agent-state paused "$L_NONE" pi-agents-pi-no-agent-state \
+    2026-08-08T09:00:00.000000000Z 2026-08-08T09:30:00.000000000Z none none none \
+    "$(session_volume "$L_NONE")" "$(browser_volume "$L_NONE")" -
+  stack_block pi-agents-pi-zeta exited "$L_ZETA" pi-agents-pi-zeta \
+    2026-08-08T10:00:00.000000000Z never "$(agent_volume "$L_ZETA")" normal none \
+    "$(session_volume "$L_ZETA")" "$(browser_volume "$L_ZETA")" "$3"
+  printf 'ORPHAN VOLUMES:\n'
+  volume_block "$(extra_volume "$L_ORPHAN")" agent-extra "$L_ORPHAN" pi-agents-pi-orphan 2026-01-04T00:00:00Z -
+  volume_block "$(agent_volume "$L_ORPHAN")" agent "$L_ORPHAN" pi-agents-pi-orphan 2026-01-04T00:00:00Z "$4"
+  volume_block "$(session_volume "$L_ORPHAN")" sessions "$L_ORPHAN" pi-agents-pi-orphan 2026-01-04T00:00:00Z -
 }
 
-# Delta's extra volume is newer than every normal volume yet is never latest.
 list_stacks
-printf '%s\n' pi-agents-ws-alpha_pi-agent-state > "$SEED_FILE"
+printf '%s\n' "$(agent_volume "$L_ALPHA")" > "$SEED_FILE"
 run_pi "$WS" list
 assert_status 0
-assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list seed latest)" 'list output'
+assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list seed - - latest)" 'list output'
 assert_read_only_docker_calls
 
-printf '%s\n' pi-agents-ws-zeta_pi-agent-state > "$SEED_FILE"
+# Stacks are listed by container name whatever order Docker returns them in.
+EXTRA_ENV=(FAKE_PS_REVERSE=1)
 run_pi "$WS" list
-assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list - 'seed, latest')" 'list output, zeta seed'
-assert_read_only_docker_calls
+EXTRA_ENV=()
+assert_status 0
+assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list seed - - latest)" 'list output sorted by container name'
+
+# A stack running on its extra volume is marked through its normal volume.
+printf '%s\n' "$(agent_volume "$L_DELTA")" > "$SEED_FILE"
+run_pi "$WS" list
+assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list - seed - latest)" 'list output, delta seed'
+
+# One volume can carry both markers.
+printf '%s\n' "$(agent_volume "$L_ORPHAN")" > "$SEED_FILE"
+run_pi "$WS" list
+assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list - - - seed,latest)" 'list output, orphan seed'
 
 # A seed pointer naming an extra volume is not shown as the seed.
-printf '%s\n' "$DELTA_EXTRA" > "$SEED_FILE"
+printf '%s\n' "$(extra_volume "$L_DELTA")" > "$SEED_FILE"
 run_pi "$WS" list
-assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list - latest)" 'list output, extra seed'
+assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list - - - latest)" 'list output, extra seed'
 assert_read_only_docker_calls
 
 # An inherited missing PI_WORKSPACE does not affect listing.
-printf '%s\n' pi-agents-ws-alpha_pi-agent-state > "$SEED_FILE"
+printf '%s\n' "$(agent_volume "$L_ZETA")" > "$SEED_FILE"
 EXTRA_ENV=(PI_WORKSPACE=/missing)
 run_pi "$WS" list
 EXTRA_ENV=()
 assert_status 0
-assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list seed latest)" 'list output with a missing PI_WORKSPACE'
+assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list - - seed latest)" 'list output with a missing PI_WORKSPACE'
+
+# Without stacks, leftover state volumes are still listed.
+reset_docker
+fake_volume "$(agent_volume "$L_ORPHAN")" "$L_ORPHAN" agent 2026-01-04T00:00:00Z
+run_pi "$WS" list
+assert_status 0
+assert_eq "$(cat -- "$OUTPUT_LOG")" "No Pi stacks found."$'\n'"ORPHAN VOLUMES:"$'\n'"$(volume_block "$(agent_volume "$L_ORPHAN")" agent "$L_ORPHAN" pi-agents-pi-orphan 2026-01-04T00:00:00Z latest)" 'orphans without stacks'
 assert_read_only_docker_calls
 
 reset_docker

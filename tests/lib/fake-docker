@@ -136,7 +136,15 @@ docker_ps() {
       *) shift ;;
     esac
   done
-  for file in "$CONTAINERS"/*; do
+  local -a files=("$CONTAINERS"/*)
+  # FAKE_PS_REVERSE lists containers in reverse name order, as Docker may.
+  if [[ -n ${FAKE_PS_REVERSE:-} ]]; then
+    local index
+    local -a reversed=()
+    for index in "${!files[@]}"; do reversed[$index]=${files[$((${#files[@]} - 1 - index))]}; done
+    files=("${reversed[@]}")
+  fi
+  for file in "${files[@]}"; do
     load_record "$file"
     [[ $all == true || ${R[state]:-} == running ]] || continue
     matches_filters || continue
