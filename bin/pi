@@ -57,6 +57,7 @@ prepare_host_shell_rc() {
   select_host_shell || return
   [[ "$NO_RC_CONFIG" -eq 0 ]] || return 0
   mkdir -p -- "$HOST_SHELL_RC_SOURCE"
+  chmod 0755 "$HOST_SHELL_RC_SOURCE"
   "$ROOT/bin/pi-shell-rc" \
     --shell "$HOST_SHELL_NAME" \
     --home "$HOME" \
@@ -835,12 +836,15 @@ fi
 CONFIG_PATH="${PI_AGENT_CONTAINERS_CONFIG_PATH:-$HOME/.config/pi-agent-containers}"
 STATE_SEED_FILE="$CONFIG_PATH/seed"
 SHELL_RC_DIRECTORY="$CONFIG_PATH/shell-rc"
-HOST_SHELL_RC_FILE=""
-HOST_SHELL_RC_SOURCE=""
-if [[ "$NO_RC_CONFIG" -eq 0 ]]; then
-  HOST_SHELL_RC_SOURCE="$SHELL_RC_DIRECTORY/$VOLUME_NAMESPACE"
-  HOST_SHELL_RC_FILE="$HOST_SHELL_RC_SOURCE/rc"
-fi
+set_host_shell_rc_paths() {
+  HOST_SHELL_RC_FILE=""
+  HOST_SHELL_RC_SOURCE=""
+  if [[ "$NO_RC_CONFIG" -eq 0 ]]; then
+    HOST_SHELL_RC_SOURCE="$SHELL_RC_DIRECTORY/$VOLUME_NAMESPACE"
+    HOST_SHELL_RC_FILE="$HOST_SHELL_RC_SOURCE/rc"
+  fi
+}
+set_host_shell_rc_paths
 FORCE_RECREATE=false
 if [[ "$REPLACE_CONTAINER" == true || "$NEW_STATE" == true ]]; then
   FORCE_RECREATE=true
@@ -1260,12 +1264,10 @@ remove_workspace_volumes() {
   return "$status"
 }
 
-# Warns whenever the workspace has an extra state volume, whether or not the
-# container runs on it. The first argument says whether it is in use.
+# Warns, without blocking, while the workspace has an extra --new-state volume.
 warn_extra_state_volume() {
-  local in_use="${1:-$NEW_STATE}"
   volume_exists "$EXTRA_AGENT_STATE_VOLUME_NAME" || return 0
-  if [[ "$in_use" == true ]]; then
+  if [[ "$NEW_STATE" == true ]]; then
     printf 'pi: warning: using the extra state volume %s; the normal state volume %s is untouched\n' \
       "$EXTRA_AGENT_STATE_VOLUME_NAME" "$NORMAL_AGENT_STATE_VOLUME_NAME" >&2
   else
@@ -1391,12 +1393,12 @@ list_orphaned_volumes() {
 
 # The agent-state volume the workspace container currently mounts, if any.
 mounted_agent_state_volume() {
-  docker container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/node/.pi/agent"}}{{.Name}}{{end}}{{end}}' "$1" 2>/dev/null || true
+  docker container inspect --format '{{range .Mounts}}{{if eq .Destination "/home/node/.pi/agent"}}{{.Name}}{{end}}{{end}}' "$1"
 }
 
 start_persistent_service() {
   local -a up_args=(up)
-  local mounted_agent_state
+  local mounted_agent_state=''
   ensure_workspace_volumes
   # The helper image is the service image, so --rebuild builds it once here
   # and Compose recreates the service from the new image.
@@ -1404,7 +1406,9 @@ start_persistent_service() {
   up_args+=(--detach)
   # Switching between the normal and extra agent-state volumes always moves
   # the container onto the requested volume.
-  mounted_agent_state="$(mounted_agent_state_volume "$CONTAINER_NAME")"
+  if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    mounted_agent_state="$(mounted_agent_state_volume "$CONTAINER_NAME")" || fail 'could not inspect agent state mount'
+  fi
   if [[ "$FORCE_RECREATE" == true ||
     ( -n "$mounted_agent_state" && "$mounted_agent_state" != "$ACTIVE_AGENT_STATE_VOLUME_NAME" ) ]]; then
     up_args+=(--force-recreate)
@@ -1877,7 +1881,6 @@ select_shell_container() {
 
   if [[ "$new_project_option" == false && "$current_count" -eq 1 ]]; then
     SHELL_SELECTED_NAME="${SHELL_NAMES[$current_index]}"
-    SHELL_SELECTED_STATUS="${SHELL_STATUSES[$current_index]}"
     SHELL_SELECTED_STATE="${SHELL_STATES[$current_index]}"
     SHELL_SELECTED_PATH="${SHELL_PATHS[$current_index]}"
     return 0
@@ -1919,13 +1922,8 @@ select_shell_container() {
 
   index=$((choice - 1))
   SHELL_SELECTED_NAME="${SHELL_NAMES[$index]}"
-  SHELL_SELECTED_STATUS="${SHELL_STATUSES[$index]}"
   SHELL_SELECTED_STATE="${SHELL_STATES[$index]}"
   SHELL_SELECTED_PATH="${SHELL_PATHS[$index]}"
-}
-
-shell_container_is_running() {
-  [[ "$1" == running ]]
 }
 
 container_has_host_rc_mount() {
@@ -1934,16 +1932,18 @@ container_has_host_rc_mount() {
   [[ -n "$mounted_source" ]]
 }
 
-shell_container_has_launcher() {
-  docker exec "$1" test -x /usr/local/bin/pi-shell-launch >/dev/null 2>&1
-}
-
 attach_shell() {
-  prepare_host_shell_rc
+  local requested_workspace="$WORKSPACE" mounted_agent_state
+  local -a exec_arguments=(exec -it)
   select_shell_container
   if [[ "$SHELL_START_NEW_PROJECT" == true ]]; then
     mkdir -p -- "$WORKSPACE"
+    WORKSPACE="$(canonicalize_workspace "$WORKSPACE")"
     WORKSPACE_MISSING=false
+    set_workspace_identity
+    set_host_shell_rc_paths
+    prepare_host_shell_rc
+    build_compose
     prepare_workspace_container
     prepare_state_lineage
     ensure_workspace_volumes
@@ -1953,81 +1953,41 @@ attach_shell() {
     install_browser_extension
     record_state_lineage
     SHELL_SELECTED_NAME="$CONTAINER_NAME"
-    SHELL_SELECTED_STATE=running
-  fi
-
-  # The current workspace's stack may carry a disambiguated name, so decide
-  # by workspace path and adopt its real container and project.
-  local selected_is_current=false
-  if [[ "$SHELL_START_NEW_PROJECT" == true ]]; then
-    selected_is_current=true
-  elif [[ "${SHELL_SELECTED_PATH:-}" == "$WORKSPACE" ]]; then
-    selected_is_current=true
-    inspect_workspace_container "$SHELL_SELECTED_NAME" "$WORKSPACE" || return $?
-    CONTAINER_NAME="$SHELL_SELECTED_NAME"
-    PROJECT_NAME="$INSPECTED_PROJECT"
-    build_compose
-  fi
-
-  if [[ "$REBUILD_IMAGE" == true && "$SHELL_START_NEW_PROJECT" != true ]]; then
-    if [[ "$selected_is_current" != true ]]; then
-      printf 'pi: --rebuild can only build the current workspace image; run `pi --rebuild shell` from the selected workspace\n' >&2
-      return 2
-    fi
-    FORCE_RECREATE=true
-    start_persistent_service || return $?
-    SHELL_SELECTED_STATE=running
-  fi
-
-  # A container created by --no-rc-config has no rc bind mount. Reconcile the
-  # current workspace service before attaching normally so the launcher can
-  # read the generated rc file. Containers selected from another workspace
-  # retain their existing mounts and are not recreated under this project.
-  if [[ "$NO_RC_CONFIG" -eq 0 && "$selected_is_current" == true ]] &&
-    ! container_has_host_rc_mount "$SHELL_SELECTED_NAME"; then
-    start_persistent_service
-    SHELL_SELECTED_STATE=running
-  fi
-
-  if ! shell_container_is_running "$SHELL_SELECTED_STATE"; then
-    docker start "$SHELL_SELECTED_NAME" >/dev/null
-    SHELL_SELECTED_STATE=running
-    # A started container keeps whichever agent-state volume it mounts.
-    if [[ "${SHELL_SELECTED_PATH:-}" == "$WORKSPACE" ]]; then
-      if [[ "$(mounted_agent_state_volume "$SHELL_SELECTED_NAME")" == "$EXTRA_AGENT_STATE_VOLUME_NAME" ]]; then
-        warn_extra_state_volume true
-      else
-        warn_extra_state_volume false
-      fi
-    fi
-  fi
-
-  if ! shell_container_has_launcher "$SHELL_SELECTED_NAME"; then
-    if [[ "$selected_is_current" != true ]]; then
-      printf 'pi: selected container lacks pi-shell-launch; run `pi update` or `pi --rebuild` from its workspace first\n' >&2
-      return 2
-    fi
-    if [[ "$REBUILD_IMAGE" != true ]]; then
-      printf 'pi: image lacks pi-shell-launch; run `pi update` to pull and rebuild it, or use `--rebuild` for a cache-aware build\n' >&2
-      return 2
-    fi
-    start_persistent_service || return $?
-    SHELL_SELECTED_STATE=running
-  fi
-
-  if [[ "$SHELL_AS_ROOT" == true ]]; then
-    docker exec -it --user 0 \
-      --env "PI_HOST_SHELL=$HOST_SHELL_NAME" \
-      --env 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc' \
-      --env "PI_NO_RC_CONFIG=$NO_RC_CONFIG" \
-      "$SHELL_SELECTED_NAME" pi-shell-launch
   else
-    docker exec -it \
-      --env "PI_HOST_SHELL=$HOST_SHELL_NAME" \
-      --env 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc' \
-      --env "PI_NO_RC_CONFIG=$NO_RC_CONFIG" \
-      "$SHELL_SELECTED_NAME" pi-shell-launch
+    [[ "$REBUILD_IMAGE" != true || "$SHELL_SELECTED_PATH" == "$requested_workspace" ]] ||
+      fail '--rebuild can only build the current workspace image; run `pi --rebuild shell` from the selected workspace'
+    WORKSPACE="$SHELL_SELECTED_PATH"
+    set_workspace_identity
+    set_host_shell_rc_paths
+    resolve_exact_workspace_stack
+    # A shell keeps whichever agent state the stack mounts; it never switches.
+    mounted_agent_state="$(mounted_agent_state_volume "$CONTAINER_NAME")" || fail 'could not inspect agent state mount'
+    if [[ "$mounted_agent_state" == "$EXTRA_AGENT_STATE_VOLUME_NAME" ]]; then
+      NEW_STATE=true
+      ACTIVE_AGENT_STATE_VOLUME_NAME="$EXTRA_AGENT_STATE_VOLUME_NAME"
+    fi
+    prepare_host_shell_rc
+    build_compose
+    # A shell cannot pass launch options, so it only recreates the current
+    # workspace's stack for --rebuild or a missing rc mount, for example after
+    # --no-rc-config. Another workspace's stack keeps its mounts.
+    if [[ "$REBUILD_IMAGE" == true ]]; then
+      FORCE_RECREATE=true
+      start_persistent_service
+    elif [[ "$NO_RC_CONFIG" -eq 0 && "$SHELL_SELECTED_PATH" == "$requested_workspace" ]] &&
+      ! container_has_host_rc_mount "$CONTAINER_NAME"; then
+      start_persistent_service
+    elif [[ "$SHELL_SELECTED_STATE" != running ]]; then
+      run_compose start pi
+      warn_extra_state_volume
+    fi
+    SHELL_SELECTED_NAME="$CONTAINER_NAME"
   fi
+  inspect_workspace_container "$SHELL_SELECTED_NAME" "$WORKSPACE" "$PROJECT_NAME" || fail 'selected shell container identity changed'
+  [[ "$SHELL_AS_ROOT" != true ]] || exec_arguments+=(--user 0)
+  exec_arguments+=(--env "PI_HOST_SHELL=$HOST_SHELL_NAME" --env 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc'
+    --env "PI_NO_RC_CONFIG=$NO_RC_CONFIG" "$SHELL_SELECTED_NAME" pi-shell-launch)
+  docker "${exec_arguments[@]}"
 }
 
 run_state_copy() {
@@ -2124,7 +2084,7 @@ warn_running_copy_destination() {
   local destination="$1" name mounted
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
-    mounted="$(mounted_agent_state_volume "$name")"
+    mounted="$(mounted_agent_state_volume "$name")" || continue
     [[ "$mounted" == "$destination" ]] || continue
     printf 'pi: warning: %s is mounted by running container %s; restart it to pick up copied auth or extensions\n' "$destination" "$name" >&2
   done < <(docker ps --filter 'label=com.pi-agents.managed=true' --format '{{.Names}}')

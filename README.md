@@ -157,9 +157,13 @@ not affect another workspace unless you explicitly target that workspace with
 
 `pi shell` reuses the current workspace container when possible, starting it if
 stopped and reconciling it with Compose `up` when it lacks the generated rc
-mount; otherwise it offers a picker for existing persistent Pi containers and
-starts a stopped selection before opening the shell. Use `pi shell --root` or
-`pi shell -r` for a root shell. When no current workspace container exists, the
+mount; otherwise it offers a picker for existing persistent Pi containers.
+A selected stack is resolved by its workspace, that workspace's host rc is
+regenerated, and a stopped stack is started through its own Compose project
+on whichever agent-state volume it mounts; another workspace's stack keeps its
+mounts, and `--rebuild` only applies to the current workspace's stack. Use
+`pi shell --root` or `pi shell -r` for a root shell. When no current workspace
+container exists, the
 picker offers `0) Start a new project`; choosing it creates the directory if
 needed, starts the persistent service, and opens the shell. Every picker, in
 `pi shell` and `pi copy`, ends with `X) Cancel (or Esc)`. Choices are single

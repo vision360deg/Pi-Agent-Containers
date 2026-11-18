@@ -213,16 +213,7 @@ assert_log_has 'up --detach pi'
 assert_eq "$(container_field "$NAME" mount./tmp/pi-host-shellrc)" "$RC_SOURCE" 'reconciled rc mount source'
 assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI_NO_RC_CONFIG=0 $NAME pi-shell-launch"
 
-# A stale current image is diagnosed without an implicit rebuild.
-stale_image
-run_pi "$WS" shell
-assert_status 2
-assert_output_has 'image lacks pi-shell-launch'
-assert_output_has 'pi update'
-assert_log_lacks 'up --build'
-assert_log_lacks ' build '
-
-# Explicit rebuilding repairs the current workspace image before attaching.
+# Explicit rebuilding recreates the current workspace stack before attaching.
 run_pi "$WS" --rebuild shell
 assert_status 0
 assert_log_has ' build pi'

@@ -48,23 +48,29 @@ assert_status 0
 assert_log_has "docker compose --project-name $RENAMED"
 assert_attached '' "$RENAMED"
 
-# Multiple containers for the current workspace require an explicit choice.
+# Multiple containers for the current workspace are offered in the picker,
+# but the selected workspace must resolve to exactly one stack.
 fresh_docker
 fake_container pi-agents-pi-first "$WS" running
 fake_container pi-agents-pi-second "$WS" running
 INPUT='2\n'
 run_pi "$WS" shell
 INPUT=''
-assert_status 0
-assert_attached '' pi-agents-pi-second
+assert_status 2
 assert_output_has 'Choose a Pi container:'
+assert_output_has "pi: multiple stacks found for workspace: $WS"
+assert_log_lacks 'docker exec'
 
-# A current stopped workspace container is started before a normal-user shell.
+# A current stopped workspace container is started through Compose before a
+# normal-user shell.
 fresh_docker
 fake_container "$NAME" "$WS" exited
 run_pi "$WS" shell
 assert_status 0
-assert_log_has "docker start $NAME"
+assert_log_has "compose --project-name $NAME"
+assert_log_has ' start pi'
+assert_log_lacks 'docker start'
+assert_log_lacks ' up '
 assert_attached '' "$NAME"
 assert_output_lacks 'extra state volume'
 
@@ -76,7 +82,7 @@ fake_volume "$EXTRA" "$WS" agent 2026-01-02T00:00:00Z
 fake_container "$NAME" "$WS" exited "mount./home/node/.pi/agent=$EXTRA"
 run_pi "$WS" shell
 assert_status 0
-assert_log_has "docker start $NAME"
+assert_log_has ' start pi'
 assert_output_has "pi: warning: using the extra state volume $EXTRA; the normal state volume $(agent_volume "$WS") is untouched"
 
 fresh_docker
@@ -104,11 +110,19 @@ fake_container pi-agents-pi-second "$SECOND" running
 INPUT='1\n'
 run_pi "$WS" shell --root
 assert_status 0
-assert_log_has 'docker start pi-agents-pi-other'
+assert_log_has 'compose --project-name pi-agents-pi-other'
+assert_log_has ' start pi'
+assert_log_lacks ' up '
+assert_eq "$(container_field pi-agents-pi-other state)" running 'selected stopped stack must be started'
 assert_attached '--user 0 ' pi-agents-pi-other
 assert_output_has 'Choose a Pi container:'
 assert_output_has '0) Start a new project'
 assert_output_has '1) pi-agents-pi-other'
+# The selected workspace's host rc is regenerated, in a 0755 directory.
+OTHER_RC=$CONFIG_DIR/shell-rc/pi-agents-ws-$(workspace_hash "$OTHER")
+[[ -f $OTHER_RC/rc ]] || fail 'the selected workspace rc must be regenerated'
+assert_eq "$(stat -f %Lp "$OTHER_RC" 2>/dev/null || stat -c %a "$OTHER_RC")" 755 'rc directory mode'
+[[ ! -e $CONFIG_DIR/shell-rc/pi-agents-ws-$(workspace_hash "$WS") ]] || fail 'the unselected current workspace rc must not be generated'
 
 INPUT='2\n'
 run_pi "$WS" shell
@@ -120,6 +134,30 @@ INPUT='3\n'
 run_pi "$WS" shell
 assert_status 2
 assert_output_has 'invalid container selection: 3'
+
+# --rebuild cannot rebuild another workspace's stack.
+INPUT='2\n'
+run_pi "$WS" --rebuild shell
+INPUT=''
+assert_status 2
+assert_output_has 'pi: --rebuild can only build the current workspace image; run `pi --rebuild shell` from the selected workspace'
+assert_log_lacks 'docker exec'
+assert_log_lacks ' build'
+
+# Starting another workspace's stack that runs on its extra state volume keeps
+# that volume and says so.
+OTHER_EXTRA=$(extra_volume "$OTHER")
+fresh_docker
+fake_volume "$OTHER_EXTRA" "$OTHER" agent-extra 2026-01-02T00:00:00Z
+fake_container pi-agents-pi-other "$OTHER" exited "mount./home/node/.pi/agent=$OTHER_EXTRA"
+INPUT='1\n'
+run_pi "$WS" shell
+INPUT=''
+assert_status 0
+assert_log_has ' start pi'
+assert_log_lacks ' up '
+assert_output_has "pi: warning: using the extra state volume $OTHER_EXTRA; the normal state volume $(agent_volume "$OTHER") is untouched"
+assert_attached '' pi-agents-pi-other
 
 # A missing workspace offers project creation and Escape cancellation.
 reset_docker
