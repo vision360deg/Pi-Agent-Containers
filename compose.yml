@@ -20,7 +20,7 @@ services:
     # forwarder streams session JSONL to Docker stdout; it exits when a stream
     # dies, and the loop restarts it, following existing sessions from their
     # end so nothing is replayed.
-    command: ["bash", "-lc", "while :; do pi-session-forwarder; sleep 1; done & exec sleep infinity"]
+    command: ["bash", "-c", "while :; do pi-session-forwarder; sleep 1; done & exec sleep infinity"]
     environment:
       # Add whichever provider credentials you use to .env.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -49,7 +49,7 @@ services:
       - pi-agent-state:/home/node/.pi/agent
       # Nested mount keeps sessions isolated per workspace.
       - pi-session-state:/home/node/.pi/agent/sessions
-      - agent-browser-state:/home/node/.agent-browser
+      - pi-browser-state:/home/node/.agent-browser
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -75,6 +75,6 @@ volumes:
   pi-session-state:
     name: ${PI_SESSION_STATE_VOLUME_NAME:-pi-agents_pi-sessions}
     external: true
-  agent-browser-state:
+  pi-browser-state:
     name: ${PI_BROWSER_STATE_VOLUME_NAME:-pi-agents_agent-browser-state}
     external: true

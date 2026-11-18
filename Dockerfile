@@ -45,5 +45,3 @@ RUN chmod 0755 /usr/local/bin/pi-session-log /usr/local/bin/pi-session-forwarder
 USER node
 
 WORKDIR /workspace
-
-CMD ["pi"]
