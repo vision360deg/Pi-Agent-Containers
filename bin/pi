@@ -2090,7 +2090,7 @@ repair_copied_state_permissions() {
 }
 
 pick_managed_agent_volume() {
-  local excluded="$1" prompt="$2" candidate workspace created selection index
+  local excluded="$1" prompt="$2" candidate workspace created choice index
   local -a volumes=() workspaces=()
   PICKED_AGENT_VOLUME=''
   PICKED_AGENT_WORKSPACE=''
@@ -2105,19 +2105,19 @@ pick_managed_agent_volume() {
   for index in "${!volumes[@]}"; do
     candidate="${volumes[$index]}"
     created="$(volume_created_at "$candidate" || true)"
-    printf '%s) %s\n   workspace: %s\n   created: %s\n' \
-      "$((index + 1))" "$candidate" "${workspaces[$index]}" "${created:-unknown}" >&2
+    printf '%s) %s\n   workspace: %s\n   created: %s\n' "$((index + 1))" "$candidate" "${workspaces[$index]}" "${created:-unknown}" >&2
   done
   printf 'X) Cancel (or Esc)\n' >&2
-  read_picker_choice "${#volumes[@]}" || { printf 'pi: copy cancelled\n' >&2; exit 3; }
-  selection="$PICKER_CHOICE"
+  if ! read_picker_choice "${#volumes[@]}"; then
+    printf 'pi: copy cancelled\n' >&2
+    exit 3
+  fi
   printf '\n' >&2
-  case "$selection" in
-    $'\e'|x|X) printf 'pi: copy cancelled\n' >&2; exit 3 ;;
-  esac
-  [[ "$selection" =~ ^[0-9]+$ ]] || fail "invalid state volume selection: $selection"
-  index=$((10#$selection - 1))
-  (( index >= 0 && index < ${#volumes[@]} )) || fail "invalid state volume selection: $selection"
+  choice="$PICKER_CHOICE"
+  case "$choice" in x|X|$'\e') printf 'pi: copy cancelled\n' >&2; exit 3 ;; esac
+  [[ "$choice" =~ ^[0-9]+$ ]] || fail "invalid state volume selection: $choice"
+  index=$((10#$choice - 1))
+  (( index >= 0 && index < ${#volumes[@]} )) || fail "invalid state volume selection: $choice"
   PICKED_AGENT_VOLUME="${volumes[$index]}"
   PICKED_AGENT_WORKSPACE="${workspaces[$index]}"
 }
