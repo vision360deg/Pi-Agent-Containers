@@ -49,10 +49,10 @@ WS=$(make_workspace "$TEST_HOME/projects/workspace")
 TARGET=$(agent_volume "$WS")
 SOURCE=pi-agents-ws-source_pi-agent-state
 
-# seed_source: an unlabelled initialized seed volume and the pointer to it.
+# seed_source: an initialized seed volume of another workspace and the pointer to it.
 seed_source() {
   reset_docker
-  fake_volume "$SOURCE" /elsewhere agent 2026-08-01T12:00:00Z "${UNLABEL[@]}"
+  fake_volume "$SOURCE" /elsewhere agent 2026-08-01T12:00:00Z
   fake_volume_file "$SOURCE" .container-initialized complete
   fake_volume_file "$SOURCE" auth.json '{"provider":{}}'
   set_seed "$SOURCE"
@@ -92,9 +92,21 @@ run_pi "$WS" --version
 [[ $STATUS -ne 0 ]] || fail 'foreign labelled state volume unexpectedly accepted'
 assert_output_has 'state volume workspace label does not match'
 
+# Agent, session, and browser volumes without the managed labels are refused
+# before anything starts.
+for volume in "$TARGET" "$(session_volume "$WS")" "$(browser_volume "$WS")"; do
+  seed_source
+  fake_volume "$volume" "$WS" agent 2026-08-02T12:00:00Z "${UNLABEL[@]}"
+  run_pi "$WS" --version
+  assert_status 2
+  assert_output_has "state volume is not managed: $volume"
+  assert_log_lacks ' up '
+  assert_log_lacks 'docker run '
+done
+
 # An existing pre-marker volume with useful state is not seeded again.
 seed_source
-fake_volume "$TARGET" "$WS" agent 2026-08-02T12:00:00Z "${UNLABEL[@]}"
+fake_volume "$TARGET" "$WS" agent 2026-08-02T12:00:00Z
 fake_volume_file "$TARGET" auth.json '{"provider":{}}'
 run_pi "$WS" --version
 assert_status 0
@@ -102,7 +114,7 @@ assert_no_source_copy
 
 # An existing volume without useful state is seeded.
 seed_source
-fake_volume "$TARGET" "$WS" agent 2026-08-02T12:00:00Z "${UNLABEL[@]}"
+fake_volume "$TARGET" "$WS" agent 2026-08-02T12:00:00Z
 run_pi "$WS" --version
 assert_status 0
 assert_source "$SOURCE"
@@ -264,7 +276,7 @@ assert_output_has 'pending agent-state initialization source is unavailable'
 assert_no_source_copy
 assert_log_lacks ' up '
 
-# A legacy seed pointer naming an extra state volume is discarded, and the
+# A seed pointer naming an extra state volume is discarded, and the
 # extra volume is not proposed even though it is the oldest.
 restore lineage
 fake_record "$FAKE_DOCKER_STATE/volumes/$FOURTH" created=2026-01-01T00:00:00Z

@@ -173,12 +173,20 @@ for arguments in '' --rm; do
   assert_log_lacks 'run --rm --service-ports'
 done
 
-# Containers created before the managed label existed are still reused.
+# A container without the managed label is not this workspace's stack, and
+# its name is not taken over.
 stack_1 running -label.com.pi-agents.managed
 run_pi "$PATH_1"
-assert_status 0
-assert_log_has "container=$BASE "
-assert_log_has 'up --detach pi'
+assert_status 2
+assert_output_has "container identity does not match workspace: $BASE"
+assert_log_lacks ' up '
+for command in stop remove; do
+  stack_1 running -label.com.pi-agents.managed
+  run_pi "$PATH_1" "$command"
+  assert_output_has "no stack found for workspace: $PATH_1"
+  assert_log_lacks ' stop'
+  assert_log_lacks ' down'
+done
 
 # A stopped colliding stack still asks, without the running-stack warning.
 stack_1 exited
