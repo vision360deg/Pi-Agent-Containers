@@ -46,13 +46,32 @@ fake_container "$RENAMED" "$WS" running
 run_pi "$WS" --rebuild shell
 assert_status 0
 assert_log_has "docker compose --project-name $RENAMED"
+assert_log_lacks "compose --project-name $NAME "
+assert_log_has ' build pi'
+assert_log_has ' up --detach --force-recreate pi'
 assert_attached '' "$RENAMED"
 
-# Multiple containers for the current workspace are offered in the picker,
-# but the selected workspace must resolve to exactly one stack.
+# Another workspace's stack keeps its mounts, even without the rc mount.
+fresh_docker
+fake_container pi-agents-pi-other "$OTHER" running -mount./tmp/pi-host-shellrc
+INPUT='1\n'
+run_pi "$WS" shell
+INPUT=''
+assert_status 0
+assert_log_lacks ' up '
+assert_attached '' pi-agents-pi-other
+
+# Multiple containers for the current workspace are offered in the picker
+# without a new project, but the selected workspace must resolve to exactly
+# one stack.
 fresh_docker
 fake_container pi-agents-pi-first "$WS" running
 fake_container pi-agents-pi-second "$WS" running
+INPUT='0\n'
+run_pi "$WS" shell
+assert_status 2
+assert_output_lacks '0) Start a new project'
+assert_output_has 'invalid container selection: 0'
 INPUT='2\n'
 run_pi "$WS" shell
 INPUT=''
@@ -118,6 +137,8 @@ assert_attached '--user 0 ' pi-agents-pi-other
 assert_output_has 'Choose a Pi container:'
 assert_output_has '0) Start a new project'
 assert_output_has '1) pi-agents-pi-other'
+assert_output_has '   status: Exited (0) 3 hours ago'
+assert_output_has "   workspace: $OTHER"
 # The selected workspace's host rc is regenerated, in a 0755 directory.
 OTHER_RC=$CONFIG_DIR/shell-rc/pi-agents-ws-$(workspace_hash "$OTHER")
 [[ -f $OTHER_RC/rc ]] || fail 'the selected workspace rc must be regenerated'
@@ -130,10 +151,21 @@ assert_status 0
 assert_log_lacks 'docker start'
 assert_attached '' pi-agents-pi-second
 
-INPUT='3\n'
-run_pi "$WS" shell
-assert_status 2
-assert_output_has 'invalid container selection: 3'
+# Cancel, end of input, and invalid choices do not open a shell.
+for input in X x '\033' ''; do
+  INPUT=$input
+  run_pi "$WS" shell
+  assert_status 2
+  assert_output_has 'container selection cancelled'
+  assert_log_lacks 'docker exec'
+done
+for input in 9 3 q; do
+  INPUT="$input\n"
+  run_pi "$WS" shell
+  assert_status 2
+  assert_output_has "invalid container selection: $input"
+  assert_log_lacks 'docker exec'
+done
 
 # --rebuild cannot rebuild another workspace's stack.
 INPUT='2\n'
@@ -184,6 +216,35 @@ first_line() { grep -nF -- "$1" "$DOCKER_LOG" | head -n 1 | cut -d: -f1; }
 (( $(first_line 'state-initialization complete') < $(first_line ' up --detach pi') )) || fail 'state must be initialized before up'
 (( $(first_line 'chown -R 1000:1000 "$path"') < $(first_line ' up --detach pi') )) || fail 'permissions must be repaired before up'
 
+# 0 starts a new project for the current workspace; without a seed pointer
+# it offers the oldest managed state.
+THIRD=$(make_workspace "$TEST_HOME/projects/third")
+reset_docker
+fake_image pi-agents-pi-third
+fake_state "$OTHER" 2026-01-01T00:00:00Z
+fake_container pi-agents-pi-other "$OTHER" running
+INPUT='0\ny\n'
+run_pi "$THIRD" shell
+INPUT=''
+assert_status 0
+assert_log_has "compose-env project=pi-agents-pi-third container=pi-agents-pi-third network=pi-agents-pi-third workspace=$THIRD "
+assert_log_has 'up --detach pi'
+assert_attached '' pi-agents-pi-third
+volume_has_file "$(agent_volume "$THIRD")" .container-initialized || fail 'new project state must be initialized'
+assert_output_has 'pi: use it as the seed for this new workspace? [y/N] '
+assert_log_has "$(agent_volume "$OTHER"):/state-source:ro"
+assert_eq "$(seed_value)" "$(agent_volume "$OTHER")" 'accepted oldest volume must become the seed'
+
+# A missing workspace can still open an existing stack.
+reset_docker
+fake_container pi-agents-pi-other "$OTHER" running
+INPUT='1\n'
+run_pi "$WS" --workspace "$TEST_HOME/projects/absent" shell
+INPUT=''
+assert_status 0
+assert_attached '' pi-agents-pi-other
+[[ ! -e $TEST_HOME/projects/absent ]] || fail 'choosing an existing stack must not create the workspace'
+
 # With ten or more containers the picker waits for Enter after a leading 1-9,
 # so a slowly typed 10 selects item 10 rather than item 1; 0 and Escape stay
 # single keys.
@@ -206,6 +267,16 @@ run_pi "$WS" shell
 assert_status 2
 assert_output_has 'container selection cancelled'
 assert_output_lacks 'Choice: '
+INPUT=''
+# A single 0 is still taken without Enter, so the later y answers the next
+# prompt. Type only once the picker is waiting.
+fake_image "$NAME"
+fake_state "$OTHER" 2026-01-01T00:00:00Z
+INPUT_COMMAND="for _ in \$(seq 200); do grep -q 'Choice' '$OUTPUT_LOG' && break; sleep 0.05; done; printf 0; sleep 0.3; printf 'y\\n'"
+run_pi "$WS" shell
+INPUT_COMMAND=''
+assert_status 0
+assert_attached '' "$NAME"
 
 reset_docker
 run_pi "$WS" --workspace "$CANCELLED" shell
