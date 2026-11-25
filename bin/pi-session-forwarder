@@ -15,7 +15,6 @@ declare -A FORMATTER_PIDS=()
 declare -A FIFOS=()
 NEXT_FIFO=0
 SLEEP_PID=''
-shopt -s nullglob
 
 # Each stream is `tail` writing into a FIFO read by `pi-session-format`, both
 # started directly by this shell so both PIDs are known and can be stopped.
@@ -73,11 +72,10 @@ start_stream() {
 
 # Sessions present when the forwarder starts are history: follow them from
 # their current end so nothing is replayed, including after a restart.
-for session_file in "$SESSION_DIR"/*.jsonl; do
-  [[ -f "$session_file" ]] || continue
+while IFS= read -r -d '' session_file; do
   SESSION_OFFSETS["$session_file"]=$(( $(wc -c < "$session_file") + 1 ))
   start_stream "$session_file" "${SESSION_OFFSETS[$session_file]}"
-done
+done < <(find "$SESSION_DIR" -type f -name '*.jsonl' -print0 2>/dev/null)
 
 while :; do
   # Restarting a dead stream from a stale offset could re-emit records, so a
@@ -90,13 +88,12 @@ while :; do
     fi
   done
 
-  for session_file in "$SESSION_DIR"/*.jsonl; do
-    [[ -f "$session_file" ]] || continue
+  while IFS= read -r -d '' session_file; do
     if [[ ! -v "SESSION_OFFSETS[$session_file]" ]]; then
       SESSION_OFFSETS["$session_file"]=1
       start_stream "$session_file" 1
     fi
-  done
+  done < <(find "$SESSION_DIR" -type f -name '*.jsonl' -print0 2>/dev/null)
 
   sleep "$POLL_INTERVAL" &
   SLEEP_PID=$!

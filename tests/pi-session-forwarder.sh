@@ -78,6 +78,12 @@ wait_for_line() {
 
 wait_for_line '{"session":"new","event":"start"}'
 
+# Sessions in nested folders are forwarded from their beginning too, so Pi's
+# per-folder default layout (sessions/--<cwd>--/) still reaches the Docker log.
+mkdir -p "$SESSION_DIR/--workspace--"
+printf '%s\n' '{"session":"nested","event":"start"}' > "$SESSION_DIR/--workspace--/nested.jsonl"
+wait_for_line '{"session":"nested","event":"start"}'
+
 if grep -Fq -- '"session":"old"' "$OUTPUT_LOG"; then
   fail 'old session was replayed into the Docker log'
 fi
