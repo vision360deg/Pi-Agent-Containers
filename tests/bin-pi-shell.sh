@@ -77,7 +77,7 @@ run_pi "$WS" shell
 INPUT=''
 assert_status 2
 assert_output_has 'Choose a Pi container:'
-assert_output_has "pi: multiple stacks found for workspace: $WS"
+assert_output_has "pi-container: multiple stacks found for workspace: $WS"
 assert_log_lacks 'docker exec'
 
 # A current stopped workspace container is started through Compose before a
@@ -102,14 +102,14 @@ fake_container "$NAME" "$WS" exited "mount./home/node/.pi/agent=$EXTRA"
 run_pi "$WS" shell
 assert_status 0
 assert_log_has ' start pi'
-assert_output_has "pi: warning: using the extra state volume $EXTRA; the normal state volume $(agent_volume "$WS") is untouched"
+assert_output_has "pi-container: warning: using the extra state volume $EXTRA; the normal state volume $(agent_volume "$WS") is untouched"
 
 fresh_docker
 fake_volume "$EXTRA" "$WS" agent 2026-01-02T00:00:00Z
 fake_container "$NAME" "$WS" exited
 run_pi "$WS" shell
 assert_status 0
-assert_output_has "pi: warning: an extra state volume $EXTRA exists and is not in use"
+assert_output_has "pi-container: warning: an extra state volume $EXTRA exists and is not in use"
 
 # Reusing an already running container does not start the stack or warn.
 fresh_docker
@@ -172,7 +172,7 @@ INPUT='2\n'
 run_pi "$WS" --rebuild shell
 INPUT=''
 assert_status 2
-assert_output_has 'pi: --rebuild can only build the current workspace image; run `pi --rebuild shell` from the selected workspace'
+assert_output_has 'pi-container: --rebuild can only build the current workspace image; run `pi --rebuild shell` from the selected workspace'
 assert_log_lacks 'docker exec'
 assert_log_lacks ' build'
 
@@ -188,7 +188,7 @@ INPUT=''
 assert_status 0
 assert_log_has ' start pi'
 assert_log_lacks ' up '
-assert_output_has "pi: warning: using the extra state volume $OTHER_EXTRA; the normal state volume $(agent_volume "$OTHER") is untouched"
+assert_output_has "pi-container: warning: using the extra state volume $OTHER_EXTRA; the normal state volume $(agent_volume "$OTHER") is untouched"
 assert_attached '' pi-agents-pi-other
 
 # A missing workspace offers project creation and Escape cancellation.
@@ -231,7 +231,7 @@ assert_log_has "compose-env project=pi-agents-pi-third container=pi-agents-pi-th
 assert_log_has 'up --detach pi'
 assert_attached '' pi-agents-pi-third
 volume_has_file "$(agent_volume "$THIRD")" .container-initialized || fail 'new project state must be initialized'
-assert_output_has 'pi: use it as the seed for this new workspace? [y/N] '
+assert_output_has 'pi-container: use it as the seed for this new workspace? [y/N] '
 assert_log_has "$(agent_volume "$OTHER"):/state-source:ro"
 assert_eq "$(seed_value)" "$(agent_volume "$OTHER")" 'accepted oldest volume must become the seed'
 
@@ -307,7 +307,7 @@ EXTRA_ENV=(SHELL=/bin/fish)
 run_pi "$WS" shell
 EXTRA_ENV=()
 assert_status 2
-assert_output_has 'pi: unsupported host shell: fish (supported: bash, zsh)'
+assert_output_has 'pi-container: unsupported host shell: fish (supported: bash, zsh)'
 assert_output_lacks 'Choose a Pi container:'
 assert_log_lacks 'docker exec'
 [[ ! -e $CONFIG_DIR/shell-rc ]] || fail 'an rc was generated before shell validation'

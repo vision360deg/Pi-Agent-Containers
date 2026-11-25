@@ -2,7 +2,7 @@
 
 Pi-Agent-Containers runs the [Pi](https://pi.dev/) coding agent and
 `agent-browser` in Docker while keeping the interactive terminal on the host.
-Pi does not need to be installed locally: the host-side `bin/pi` wrapper starts
+Pi does not need to be installed locally: the host-side `bin/pi-container` wrapper (linked as `bin/pi`) starts
 a persistent Docker Compose service scoped to the selected workspace, mounts
 that directory at `/workspace`, and attaches your terminal to the Pi process
 inside it. Each workspace gets its own Compose project, container, network, and
@@ -44,7 +44,8 @@ Linux-compatible shell such as WSL.
 ## Installation
 
 Clone this repository, then make `pi` available from any shell with a
-user-level symlink:
+user-level symlink to the repository entry point, `bin/pi`, itself a
+relative symlink to `bin/pi-container`:
 
 ```bash
 mkdir -p "$HOME/.local/bin"
@@ -349,7 +350,7 @@ is missing but managed state volumes exist, the wrapper lists every managed
 normal state volume with its creation time, proposes the oldest as the seed,
 and asks for confirmation (`y` or `yes`) before initializing a new workspace,
 even with `--latest-state`; the proposed volume is checked again after the
-answer, and declining or end of input prints `pi: seed selection cancelled;
+answer, and declining or end of input prints `pi-container: seed selection cancelled;
 workspace was not started` and exits with status 2. A pointer that does not
 name a managed normal state volume, such as a removed volume or an extra state
 volume, is treated as missing the same way; launches never delete the pointer
@@ -412,7 +413,7 @@ you pick the source. `pi copy --to` treats the current workspace as the source
 and lets you pick the destination. The current workspace's state volumes are
 created first when missing. The picker lists every other managed agent-state
 volume with its workspace and creation time, then `X) Cancel (or Esc)`; `x`,
-Esc, or end of input prints `pi: copy cancelled` and exits with status 3, and
+Esc, or end of input prints `pi-container: copy cancelled` and exits with status 3, and
 any other invalid choice exits with status 2. `--from` explicitly selects the
 source (the default); `--from` and `--to` are mutually exclusive. `copy`
 refuses `--rm`, `--rebuild`, `--replace`, `--keep-existing`, `--new-state`,
@@ -491,7 +492,7 @@ pi --oauth 7000 7001
 ```
 
 The `PI_OAUTH_CALLBACK_PORTS` variable is additive, but it must be exported in
-the shell because `bin/pi` does not source `.env`:
+the shell because `bin/pi-container` does not source `.env`:
 
 ```bash
 export PI_OAUTH_CALLBACK_PORTS="7000,7001"
@@ -622,7 +623,7 @@ docker volume ls --filter label=com.pi-agents.managed=true
 
 Copy `.env.example` to `.env`. The file is read by Docker Compose for image
 build arguments and container environment. Settings consumed directly by
-`bin/pi` must be exported in the shell or supplied as command-line options.
+`bin/pi-container` must be exported in the shell or supplied as command-line options.
 Compose applies `.env` when it creates the container, so a change takes effect
 once the persistent container is recreated, for example by `pi update` or
 `pi --replace`; a reused or restarted container keeps its environment.
@@ -640,7 +641,7 @@ once the persistent container is recreated, for example by `pi update` or
 | `PI_SESSION_LOG_FORMAT` | Session log format, `pretty` (default) or `raw`. |
 | `PI_SESSION_LOG_COLOR` | Session log color, `always` (default), `auto`, or `never`. |
 | `PI_SESSION_LOG_POLL_INTERVAL` | Seconds between the session log forwarder's scans for new or grown session files; defaults to `1`. |
-| `PI_OAUTH_CALLBACK_PORTS` | Extra fixed OAuth ports; export in the shell before calling `bin/pi`. |
+| `PI_OAUTH_CALLBACK_PORTS` | Extra fixed OAuth ports; export in the shell before calling `bin/pi-container`. |
 | `PI_WORKSPACE` | Workspace path; export in the shell. |
 | `PI_AGENT_CONTAINERS_CONFIG_PATH` | Host configuration directory; export in the shell. |
 
@@ -690,7 +691,7 @@ docker compose --file compose.yml config -q
 docker compose --file compose.yml --file compose.oauth.yml config -q
 ```
 
-The project intentionally keeps the host wrapper in `bin/pi`: it is the
+The project intentionally keeps the host wrapper in `bin/pi-container`: it is the
 boundary that resolves workspace identity, provisions isolated volumes, and
 decides whether Pi runs through `docker exec` in the persistent service
 container or in a disposable one-off started with `compose run --rm`.

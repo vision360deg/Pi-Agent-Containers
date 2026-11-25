@@ -23,6 +23,8 @@ mkdir -p "$WRAPPER_LINK_DIR" "$PATH_NATIVE_DIR" "$SYSTEM_BIN"
 # through the repository's bin directory. The system bash is linked in so the
 # wrapper's env shebang works without exposing other host commands named pi.
 ln -s "$ROOT/bin/pi" "$WRAPPER_LINK_DIR/pi"
+[[ -L $ROOT/bin/pi && $(readlink -- "$ROOT/bin/pi") == pi-container && $ROOT/bin/pi -ef $ROOT/bin/pi-container ]] ||
+  fail 'bin/pi is not a relative symlink to bin/pi-container'
 ln -s "$(command -v bash)" "$SYSTEM_BIN/bash"
 HOST_PATH=$FAKE_BIN:$WRAPPER_LINK_DIR:$ROOT/bin:$PATH_NATIVE_DIR:$SYSTEM_BIN:/usr/bin:/bin
 
@@ -210,7 +212,7 @@ assert_native path "$OTHER" --help
 
 run_host "$WS" --host --workspace "$TMP_DIR/missing"
 assert_status 1
-assert_output_has "pi: workspace does not exist: $TMP_DIR/missing"
+assert_output_has "pi-container: workspace does not exist: $TMP_DIR/missing"
 assert_empty "$NATIVE_LOG"
 
 # Container-only options are rejected before anything runs, in either order.
@@ -218,8 +220,8 @@ for option in --rm --replace --rebuild --keep-existing --new-state --seed --late
   for order in before after; do
     if [[ $order == before ]]; then run_host "$WS" "$option" --host; else run_host "$WS" --host "$option"; fi
     assert_status 2
-    assert_output_has 'pi: --host cannot be combined with container, state, shell, or OAuth options'
-    assert_output_has 'pi: usage: pi [--workspace PATH] --host [PI_ARGS...]'
+    assert_output_has 'pi-container: --host cannot be combined with container, state, shell, or OAuth options'
+    assert_output_has 'pi-container: usage: pi [--workspace PATH] --host [PI_ARGS...]'
     assert_empty "$NATIVE_LOG"
     assert_empty "$DOCKER_LOG"
   done
@@ -232,8 +234,8 @@ for answer in 'n\n' '' 'yes\n'; do
   INPUT=$answer
   run_host "$WS" --host
   assert_status 127
-  assert_output_has 'pi: native Pi was not found.'
-  assert_output_has 'pi: run the official installer (curl -fsSL https://pi.dev/install.sh | sh)? [y/N]'
+  assert_output_has 'pi-container: native Pi was not found.'
+  assert_output_has 'pi-container: run the official installer (curl -fsSL https://pi.dev/install.sh | sh)? [y/N]'
   assert_output_has 'install it with: curl -fsSL https://pi.dev/install.sh | sh'
   assert_empty "$CURL_LOG"
   assert_empty "$NATIVE_LOG"
@@ -244,7 +246,7 @@ done
 # terminal declines it.
 run_host "$WS" --version
 assert_status 127
-assert_output_has 'pi: native Pi was not found.'
+assert_output_has 'pi-container: native Pi was not found.'
 assert_output_has 'install it with: curl -fsSL https://pi.dev/install.sh | sh'
 assert_empty "$CURL_LOG"
 assert_empty "$NATIVE_LOG"
@@ -264,8 +266,8 @@ installer_path=$(sed -n 's/^path=//p' "$INSTALLER_LOG")
 [[ $installer_path == "$TEST_HOME/.pi/agent/bin:"* ]] || fail "installer PATH must start with the launcher directory: $installer_path"
 [[ ":$installer_path:" != *":$WRAPPER_LINK_DIR:"* && ":$installer_path:" != *":$ROOT/bin:"* ]] || fail "installer PATH still exposes the wrapper: $installer_path"
 [[ ":$installer_path:" == *":$SYSTEM_BIN:"* ]] || fail "installer PATH dropped unrelated entries: $installer_path"
-assert_output_has "pi: native Pi is ready at $LAUNCHER; start it with: pi --host"
-assert_output_has 'pi: update native Pi with: pi --host update'
+assert_output_has "pi-container: native Pi is ready at $LAUNCHER; start it with: pi --host"
+assert_output_has 'pi-container: update native Pi with: pi --host update'
 assert_empty "$NATIVE_LOG"
 assert_empty "$DOCKER_LOG"
 
@@ -280,14 +282,14 @@ INPUT='y\n'
 run_host "$WS" --host
 assert_status 127
 assert_line "$INSTALLER_LOG" "cwd=$WS"
-assert_output_has 'pi: native Pi is still not installed'
+assert_output_has 'pi-container: native Pi is still not installed'
 assert_output_lacks 'native Pi is ready'
 
 INPUT='y\n'
 HOST_ENV=(FAKE_INSTALL_STATUS=3)
 run_host "$WS" --host
 assert_status 3
-assert_output_has 'pi: native Pi is still not installed'
+assert_output_has 'pi-container: native Pi is still not installed'
 assert_empty "$DOCKER_LOG"
 
 INPUT='y\n'

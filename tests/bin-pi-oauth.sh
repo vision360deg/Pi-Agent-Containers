@@ -133,10 +133,10 @@ assert_override_ports 7005 7006
 EXTRA_ENV=()
 
 # Invalid ports fail before Docker; the environment list is ignored without --oauth.
-expect_invalid 'pi: invalid OAuth callback port list: 1,,2' --oauth=1,,2
-expect_invalid 'pi: invalid OAuth callback port list: x' --oauth=x
-expect_invalid 'pi: OAuth callback port must be between 1 and 65535 in --oauth: 0' --oauth 0
-expect_invalid 'pi: OAuth callback port must be between 1 and 65535 in --oauth: 70000' --oauth 70000 --version
+expect_invalid 'pi-container: invalid OAuth callback port list: 1,,2' --oauth=1,,2
+expect_invalid 'pi-container: invalid OAuth callback port list: x' --oauth=x
+expect_invalid 'pi-container: OAuth callback port must be between 1 and 65535 in --oauth: 0' --oauth 0
+expect_invalid 'pi-container: OAuth callback port must be between 1 and 65535 in --oauth: 70000' --oauth 70000 --version
 EXTRA_ENV=(PI_OAUTH_CALLBACK_PORTS=abc)
 expect_invalid 'PI_OAUTH_CALLBACK_PORTS' --oauth
 existing_stack
@@ -160,14 +160,14 @@ assert_output_lacks 'already in use'
 EXTRA_ENV=(FAKE_BUSY_PORTS='1455 53692 51121 7000')
 run_pi "$WS" --oauth 7000
 assert_status 2
-assert_output_has 'pi: OAuth callback port is already in use: 7000'
+assert_output_has 'pi-container: OAuth callback port is already in use: 7000'
 assert_log_lacks ' up '
 
 # A disposable --rm run cannot share the stack's ports.
 EXTRA_ENV=(FAKE_BUSY_PORTS='1455 53692 51121')
 run_pi "$WS" --rm --oauth
 assert_status 2
-assert_output_has 'pi: OAuth callback port is already in use: 1455'
+assert_output_has 'pi-container: OAuth callback port is already in use: 1455'
 assert_log_lacks ' run --detach'
 EXTRA_ENV=()
 
@@ -190,7 +190,7 @@ EXTRA_ENV=(FAKE_BUSY_PORTS='7000')
 run_pi "$WS" --rm --oauth 7000
 EXTRA_ENV=()
 assert_status 2
-assert_output_has 'pi: OAuth callback port is already in use: 7000'
+assert_output_has 'pi-container: OAuth callback port is already in use: 7000'
 assert_log_lacks ' run --detach'
 assert_override_removed
 

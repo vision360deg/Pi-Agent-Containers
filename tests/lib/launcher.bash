@@ -1,4 +1,4 @@
-# Fake-Docker harness for bin/pi tests. Source after common.bash.
+# Fake-Docker harness for bin/pi-container tests. Source after common.bash.
 # shellcheck shell=bash
 
 FAKE_BIN=$TMP_DIR/bin
@@ -121,7 +121,7 @@ make_workspace() {
   (cd -P -- "$1" && pwd -P)
 }
 
-# The sanitized workspace basename bin/pi derives container and project names from.
+# The sanitized workspace basename bin/pi-container derives container and project names from.
 workspace_slug() {
   local slug
   slug=$(basename -- "$1" | tr '[:upper:]' '[:lower:]' |

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stateful fake Docker CLI for bin/pi tests.
+# Stateful fake Docker CLI for bin/pi-container tests.
 #
 # State lives under $FAKE_DOCKER_STATE:
 #   containers/NAME    key=value records (id, name, state, status, image-id, label.*, mount.*, port)

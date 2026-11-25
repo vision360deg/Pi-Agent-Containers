@@ -138,7 +138,7 @@ EXTRA_ENV=(FAKE_INIT_PROBE_STATUS=43)
 run_pi "$WS" - --version
 EXTRA_ENV=()
 assert_status 2
-assert_output_has 'pi: could not inspect agent-state initialization status'
+assert_output_has 'pi-container: could not inspect agent-state initialization status'
 assert_no_source_copy
 assert_log_lacks ' up '
 
@@ -196,7 +196,7 @@ volume_has_file "$EXTRA" .container-initialized || fail 'extra state volume must
 # the extra volume is never initialized again.
 run_pi "$WS" --new-state
 assert_status 0
-assert_output_has "pi: warning: using the extra state volume $EXTRA; the normal state volume $NORMAL is untouched"
+assert_output_has "pi-container: warning: using the extra state volume $EXTRA; the normal state volume $NORMAL is untouched"
 assert_log_lacks 'com.pi-agents.state-kind=agent-extra'
 assert_log_lacks 'state-initialization'
 assert_no_source_copy
@@ -209,7 +209,7 @@ assert_status 0
 assert_eq "$(target_volume)" "$NORMAL" 'agent state volume'
 assert_log_has 'up --detach --force-recreate pi'
 assert_eq "$(container_field pi-agents-pi-workspace mount./home/node/.pi/agent)" "$NORMAL" 'mounted agent state'
-assert_output_has "pi: warning: an extra state volume $EXTRA exists and is not in use; use it with --new-state, or remove it with \`pi remove --all\` (also removes the normal state volumes)"
+assert_output_has "pi-container: warning: an extra state volume $EXTRA exists and is not in use; use it with --new-state, or remove it with \`pi remove --all\` (also removes the normal state volumes)"
 volume_exists "$EXTRA" || fail 'switching back must keep the extra state volume'
 
 # A container already on the normal volume is reused, still with the warning.
@@ -217,17 +217,17 @@ run_pi "$WS"
 assert_status 0
 assert_log_lacks ' up '
 assert_log_lacks 'force-recreate'
-assert_output_has "pi: warning: an extra state volume $EXTRA exists and is not in use"
+assert_output_has "pi-container: warning: an extra state volume $EXTRA exists and is not in use"
 
 # Disposable runs honour and warn about the extra state volume too.
 run_pi "$WS" --rm --new-state
 assert_status 0
 assert_eq "$(target_volume)" "$EXTRA" 'agent state volume'
-assert_output_has "pi: warning: using the extra state volume $EXTRA; the normal state volume $NORMAL is untouched"
+assert_output_has "pi-container: warning: using the extra state volume $EXTRA; the normal state volume $NORMAL is untouched"
 run_pi "$WS" --rm
 assert_status 0
 assert_eq "$(target_volume)" "$NORMAL" 'agent state volume'
-assert_output_has "pi: warning: an extra state volume $EXTRA exists and is not in use"
+assert_output_has "pi-container: warning: an extra state volume $EXTRA exists and is not in use"
 
 # The extra state volume is not offered by copy.
 OTHER_WS=$(make_workspace "$TEST_HOME/projects/other")
@@ -271,12 +271,12 @@ assert_eq "$(seed_value)" "$FIRST" 'seed after --latest-state'
 # --latest-state only applies during first initialization.
 run_pi "$WS_B" --latest-state --version
 assert_status 0
-assert_output_has 'pi: warning: --latest-state has no effect; this workspace already has initialized agent state'
+assert_output_has 'pi-container: warning: --latest-state has no effect; this workspace already has initialized agent state'
 assert_no_source_copy
 
 # A rejected --seed --new-state does not move the seed.
 run_pi "$WS_D" --seed --new-state --version
-assert_fails_with 2 'pi: --new-state and --seed are mutually exclusive; the extra state volume is never a seed'
+assert_fails_with 2 'pi-container: --new-state and --seed are mutually exclusive; the extra state volume is never a seed'
 assert_eq "$(seed_value)" "$FIRST" 'rejected --seed --new-state must not move the seed'
 
 run_pi "$WS_D" --new-state --version
@@ -352,7 +352,7 @@ for pending_source in pi-agents-ws-gone_pi-agent-state "$FOURTH"; do
   fake_volume_file "$SIXTH" .container-initialization-pending "$pending_source"
   run_pi "$WS_F" - --version
   assert_status 2
-  assert_output_has "pi: pending agent-state initialization source is unavailable; restore it before retrying: $pending_source"
+  assert_output_has "pi-container: pending agent-state initialization source is unavailable; restore it before retrying: $pending_source"
   assert_no_source_copy
   assert_log_lacks ' up '
 done
@@ -372,13 +372,13 @@ assert_eq "$(seed_value)" "$FOURTH" 'an invalid seed pointer is never deleted as
 assert_log_lacks ' up '
 # The warning comes first, then every managed normal state volume with its
 # creation time, then the proposal and the question.
-EXPECTED_PROMPT=$'pi: warning: the seed pointer was not found.\nManaged Pi state volumes:'
+EXPECTED_PROMPT=$'pi-container: warning: the seed pointer was not found.\nManaged Pi state volumes:'
 for file in "$TMP_DIR/snapshot-recovery/volumes"/*; do
   grep -qx 'label.com.pi-agents.state-kind=agent' "$file" || continue
   EXPECTED_PROMPT+=$'\n'"  ${file##*/}  ($(sed -n 's/^created=//p' "$file"))"
 done
-EXPECTED_PROMPT+=$'\npi: the oldest managed agent-state volume is:\n  '"$FIRST"
-EXPECTED_PROMPT+=$'\npi: use it as the seed for this new workspace? [y/N] pi: seed selection cancelled; workspace was not started'
+EXPECTED_PROMPT+=$'\npi-container: the oldest managed agent-state volume is:\n  '"$FIRST"
+EXPECTED_PROMPT+=$'\npi-container: use it as the seed for this new workspace? [y/N] pi-container: seed selection cancelled; workspace was not started'
 [[ $(cat -- "$OUTPUT_LOG") == *$'\n'"$EXPECTED_PROMPT" ]] ||
   fail "missing-seed prompt"$'\n'"expected:"$'\n'"$EXPECTED_PROMPT"$'\n'"$(show_run)"
 assert_log_lacks 'volume create'
@@ -392,8 +392,8 @@ for input in 'n\n' ''; do
   run_pi "$WS_G" - --version
   INPUT=''
   assert_status 2
-  assert_output_has 'pi: warning: the seed pointer was not found.'
-  assert_output_has 'pi: seed selection cancelled; workspace was not started'
+  assert_output_has 'pi-container: warning: the seed pointer was not found.'
+  assert_output_has 'pi-container: seed selection cancelled; workspace was not started'
   assert_eq "$(seed_value)" pi-agents-ws-gone_pi-agent-state 'declined selection must not rewrite the seed'
   assert_log_lacks 'volume create'
   assert_log_lacks ' up '
@@ -408,7 +408,7 @@ for input in 'n\n' ''; do
   run_pi "$WS_G" --latest-state --version
   INPUT=''
   assert_status 2
-  assert_output_has 'pi: warning: the seed pointer was not found.'
+  assert_output_has 'pi-container: warning: the seed pointer was not found.'
   assert_output_has 'seed selection cancelled; workspace was not started'
   assert_no_source_copy
   [[ ! -e $SEED_FILE ]] || fail 'a declined --latest-state seed must not be written'$'\n'"$(show_run)"
@@ -442,7 +442,7 @@ INPUT_COMMAND="until grep -Fq '[y/N]' '$OUTPUT_LOG'; do sleep 0.05; done; rm -f 
 run_pi "$WS_G" - --version
 INPUT_COMMAND=''
 assert_status 2
-assert_output_has 'pi: selected seed volume is no longer valid'
+assert_output_has 'pi-container: selected seed volume is no longer valid'
 [[ ! -e $SEED_FILE ]] || fail "an invalidated proposal became the seed: $(seed_value)"
 assert_log_lacks ' up '
 

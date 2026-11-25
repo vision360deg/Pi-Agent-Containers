@@ -218,7 +218,7 @@ expect_conflict() {
   shift
   run_pi "$WS_A" "$@"
   assert_status 2
-  expected=$(printf '%s\n' "$message" | sed 's/^/pi: /')
+  expected=$(printf '%s\n' "$message" | sed 's/^/pi-container: /')
   assert_eq "$(cat -- "$OUTPUT_LOG")" "$expected" "pi $* output"
   assert_no_docker
 }
@@ -269,7 +269,7 @@ for arguments in 'list extra' '--workspace . list' '--oauth list'; do
   # shellcheck disable=SC2086
   run_pi "$WS_A" $arguments
   assert_status 2
-  assert_eq "$(cat -- "$OUTPUT_LOG")" 'pi: usage: pi list' "pi $arguments output"
+  assert_eq "$(cat -- "$OUTPUT_LOG")" 'pi-container: usage: pi list' "pi $arguments output"
   assert_no_docker
 done
 

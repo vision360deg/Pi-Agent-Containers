@@ -118,7 +118,7 @@ run_pi "$WS" --rm
 EXTRA_ENV=()
 assert_status 3
 name=$(disposable_name "$PROJECT")
-assert_output_has "pi: could not remove disposable container $name"
+assert_output_has "pi-container: could not remove disposable container $name"
 
 # A compose run that fails after creating the one-off still has it removed by
 # name, and the wrapper fails with Compose's status.
@@ -268,7 +268,7 @@ assert_output_has "workspace: $PATH_1"
 assert_output_has 'status: Up 2 minutes'
 assert_output_has '¡¡¡ WARNING !!! Renaming/recreating the existing container may interrupt processes currently running inside it.'
 assert_output_has $'Choose:\n  [r] Rename/recreate the existing container\n  [k] Keep it unchanged and disambiguate this workspace\n  [c] Cancel\n\nChoice [c]: '
-assert_output_has 'pi: workspace container collision cancelled'
+assert_output_has 'pi-container: workspace container collision cancelled'
 assert_log_lacks 'rename'
 assert_log_lacks ' up '
 
@@ -276,7 +276,7 @@ assert_log_lacks ' up '
 INPUT=''
 run_pi "$PATH_2"
 assert_status 2
-assert_output_has 'pi: workspace container collision cancelled'
+assert_output_has 'pi-container: workspace container collision cancelled'
 assert_log_lacks 'rename'
 assert_log_lacks ' up '
 
@@ -314,7 +314,7 @@ fake_container "$TARGET_1" "$TEST_HOME/elsewhere" running
 run_pi "$PATH_2"
 assert_status 2
 assert_output_has "container identity does not match workspace: $TARGET_1"
-assert_output_has "pi: disambiguated container name is occupied: $TARGET_1"
+assert_output_has "pi-container: disambiguated container name is occupied: $TARGET_1"
 assert_output_lacks 'Choose:'
 assert_log_lacks 'rename'
 assert_log_lacks ' up '
@@ -322,7 +322,7 @@ stack_1
 fake_container squatter "$TEST_HOME/elsewhere/other" running "label.com.docker.compose.project=$TARGET_2"
 run_pi "$PATH_2"
 assert_status 2
-assert_output_has "pi: disambiguated Compose project is occupied: $TARGET_2"
+assert_output_has "pi-container: disambiguated Compose project is occupied: $TARGET_2"
 assert_output_lacks 'Choose:'
 assert_log_lacks 'rename'
 assert_log_lacks ' up '
@@ -333,19 +333,19 @@ stack_1 running label.com.docker.compose.service=other
 run_pi "$PATH_2"
 assert_status 2
 assert_output_has "container identity does not match workspace: $BASE"
-assert_output_has "pi: invalid managed container: $BASE"
+assert_output_has "pi-container: invalid managed container: $BASE"
 assert_log_lacks ' up '
 reset_docker
 fake_container "$PROJECT" "$TEST_HOME/elsewhere/other" running -label.com.pi-agents.managed
 run_pi "$WS"
 assert_status 2
-assert_output_has "pi: workspace container name is occupied: $PROJECT"
+assert_output_has "pi-container: workspace container name is occupied: $PROJECT"
 assert_log_lacks ' up '
 reset_docker
 fake_container squatter "$TEST_HOME/elsewhere/other" running "label.com.docker.compose.project=$PROJECT"
 run_pi "$WS"
 assert_status 2
-assert_output_has "pi: workspace Compose project is occupied: $PROJECT"
+assert_output_has "pi-container: workspace Compose project is occupied: $PROJECT"
 assert_log_lacks ' up '
 
 # Two stacks claiming the same workspace are ambiguous and refused.
@@ -353,7 +353,7 @@ stack_1
 fake_container "$TARGET_1" "$PATH_1" exited
 run_pi "$PATH_1"
 [[ $STATUS -ne 0 ]] || fail 'duplicate workspace stacks unexpectedly succeeded'
-assert_output_has "pi: multiple stacks found for workspace: $PATH_1"
+assert_output_has "pi-container: multiple stacks found for workspace: $PATH_1"
 assert_log_lacks ' up '
 
 # `pi --rm` one-off containers live in the workspace's own project, so a
@@ -497,13 +497,13 @@ EXTRA_ENV=()
 fake_container squatter "$TEST_HOME/elsewhere/other" running "label.com.docker.compose.project=$TARGET_2"
 run_pi "$PATH_2" --rm
 assert_status 2
-assert_output_has "pi: disambiguated Compose project is occupied: $TARGET_2"
+assert_output_has "pi-container: disambiguated Compose project is occupied: $TARGET_2"
 assert_log_lacks "$RM_RUN"
 
 # The home directory is never made a workspace: launches, --rm, update, shell,
 # and copy refuse it before any Docker call, however it was selected.
 HOME_REAL=$(cd -P -- "$TEST_HOME" && pwd -P)
-HOME_REFUSAL="pi: refusing to use the home directory as a workspace: $HOME_REAL; run pi from a project directory or pass --workspace PATH"
+HOME_REFUSAL="pi-container: refusing to use the home directory as a workspace: $HOME_REAL; run pi from a project directory or pass --workspace PATH"
 for arguments in '' '--rm' 'update' 'update --extensions' 'shell' 'copy' '--bash - --version'; do
   reset_docker
   # shellcheck disable=SC2086
@@ -531,7 +531,7 @@ for command in stop remove; do
   reset_docker
   run_pi "$TEST_HOME" "$command"
   assert_status 2
-  assert_eq "$(cat -- "$OUTPUT_LOG")" "pi: no stack found for workspace: $HOME_REAL" "pi $command from the home directory"
+  assert_eq "$(cat -- "$OUTPUT_LOG")" "pi-container: no stack found for workspace: $HOME_REAL" "pi $command from the home directory"
 done
 
 pass

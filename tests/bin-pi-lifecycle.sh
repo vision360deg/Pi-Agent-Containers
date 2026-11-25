@@ -115,7 +115,7 @@ for command in stop remove; do
   stack_1
   run_pi "$PATH_2" "$command"
   assert_status 2
-  assert_output_has "pi: no stack found for workspace: $PATH_2"
+  assert_output_has "pi-container: no stack found for workspace: $PATH_2"
   assert_log_lacks 'docker compose'
   assert_eq "$(container_field "$BASE" state)" running 'the other workspace stack state'
 done
@@ -125,7 +125,7 @@ stack_1
 fake_container "$TARGET_1" "$PATH_1" exited
 run_pi "$PATH_1" stop
 [[ $STATUS -ne 0 ]] || fail 'stop with duplicate stacks unexpectedly succeeded'
-assert_output_has "pi: multiple stacks found for workspace: $PATH_1"
+assert_output_has "pi-container: multiple stacks found for workspace: $PATH_1"
 assert_log_lacks 'docker compose'
 
 stack_1
@@ -144,7 +144,7 @@ run_pi "$PATH_1" remove
 assert_status 0
 assert_log_has ' down'
 assert_log_lacks 'volume rm'
-assert_output_has "pi: warning: state volumes are kept, including the extra state volume $EXTRA_1"
+assert_output_has "pi-container: warning: state volumes are kept, including the extra state volume $EXTRA_1"
 volume_exists "$EXTRA_1" || fail 'remove must keep the extra state volume'
 
 stack_1
@@ -206,7 +206,7 @@ assert_status 1
 assert_log_has "volume rm $NORMAL_1"
 assert_log_lacks "volume rm $BROWSER_1"
 assert_eq "$(seed_value)" "$NORMAL_2" 'a removed seed volume must move the seed despite another failure'
-assert_output_has "pi: the previous seed was removed; seed reassigned to oldest state $NORMAL_2"
+assert_output_has "pi-container: the previous seed was removed; seed reassigned to oldest state $NORMAL_2"
 
 stack_1
 fake_state "$PATH_1" 2026-01-01T00:00:00Z
@@ -222,7 +222,7 @@ assert_eq "$(seed_value)" "$NORMAL_1" 'a seed whose volume survived must stay'
 reset_docker
 run_pi "$PATH_1" remove --all
 assert_status 2
-assert_output_has "pi: no stack or state volumes found for workspace: $PATH_1"
+assert_output_has "pi-container: no stack or state volumes found for workspace: $PATH_1"
 assert_log_lacks 'volume rm'
 assert_log_lacks 'docker compose'
 
@@ -231,7 +231,7 @@ for INPUT in 'l\n' '\n' ''; do
   leftovers
   run_pi "$PATH_1" remove --all
   assert_status 0
-  assert_output_has "pi: no stack found for workspace: $PATH_1"
+  assert_output_has "pi-container: no stack found for workspace: $PATH_1"
   assert_output_has "1) $NORMAL_1"
   assert_output_has "4) $EXTRA_1"
   assert_output_has 'kind: agent-extra'
@@ -249,7 +249,7 @@ run_pi "$PATH_1" remove --all
 assert_status 0
 for volume in "$NORMAL_1" "$SESSIONS_1" "$BROWSER_1" "$EXTRA_1" legacy-sessions; do
   assert_log_has "volume rm $volume"
-  assert_output_has "pi: removed state volume $volume"
+  assert_output_has "pi-container: removed state volume $volume"
   ! volume_exists "$volume" || fail "$volume must be removed"
 done
 assert_log_lacks 'docker compose'
@@ -288,7 +288,7 @@ while IFS='|' read -r INPUT message; do
   leftovers
   run_pi "$PATH_1" remove --all
   assert_status 2
-  assert_output_has "pi: $message"
+  assert_output_has "pi-container: $message"
   assert_log_lacks 'volume rm'
 done <<'EOF'
 s\n6\n|invalid volume selection: 6
@@ -305,7 +305,7 @@ EXTRA_ENV=("FAKE_VOLUME_RM_FAIL=$SESSIONS_1")
 run_pi "$PATH_1" remove --all
 EXTRA_ENV=()
 assert_status 1
-assert_output_has "pi: could not remove state volume $SESSIONS_1"
+assert_output_has "pi-container: could not remove state volume $SESSIONS_1"
 assert_log_has "volume rm $BROWSER_1"
 assert_log_has "volume rm $EXTRA_1"
 assert_eq "$(seed_value)" "$NORMAL_2" 'a removed seed volume must move the seed despite another failure'
@@ -348,7 +348,7 @@ for command in stop remove; do
   fake_container "$BASE-run-1" "$PATH_2" running "label.com.docker.compose.project=$BASE" label.com.docker.compose.oneoff=True
   run_pi "$PATH_1" "$command"
   [[ $STATUS -ne 0 ]] || fail "pi $command on a shared project succeeded"
-  assert_output_has 'pi: workspace Compose project is shared with another stack'
+  assert_output_has 'pi-container: workspace Compose project is shared with another stack'
   assert_log_lacks ' stop'
   assert_log_lacks ' down'
 done
