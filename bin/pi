@@ -353,57 +353,6 @@ oauth_cli_token_is_port_list() {
   [[ "$1" =~ ^[0-9]+(,[0-9]+)*,?$ ]]
 }
 
-create_oauth_override() {
-  local override_directory port
-
-  [[ "$OAUTH_CALLBACK" == true ]] || return 0
-  oauth_parse_port_list "${PI_OAUTH_CALLBACK_PORTS:-}" 'PI_OAUTH_CALLBACK_PORTS'
-  [[ "${#OAUTH_EXTRA_PORTS[@]}" -gt 0 ]] || return 0
-  override_directory="$(mktemp -d "${TMPDIR:-/tmp}/pi-oauth.XXXXXX")"
-  TEMPORARY_DIRECTORIES+=("$override_directory")
-  OAUTH_OVERRIDE_FILE="$override_directory/compose.oauth.yml"
-  {
-    printf 'services:\n'
-    printf '  pi:\n'
-    printf '    ports:\n'
-    for port in "${OAUTH_EXTRA_PORTS[@]}"; do
-      printf '      - "127.0.0.1:%s:%s"\n' "$port" "$port"
-      printf '      - "[::1]:%s:%s"\n' "$port" "$port"
-    done
-  } > "$OAUTH_OVERRIDE_FILE"
-}
-
-# Whether nothing on the host listens on a TCP port: lsof first, then nc.
-oauth_port_is_available() {
-  local port="$1"
-  if command -v lsof >/dev/null 2>&1; then
-    ! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
-    return
-  fi
-  if command -v nc >/dev/null 2>&1; then
-    ! nc -z 127.0.0.1 "$port" >/dev/null 2>&1 && ! nc -z ::1 "$port" >/dev/null 2>&1
-    return
-  fi
-  fail 'cannot check OAuth callback ports: install lsof or nc'
-}
-
-# Refuses OAuth callback ports that something already listens on. Ports this
-# workspace's own stack already publishes stay usable, so a repeated `pi --oauth`
-# reuses them; a disposable --rm run cannot share them.
-validate_oauth_ports() {
-  local port owned=$'\n'
-  [[ "$OAUTH_CALLBACK" == true ]] || return 0
-  if [[ "$REMOVE_AFTER_RUN" != true ]] && docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
-    owned+="$(docker inspect --format '{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{printf "%s:%s:%s\n" .HostIp .HostPort $port}}{{end}}{{end}}' "$CONTAINER_NAME")" ||
-      fail 'could not inspect the OAuth callback ports of this workspace stack'
-    owned+=$'\n'
-  fi
-  for port in "${OAUTH_CALLBACK_PORTS[@]}"; do
-    [[ "$owned" != *$'\n'"127.0.0.1:$port:$port/tcp"$'\n'* && "$owned" != *$'\n'"::1:$port:$port/tcp"$'\n'* ]] || continue
-    oauth_port_is_available "$port" || fail "OAuth callback port is already in use: $port"
-  done
-}
-
 # These are wrapper options, so consume them before passing the remaining
 # arguments to Pi. Help invocations exit before this point, so even
 # `pi --workspace --help` remains a local brief-help request.
@@ -722,8 +671,6 @@ case "$COMMAND" in
     ;;
 esac
 
-create_oauth_override
-
 canonicalize_workspace() {
   local selected="$1"
   [[ "$selected" = /* ]] || selected="$INVOCATION_DIRECTORY/$selected"
@@ -755,18 +702,6 @@ workspace_path_with_missing_components() {
   fi
   printf '%s%s\n' "$path" "$suffix"
 }
-
-if [[ "$COMMAND" != list ]]; then
-  if [[ -d "$WORKSPACE" ]]; then
-    WORKSPACE="$(canonicalize_workspace "$WORKSPACE")"
-  elif [[ "$COMMAND" == shell ]]; then
-    WORKSPACE_MISSING=true
-    WORKSPACE="$(workspace_path_with_missing_components "$WORKSPACE")"
-  else
-    printf 'pi: workspace does not exist: %s\n' "$WORKSPACE" >&2
-    exit 1
-  fi
-fi
 
 # Compose project names must match [a-z0-9][a-z0-9_-]*, so every other
 # character, including dots, becomes a hyphen.
@@ -816,24 +751,6 @@ set_workspace_identity() {
   fi
 }
 
-if [[ "$COMMAND" != list ]]; then
-  set_workspace_identity
-else
-  WORKSPACE_BASENAME=""
-  WORKSPACE_HASH=""
-  PROJECT_NAME=""
-  CONTAINER_NAME=""
-  VOLUME_NAMESPACE=""
-  NORMAL_AGENT_STATE_VOLUME_NAME=""
-  SESSION_STATE_VOLUME_NAME=""
-  BROWSER_STATE_VOLUME_NAME=""
-  EXTRA_AGENT_STATE_VOLUME_NAME=""
-  ACTIVE_AGENT_STATE_VOLUME_NAME=""
-fi
-
-CONFIG_PATH="${PI_AGENT_CONTAINERS_CONFIG_PATH:-$HOME/.config/pi-agent-containers}"
-STATE_SEED_FILE="$CONFIG_PATH/seed"
-SHELL_RC_DIRECTORY="$CONFIG_PATH/shell-rc"
 set_host_shell_rc_paths() {
   HOST_SHELL_RC_FILE=""
   HOST_SHELL_RC_SOURCE=""
@@ -842,11 +759,7 @@ set_host_shell_rc_paths() {
     HOST_SHELL_RC_FILE="$HOST_SHELL_RC_SOURCE/rc"
   fi
 }
-set_host_shell_rc_paths
-FORCE_RECREATE=false
-if [[ "$REPLACE_CONTAINER" == true || "$NEW_STATE" == true ]]; then
-  FORCE_RECREATE=true
-fi
+
 build_compose() {
   COMPOSE=(
     docker compose
@@ -864,8 +777,6 @@ build_compose() {
     COMPOSE+=(--file "$ROOT/compose.shell-rc.yml")
   fi
 }
-
-build_compose
 
 run_compose() {
   env \
@@ -2122,13 +2033,131 @@ copy_agent_state() {
   warn_running_copy_destination "$target_agent"
 }
 
-if [[ "$COMMAND" == copy ]]; then
-  copy_agent_state
-  exit $?
+create_oauth_override() {
+  local override_directory port
+
+  [[ "$OAUTH_CALLBACK" == true ]] || return 0
+  oauth_parse_port_list "${PI_OAUTH_CALLBACK_PORTS:-}" 'PI_OAUTH_CALLBACK_PORTS'
+  [[ "${#OAUTH_EXTRA_PORTS[@]}" -gt 0 ]] || return 0
+  override_directory="$(mktemp -d "${TMPDIR:-/tmp}/pi-oauth.XXXXXX")"
+  TEMPORARY_DIRECTORIES+=("$override_directory")
+  OAUTH_OVERRIDE_FILE="$override_directory/compose.oauth.yml"
+  {
+    printf 'services:\n'
+    printf '  pi:\n'
+    printf '    ports:\n'
+    for port in "${OAUTH_EXTRA_PORTS[@]}"; do
+      printf '      - "127.0.0.1:%s:%s"\n' "$port" "$port"
+      printf '      - "[::1]:%s:%s"\n' "$port" "$port"
+    done
+  } > "$OAUTH_OVERRIDE_FILE"
+}
+
+# Whether nothing on the host listens on a TCP port: lsof first, then nc.
+oauth_port_is_available() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    ! lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return
+  fi
+  if command -v nc >/dev/null 2>&1; then
+    ! nc -z 127.0.0.1 "$port" >/dev/null 2>&1 && ! nc -z ::1 "$port" >/dev/null 2>&1
+    return
+  fi
+  fail 'cannot check OAuth callback ports: install lsof or nc'
+}
+
+# Refuses OAuth callback ports that something already listens on. Ports this
+# workspace's own stack already publishes stay usable, so a repeated `pi --oauth`
+# reuses them; a disposable --rm run cannot share them.
+validate_oauth_ports() {
+  local port owned=$'\n'
+  [[ "$OAUTH_CALLBACK" == true ]] || return 0
+  if [[ "$REMOVE_AFTER_RUN" != true ]] && docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    owned+="$(docker inspect --format '{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{printf "%s:%s:%s\n" .HostIp .HostPort $port}}{{end}}{{end}}' "$CONTAINER_NAME")" ||
+      fail 'could not inspect the OAuth callback ports of this workspace stack'
+    owned+=$'\n'
+  fi
+  for port in "${OAUTH_CALLBACK_PORTS[@]}"; do
+    [[ "$owned" != *$'\n'"127.0.0.1:$port:$port/tcp"$'\n'* && "$owned" != *$'\n'"::1:$port:$port/tcp"$'\n'* ]] || continue
+    oauth_port_is_available "$port" || fail "OAuth callback port is already in use: $port"
+  done
+}
+
+run_logged_pi() {
+  run_compose exec pi pi-shell-launch pi-session-log --forward-output "$@"
+}
+
+create_oauth_override
+
+if [[ "$COMMAND" != list ]]; then
+  if [[ -d "$WORKSPACE" ]]; then
+    WORKSPACE="$(canonicalize_workspace "$WORKSPACE")"
+  elif [[ "$COMMAND" == shell ]]; then
+    WORKSPACE_MISSING=true
+    WORKSPACE="$(workspace_path_with_missing_components "$WORKSPACE")"
+  else
+    printf 'pi: workspace does not exist: %s\n' "$WORKSPACE" >&2
+    exit 1
+  fi
 fi
+
+if [[ "$COMMAND" != list ]]; then
+  set_workspace_identity
+else
+  WORKSPACE_BASENAME=""
+  WORKSPACE_HASH=""
+  PROJECT_NAME=""
+  CONTAINER_NAME=""
+  VOLUME_NAMESPACE=""
+  NORMAL_AGENT_STATE_VOLUME_NAME=""
+  SESSION_STATE_VOLUME_NAME=""
+  BROWSER_STATE_VOLUME_NAME=""
+  EXTRA_AGENT_STATE_VOLUME_NAME=""
+  ACTIVE_AGENT_STATE_VOLUME_NAME=""
+fi
+
+CONFIG_PATH="${PI_AGENT_CONTAINERS_CONFIG_PATH:-$HOME/.config/pi-agent-containers}"
+STATE_SEED_FILE="$CONFIG_PATH/seed"
+SHELL_RC_DIRECTORY="$CONFIG_PATH/shell-rc"
+set_host_shell_rc_paths
+FORCE_RECREATE=false
+if [[ "$REPLACE_CONTAINER" == true || "$NEW_STATE" == true ]]; then
+  FORCE_RECREATE=true
+fi
+build_compose
 
 if [[ "$COMMAND" == list ]]; then
   list_stacks
+  exit $?
+fi
+
+if [[ "$COMMAND" == stop || "$COMMAND" == remove ]]; then
+  if ! find_exact_workspace_stack; then
+    [[ "$COMMAND" == remove && "$REMOVE_VOLUMES" == true ]] || fail "no stack found for workspace: $WORKSPACE"
+    remove_orphaned_workspace_volumes
+    exit $?
+  fi
+  if [[ "$COMMAND" == stop ]]; then
+    run_compose stop
+    exit $?
+  fi
+  run_compose down
+  if [[ "$REMOVE_VOLUMES" == true ]]; then
+    removal_status=0
+    remove_workspace_volumes || removal_status=$?
+    repoint_seed_after_removal
+    exit "$removal_status"
+  fi
+  if volume_exists "$EXTRA_AGENT_STATE_VOLUME_NAME"; then
+    printf 'pi: warning: state volumes are kept, including the extra state volume %s; use `pi remove --all` to remove them\n' \
+      "$EXTRA_AGENT_STATE_VOLUME_NAME" >&2
+  fi
+  exit 0
+fi
+
+if [[ "$COMMAND" == copy ]]; then
+  copy_agent_state
   exit $?
 fi
 
@@ -2137,70 +2166,6 @@ if [[ "$COMMAND" == shell ]]; then
   # selected workspace.
   select_host_shell || exit $?
   attach_shell
-  exit $?
-fi
-
-if [[ "$COMMAND" == remove ]]; then
-  if ! find_exact_workspace_stack; then
-    [[ "$REMOVE_VOLUMES" == true ]] || fail "no stack found for workspace: $WORKSPACE"
-    remove_orphaned_workspace_volumes
-    exit $?
-  fi
-
-  if [[ "$REMOVE_VOLUMES" == true ]]; then
-    run_compose down
-    removal_status=0
-    if ! remove_workspace_volumes; then
-      removal_status=1
-    fi
-    repoint_seed_after_removal
-    if [[ "$removal_status" -ne 0 ]]; then
-      exit "$removal_status"
-    fi
-  else
-    run_compose down
-    if volume_exists "$EXTRA_AGENT_STATE_VOLUME_NAME"; then
-      printf 'pi: warning: state volumes are kept, including the extra state volume %s; use `pi remove --all` to remove them\n' \
-        "$EXTRA_AGENT_STATE_VOLUME_NAME" >&2
-    fi
-  fi
-  exit $?
-fi
-
-if [[ "$COMMAND" == stop ]]; then
-  resolve_exact_workspace_stack
-  run_compose stop
-  exit $?
-fi
-
-if [[ "$COMMAND" == update ]]; then
-  prepare_host_shell_rc
-  prepare_workspace_container
-  validate_oauth_ports
-  prepare_state_lineage
-  # State volumes are created, seeded, and repaired before the service starts
-  # so Pi never runs against unseeded or unrepaired state.
-  ensure_workspace_volumes
-  if [[ "${#UPDATE_ARGS[@]}" -eq 0 ]]; then
-    run_compose build --pull --no-cache pi
-    initialize_agent_state
-    repair_state_permissions
-    FORCE_RECREATE=true
-    start_persistent_service
-    install_browser_extension
-    record_state_lineage
-    exit $?
-  fi
-
-  initialize_agent_state
-  repair_state_permissions
-  start_persistent_service
-  install_browser_extension
-  record_state_lineage
-  run_logged_pi() {
-    run_compose exec pi pi-shell-launch pi-session-log --forward-output "$@"
-  }
-  run_logged_pi update "${UPDATE_ARGS[@]}"
   exit $?
 fi
 
@@ -2229,16 +2194,27 @@ prepare_host_shell_rc
 prepare_workspace_container
 validate_oauth_ports
 prepare_state_lineage
+if [[ "$COMMAND" == update ]]; then
+  ensure_workspace_volumes
+  if [[ "${#UPDATE_ARGS[@]}" -eq 0 ]]; then
+    run_compose build --pull --no-cache pi
+    initialize_agent_state
+    repair_state_permissions
+    FORCE_RECREATE=true
+    start_persistent_service
+    install_browser_extension
+    record_state_lineage
+  else
+    initialize_agent_state
+    repair_state_permissions
+    start_persistent_service
+    install_browser_extension
+    record_state_lineage
+    run_logged_pi update "${UPDATE_ARGS[@]}"
+  fi
+  exit 0
+fi
 
-# `docker compose logs` only captures the service's main process streams.
-# The persistent service starts pi-session-forwarder alongside sleep, while
-# this helper only preserves Pi's foreground interactive PTY via compose exec.
-run_logged_pi() {
-  run_compose exec pi pi-shell-launch pi-session-log "$@"
-}
-
-# State volumes are created, seeded, and repaired before the service starts;
-# exec-based setup then runs inside the started service.
 ensure_workspace_volumes
 initialize_agent_state
 repair_state_permissions
@@ -2246,4 +2222,4 @@ start_persistent_service
 configure_pi_shell_aliases
 install_browser_extension
 record_state_lineage
-run_logged_pi "$@"
+run_compose exec pi pi-shell-launch pi-session-log "$@"
