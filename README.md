@@ -121,16 +121,17 @@ is not shown by `pi list`.
 `copy`, `--replace`, `--keep-existing`, `--seed`, or `--latest-state`.
 
 Arguments that match no wrapper option or command run native Pi on the host,
-as with `--host` (`pi --version`; see [Native Pi on the host](#native-pi-on-the-host)),
-so probes from other tools never start a container. With wrapper options, the
-remaining arguments go to containerized Pi. A leading `-` sends everything after
-it to containerized Pi, even a wrapper command name: `pi - install
-npm:pi-web-access` installs a Pi package into the current workspace's agent
-state, and `pi - list` runs Pi's `list` command inside the container, while
-`pi list` runs the wrapper inventory command. The wrapper's `stop`, `update`,
-`list`, `remove`, `shell`, and `copy` commands take precedence over Pi commands
-with the same names. The marker is a literal argument and does not require
-shell escaping.
+as with `--host` (see [Native Pi on the host](#native-pi-on-the-host)), so
+probes from other tools, such as `pi --version` or `pi --list-models`, never
+start a container. With wrapper options, the remaining arguments go to
+containerized Pi, for example `pi --rm --thinking high`. A leading `-` sends
+everything after it to containerized Pi, even a wrapper command name:
+`pi - list` passes `list` to Pi inside the container, while `pi list` runs the
+wrapper inventory command, and `pi - install npm:pi-web-access` installs a Pi
+package into the current workspace's agent state. The wrapper's `stop`,
+`update`, `list`, `remove`, `shell`, and `copy` commands take precedence over
+Pi commands with the same names. The marker is a literal argument and does not
+require shell escaping.
 
 ## Commands
 
@@ -223,9 +224,7 @@ rebuilds without the cache.
 
 ### Native Pi on the host
 
-`pi --host` runs Pi directly on the host instead of in Docker, and so does any
-invocation whose first argument matches no wrapper option, command, or the `-`
-marker, such as `pi --version` or `pi install npm:pi-web-access`. It starts in
+`pi --host` runs Pi directly on the host instead of in Docker. It starts in
 the selected workspace directory, chosen by `--workspace`, then `PI_WORKSPACE`,
 then the invocation directory. It uses the host's `~/.pi/agent`
 authentication, settings, and sessions, not the workspace volumes. No Docker
@@ -239,20 +238,26 @@ Homebrew, or Nix installation. If neither exists, it offers to run
 while `pi` resolves to this wrapper, so the wrapper hides itself from the
 installer's `PATH`. It also puts the launcher directory first, so the installer
 keeps Pi in `~/.pi/agent/bin` and does not link a `pi` that would shadow this
-wrapper.
+wrapper. Declining exits with status 127.
 
 Every argument after the wrapper options goes to native Pi, including the
-names of wrapper commands after `--host`:
+names of wrapper commands:
 
 ```bash
 pi --host --continue    # Resume native Pi's latest session here.
 pi --host update        # Update the native Pi installation.
 pi --host - --help      # Show native Pi's help.
-pi --version            # Native Pi's version; no container.
 ```
 
+Arguments that match no wrapper option, command, or the `-` marker run native
+Pi the same way without `--host`, so probes from other tools, such as
+`pi --version` or `pi --list-models`, never start a container. They start in
+`PI_WORKSPACE` or the invocation directory, the home directory included;
+`--workspace` is a wrapper option, so `pi --workspace PATH --version` goes to
+the container, and `pi --workspace PATH --host --version` runs natively there.
+
 `--host` accepts `--workspace`. It rejects container, state, shell, and OAuth
-options such as `--rm`, `--seed`, `--zsh`, and `--oauth`.
+options such as `--rm`, `--rebuild`, `--seed`, `--zsh`, and `--oauth`.
 
 ## Workspace and state
 
