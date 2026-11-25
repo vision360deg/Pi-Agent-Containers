@@ -1201,6 +1201,14 @@ canonicalize_workspace() {
   (cd -P -- "$selected" && pwd -P)
 }
 
+# A launch from the home directory would turn it into a workspace stack.
+refuse_home_workspace() {
+  local home
+  home=$(canonicalize_workspace "$HOME") || return 0
+  [[ $WORKSPACE != "$home" ]] ||
+    fail "refusing to use the home directory as a workspace: $WORKSPACE; run pi from a project directory or pass --workspace PATH"
+}
+
 workspace_path_with_missing_components() {
   local path=$1 suffix='' base parent
   [[ $path = /* ]] || path=$INVOCATION_DIRECTORY/$path
@@ -1806,6 +1814,7 @@ if [[ $COMMAND != list ]]; then
     exit 1
   fi
 fi
+case $COMMAND in run|update|shell|copy) refuse_home_workspace ;; esac
 
 if [[ $COMMAND != list ]]; then
   set_workspace_identity

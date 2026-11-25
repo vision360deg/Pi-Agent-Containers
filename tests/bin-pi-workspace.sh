@@ -500,4 +500,38 @@ assert_status 2
 assert_output_has "pi: disambiguated Compose project is occupied: $TARGET_2"
 assert_log_lacks "$RM_RUN"
 
+# The home directory is never made a workspace: launches, --rm, update, shell,
+# and copy refuse it before any Docker call, however it was selected.
+HOME_REAL=$(cd -P -- "$TEST_HOME" && pwd -P)
+HOME_REFUSAL="pi: refusing to use the home directory as a workspace: $HOME_REAL; run pi from a project directory or pass --workspace PATH"
+for arguments in '' '--rm' 'update' 'update --extensions' 'shell' 'copy' '--bash - --version'; do
+  reset_docker
+  # shellcheck disable=SC2086
+  run_pi "$TEST_HOME" $arguments
+  assert_status 2
+  assert_eq "$(cat -- "$OUTPUT_LOG")" "$HOME_REFUSAL" "pi $arguments from the home directory"
+  [[ ! -s $DOCKER_LOG ]] || fail "pi $arguments from the home directory reached Docker"$'\n'"$(show_run)"
+done
+run_pi "$WS" --workspace "$TEST_HOME"
+assert_status 2
+assert_eq "$(cat -- "$OUTPUT_LOG")" "$HOME_REFUSAL" 'pi --workspace HOME'
+EXTRA_ENV=(PI_WORKSPACE="$TEST_HOME")
+run_pi "$WS" --rm
+EXTRA_ENV=()
+assert_status 2
+assert_eq "$(cat -- "$OUTPUT_LOG")" "$HOME_REFUSAL" 'pi --rm with PI_WORKSPACE=HOME'
+
+# list, stop, and remove from the home directory behave as anywhere else.
+reset_docker
+run_pi "$TEST_HOME" list
+assert_status 0
+assert_output_lacks 'refusing'
+assert_output_has 'No Pi stacks found.'
+for command in stop remove; do
+  reset_docker
+  run_pi "$TEST_HOME" "$command"
+  assert_status 2
+  assert_eq "$(cat -- "$OUTPUT_LOG")" "pi: no stack found for workspace: $HOME_REAL" "pi $command from the home directory"
+done
+
 pass
