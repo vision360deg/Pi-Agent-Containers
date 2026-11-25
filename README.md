@@ -97,14 +97,16 @@ pi - list
 The selected directory is mounted at `/workspace`, so edits made by Pi are
 edits to files on the host. Persistent mode is the default. It keeps the
 container and named volumes so a later `pi` can reconnect to the same
-workspace: a running container whose mounts and published OAuth callback ports
-match the launch is reused as is, a stopped one is started, and otherwise
-Compose recreates it. `--replace`, `--rebuild`, `pi update`, switching to or
-from `--new-state`, and adding or dropping the shell rc mount always go through
-Compose. `--rm` is the exception: it starts a one-off Compose container in the
-workspace's own Compose project, from the same image `update` rebuilds, runs
-Pi in it the same way as a persistent launch, including the alias setup and
-the browser extension install, and removes it when Pi exits or the wrapper is
+workspace: a running container whose agent-state and shell rc mounts and
+published OAuth callback ports match the launch is reused as is, a stopped one
+with matching mounts and ports is started, and otherwise Compose creates or
+recreates it. `--replace`, `--rebuild`, `pi update`, `--new-state`, switching
+back from it, adding, dropping, or changing the shell rc mount, and a change in
+the published OAuth callback ports always go through Compose. `--rm` is the
+exception: it starts a one-off Compose container in the workspace's own
+Compose project, from the same image `update` rebuilds, runs Pi in it the same
+way as a persistent launch, including the alias setup and the browser
+extension install, and removes it when Pi exits or the wrapper is
 interrupted, while still using the workspace's persistent state volumes. The
 one-off runs the service's normal main command, so its session records are
 forwarded to its own Docker log stream (see
