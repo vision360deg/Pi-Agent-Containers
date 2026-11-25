@@ -78,8 +78,8 @@ the brief usage summary, and `pi --host - --help` shows native Pi's help.
 # Start or reuse the persistent Pi container for the current directory.
 pi
 
-# Send an initial prompt.
-pi "Inspect the repository state"
+# Send an initial prompt to containerized Pi.
+pi - "Inspect the repository state"
 
 # Use another host directory as /workspace.
 pi --workspace ~/src/my-project
@@ -90,7 +90,10 @@ pi --rm
 # Run native Pi on the host instead of Docker; offers to install it if missing.
 pi --host
 
-# Force a command named like a wrapper command through to Pi.
+# Arguments that match no wrapper option or command also run native Pi.
+pi --version
+
+# Force a command named like a wrapper command through to containerized Pi.
 pi - list
 ```
 
@@ -116,14 +119,17 @@ is not shown by `pi list`.
 `--rm` cannot be combined with `stop`, `update`, `remove`, `list`, `shell`,
 `copy`, `--replace`, `--keep-existing`, `--seed`, or `--latest-state`.
 
-Arguments that are not wrapper options or commands are passed through to Pi,
-for example `pi install npm:pi-web-access` installs a Pi package into the
-current workspace's agent state. The wrapper's `stop`, `update`, `list`,
-`remove`, `shell`, and `copy` commands take precedence over Pi commands with
-the same names. Use a leading `-` to force a wrapper command name through to
-Pi: `pi - list` runs Pi's `list` command inside the container, while `pi list`
-runs the wrapper inventory command. The marker is a literal argument and does
-not require shell escaping.
+Arguments that match no wrapper option or command run native Pi on the host,
+as with `--host` (`pi --version`; see [Native Pi on the host](#native-pi-on-the-host)),
+so probes from other tools never start a container. With wrapper options, the
+remaining arguments go to containerized Pi. A leading `-` sends everything after
+it to containerized Pi, even a wrapper command name: `pi - install
+npm:pi-web-access` installs a Pi package into the current workspace's agent
+state, and `pi - list` runs Pi's `list` command inside the container, while
+`pi list` runs the wrapper inventory command. The wrapper's `stop`, `update`,
+`list`, `remove`, `shell`, and `copy` commands take precedence over Pi commands
+with the same names. The marker is a literal argument and does not require
+shell escaping.
 
 ## Commands
 
@@ -216,8 +222,10 @@ rebuilds without the cache.
 
 ### Native Pi on the host
 
-`pi --host` runs Pi directly on the host instead of in Docker. It starts in the
-selected workspace directory, chosen by `--workspace`, then `PI_WORKSPACE`,
+`pi --host` runs Pi directly on the host instead of in Docker, and so does any
+invocation whose first argument matches no wrapper option, command, or the `-`
+marker, such as `pi --version` or `pi install npm:pi-web-access`. It starts in
+the selected workspace directory, chosen by `--workspace`, then `PI_WORKSPACE`,
 then the invocation directory. It uses the host's `~/.pi/agent`
 authentication, settings, and sessions, not the workspace volumes. No Docker
 command runs.
@@ -233,12 +241,13 @@ keeps Pi in `~/.pi/agent/bin` and does not link a `pi` that would shadow this
 wrapper.
 
 Every argument after the wrapper options goes to native Pi, including the
-names of wrapper commands:
+names of wrapper commands after `--host`:
 
 ```bash
 pi --host --continue    # Resume native Pi's latest session here.
 pi --host update        # Update the native Pi installation.
 pi --host - --help      # Show native Pi's help.
+pi --version            # Native Pi's version; no container.
 ```
 
 `--host` accepts `--workspace`. It rejects container, state, shell, and OAuth
@@ -255,6 +264,12 @@ The workspace is selected in this order:
 Relative paths resolve from the invocation directory. `--workspace` is usually
 the clearest option. `PI_WORKSPACE` remains useful for automation and existing
 shell scripts; it is not loaded automatically from `.env`.
+
+Launches, `--rm`, `update`, `shell`, and `copy` refuse the home directory as a
+workspace, so a stray launch from `~` never turns it into a workspace stack; run
+`pi` from a project directory or pass `--workspace PATH`. `list`, `stop`,
+`remove`, `--host`, and native passthrough runs still work from the home
+directory.
 
 Each workspace's Compose project and persistent container are named
 `pi-agents-pi-<workspace-basename>`. The basename is lowercased and every
