@@ -71,4 +71,10 @@ for arguments in --extensions --models '--extensions --models'; do
   assert_workspace_propagated "$WS"
 done
 
+# Each flag is forwarded once, --extensions before --models.
+fresh_stack
+run_pi "$WS" update --models --extensions --models
+assert_status 0
+assert_log_matches "pi-session-log --forward-output update --extensions --models\$"
+
 pass

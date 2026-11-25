@@ -297,7 +297,8 @@ COPY_AUTH=false
 COPY_EXTENSIONS=false
 COPY_ALL=false
 COPY_OVERRIDE=false
-UPDATE_ARGS=()
+UPDATE_EXTENSIONS=false
+UPDATE_MODELS=false
 WORKSPACE=${PI_WORKSPACE:-$INVOCATION_DIRECTORY}
 WORKSPACE_MISSING=false
 
@@ -541,7 +542,7 @@ case $COMMAND in
     ;;
   update)
     while (($#)); do
-      case $1 in --extensions|--models) UPDATE_ARGS+=("$1"); shift ;; *) unsupported_option update "$1" 'usage: pi update [--extensions] [--models]' ;; esac
+      case $1 in --extensions) UPDATE_EXTENSIONS=true; shift ;; --models) UPDATE_MODELS=true; shift ;; *) unsupported_option update "$1" 'usage: pi update [--extensions] [--models]' ;; esac
     done
     ;;
   copy)
@@ -1881,7 +1882,7 @@ ensure_helper_image
 
 prepare_state_lineage
 if [[ $COMMAND == update ]]; then
-  if ((${#UPDATE_ARGS[@]} == 0)); then
+  if [[ $UPDATE_EXTENSIONS == false && $UPDATE_MODELS == false ]]; then
     ensure_workspace_volumes
     run_compose build --pull --no-cache pi
     initialize_agent_state
@@ -1897,7 +1898,10 @@ if [[ $COMMAND == update ]]; then
     start_persistent_service
     install_browser_extension "$CONTAINER_NAME"
     record_state_lineage
-    run_logged_pi update "${UPDATE_ARGS[@]}"
+    update_arguments=()
+    [[ $UPDATE_EXTENSIONS != true ]] || update_arguments+=(--extensions)
+    [[ $UPDATE_MODELS != true ]] || update_arguments+=(--models)
+    run_logged_pi update "${update_arguments[@]}"
   fi
   exit 0
 fi
