@@ -98,6 +98,7 @@ help_has '--no-rc-config      Start the selected shell without the generated hos
 help_has $'1455\n                      (OpenAI Codex), 53692 (Anthropic), and 51121 (pi-antigravity),'
 help_has 'PI_OAUTH_CALLBACK_PORTS.'
 help_has 'but a --rm run'
+help_has $'cannot share them. The persistent container is recreated when the\n                      callback ports it publishes differ, so a launch without --oauth\n                      frees them.\n'
 help_has 'Fails when the workspace has no stack.'
 help_has 'Rebuild the image with a fresh pull and no build cache, then'
 help_has "update --extensions Start the persistent service and run Pi's extension update."

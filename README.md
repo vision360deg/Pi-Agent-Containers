@@ -97,12 +97,22 @@ pi - list
 The selected directory is mounted at `/workspace`, so edits made by Pi are
 edits to files on the host. Persistent mode is the default. It keeps the
 container and named volumes so a later `pi` can reconnect to the same
-workspace. `--rm` is the exception: it uses a one-off Compose container and
-removes it when Pi exits, while still using the workspace's persistent state
-volumes. A running `--rm` container of the same workspace does not block later
-launches and is not shown by `pi list`. `--rm` cannot be combined with `stop`,
-`update`, `remove`, `list`, `shell`, `copy`, `--replace`, `--keep-existing`,
-`--seed`, or `--latest-state`.
+workspace: a running container whose mounts and published OAuth callback ports
+match the launch is reused as is, a stopped one is started, and otherwise
+Compose recreates it. `--replace`, `--rebuild`, `pi update`, switching to or
+from `--new-state`, and adding or dropping the shell rc mount always go through
+Compose. `--rm` is the exception: it starts a one-off Compose container in the
+workspace's own Compose project, from the same image `update` rebuilds, runs
+Pi in it the same way as a persistent launch, including the alias setup and
+the browser extension install, and removes it when Pi exits or the wrapper is
+interrupted, while still using the workspace's persistent state volumes. The
+one-off runs the service's normal main command, so its session records are
+forwarded to its own Docker log stream (see
+[Logs and inspection](#logs-and-inspection)). Several `--rm` runs may be
+active at once; a running `--rm` container does not block later launches and
+is not shown by `pi list`.
+`--rm` cannot be combined with `stop`, `update`, `remove`, `list`, `shell`,
+`copy`, `--replace`, `--keep-existing`, `--seed`, or `--latest-state`.
 
 Arguments that are not wrapper options or commands are passed through to Pi,
 for example `pi install npm:pi-web-access` installs a Pi package into the
@@ -155,25 +165,31 @@ not affect another workspace unless you explicitly target that workspace with
 `--workspace`. `list` shows every persistent stack and does not accept
 `--workspace`.
 
-`pi shell` reuses the current workspace container when possible, starting it if
-stopped and reconciling it with Compose `up` when it lacks the generated rc
-mount; otherwise it offers a picker for existing persistent Pi containers.
-A selected stack is resolved by its workspace, that workspace's host rc is
-regenerated, and a stopped stack is started through its own Compose project
-on whichever agent-state volume it mounts; another workspace's stack keeps its
-mounts, and `--rebuild` only applies to the current workspace's stack. Use
-`pi shell --root` or `pi shell -r` for a root shell. When no current workspace
-container exists, the
-picker offers `0) Start a new project`; choosing it creates the directory if
-needed, starts the persistent service, and opens the shell. Every picker, in
-`pi shell` and `pi copy`, ends with `X) Cancel (or Esc)`. Choices are single
-keys; when a picker lists ten or more entries, a choice starting with 1-9 is a
-number confirmed with Enter.
+`pi shell` attaches to the current workspace's running stack without
+recreating it, starts a stopped one, and recreates it only for `--rebuild` or
+to add a missing shell rc mount; otherwise it offers a picker for existing
+persistent Pi containers. A stack selected from another workspace is
+resolved by its workspace, that workspace's host rc is regenerated, and a
+stopped stack is started through its own Compose project on whichever
+agent-state volume it mounts; another workspace's stack keeps its mounts, and
+`--rebuild` is refused for it. Use `pi shell --root` or `pi shell -r`
+for a root shell. When no current workspace container exists, the picker offers
+`0) Start a new project`; choosing it creates the directory if needed, starts
+the persistent service, and opens the shell.
+
+Every container or state-volume picker, in `pi shell` and `pi copy`,
+ends with `X) Cancel (or Esc)`; `x`, Esc, and end of input cancel. Choices are
+single keys; when such a picker lists ten or more entries, a choice starting
+with 1-9 is a number confirmed with Enter. The item pickers of `pi copy`
+are described in [Copying agent state](#copying-agent-state).
 
 ### Host shell configuration
 
 Foreground `pi` commands and `pi shell` use Bash or zsh selected from the
 basename of the host's `$SHELL`. Use `--bash` or `--zsh` to force the choice.
+The selected shell and rc settings are passed with every `docker exec`, so
+another shell needs no new container; only adding or dropping the rc mount,
+for example with `--no-rc-config`, recreates the persistent container.
 `pi list`, `pi stop`, `pi remove`, and `pi copy` start no host shell and do
 not check `$SHELL`. Use `--no-rc-config` to start the selected shell without
 generating, mounting, or loading host startup configuration.
@@ -286,11 +302,12 @@ reseeding from another volume if that source is gone. Agent-state volumes
 created before the markers that contain a non-empty `auth.json` or a
 `defaultProvider`/`defaultModel` setting are marked initialized unchanged.
 
-Agent, session, and browser volumes carry `com.pi-agents.*` labels for their
-workspace and kind. State volumes and containers without matching labels are
-refused: a state volume must carry `com.pi-agents.managed=true` and this
-workspace's path and kind, and a container must carry
-`com.pi-agents.managed=true` to be treated as a workspace's stack.
+Agent, session, and browser volumes carry `com.pi-agents.*` labels for
+their workspace, project, and kind. State volumes and containers without
+matching labels are refused: a state volume must carry
+`com.pi-agents.managed=true` and this workspace's path and kind, and a
+container must carry `com.pi-agents.managed=true` and this workspace's
+path to be treated as the workspace's stack.
 
 Use these options when creating a workspace:
 
@@ -315,25 +332,28 @@ is missing but managed state volumes exist, the wrapper lists every managed
 normal state volume with its creation time, proposes the oldest as the seed,
 and asks for confirmation (`y` or `yes`) before initializing a new workspace,
 even with `--latest-state`; the proposed volume is checked again after the
-answer, and declining or end of input exits with status 2. A pointer that does
-not name a managed normal state volume, such as a removed volume or an extra
-state volume, is treated as missing the same way; launches never delete the
-pointer file. Launching an already-initialized workspace never fills
-a missing pointer on its own; only `--seed` does. Removing the current seed
-with `pi remove --all` reassigns the pointer to the oldest remaining normal
+answer, and declining or end of input prints `pi: seed selection cancelled;
+workspace was not started` and exits with status 2. A pointer that does not
+name a managed normal state volume, such as a removed volume or an extra state
+volume, is treated as missing the same way; launches never delete the pointer
+file. Launching an already-initialized workspace never fills a missing pointer
+on its own; only `--seed` does. Removing the current seed with
+`pi remove --all` reassigns the pointer to the oldest remaining normal
 state, if one exists, and otherwise deletes the pointer file.
 
-`pi list` reports each stack, sorted by container name, with its workspace
-path, project/container names, Docker timestamps, the mounted `agent-state`
-volume, `active-state` (`normal`, `extra`, `unknown`, or `none`), the
-workspace's `extra-state` volume (or `none`), the mounted `session-state` and
+`pi list` reports each persistent stack, running or stopped, sorted by
+container name, with its status, workspace path, project/container names,
+Docker created and started times, the mounted `agent-state` volume,
+`active-state` (`normal`, `extra`, `unknown`, or `none`), the workspace's
+`extra-state` volume (or `none`), the mounted `session-state` and
 `browser-state` volumes, and seed/latest markers. `started` comes from Docker's
 `State.StartedAt`; a container that has never started is shown as `never`.
 Markers only ever name normal agent-state volumes, so a stack running on its
 extra volume is marked through its normal one. After the stacks, or after
-`No Pi stacks found.`, an `ORPHAN VOLUMES:` section lists managed state volumes
-that no listed stack mounts or owns, with their `kind`, `workspace`, `project`,
-`created` time, and markers (only for kind `agent`).
+`No Pi stacks found.`, an `ORPHAN VOLUMES:` section, when there are
+any, lists managed state volumes that no listed stack mounts or owns, with
+their `kind`, `workspace`, `project`, `created` time, and markers (only for
+kind `agent`).
 
 ### Extra state volume (`--new-state`)
 
@@ -345,17 +365,19 @@ later recreates the container on the normal agent state.
 
 - The extra volume is created empty, marked initialized, and never seeded;
   `--new-state --latest-state` is rejected.
-- It is never the seed or a seed candidate, never the `latest` volume, and
-  never a `--latest-state` source. `--seed --new-state` is rejected.
-- Extra volumes are labelled `com.pi-agents.state-kind=agent-extra` with the
-  usual managed, workspace, and project labels; an extra volume with any other
-  kind is refused.
+- It is never the seed or a seed candidate, never the `latest` volume, never a
+  `--latest-state` source, and never offered by `pi copy`.
+  `--seed --new-state` is rejected.
+- Extra volumes are labelled `com.pi-agents.state-kind=agent-extra` with
+  the usual managed, workspace, and project labels; an extra volume with any
+  other kind is refused.
 - Whenever the workspace has an extra volume, every start or reuse of the
-  persistent container, every `--rm` run, and `pi shell` when it starts or
-  creates the stack prints a warning: either that the extra volume is in use
-  and the normal state is untouched, or that it exists and is not in use.
-- `pi remove` keeps it and names it in a warning; `pi remove --all` removes it
-  with the workspace's other state volumes.
+  persistent container, every `--rm` run, and `pi shell` when it starts,
+  recreates, or creates the stack prints a warning: either that the extra
+  volume is in use and the normal state is untouched, or that it exists and is
+  not in use. `pi shell` keeps whichever agent state the stack mounts.
+- `pi remove` keeps it and names it in a warning; `pi remove --all`
+  removes it with the workspace's other state volumes.
 
 ### Copying agent state
 
@@ -364,7 +386,9 @@ labelled with their workspace. It uses a disposable Docker helper with the
 source state volume mounted read-only and the destination state volume mounted
 read-write, and never shares the volumes afterward. Neither workspace needs a
 container, and containers that exist may be running or stopped. Project files
-are never copied.
+are never copied. The helper is the `pi-state-copy` script built into the
+service image, so a change to it takes effect once `pi update` or `--rebuild`
+rebuilds the image.
 
 By default, `pi copy` treats the current workspace as the destination and lets
 you pick the source. `pi copy --to` treats the current workspace as the source
@@ -461,10 +485,11 @@ Only one running stack can reserve a given host port. Before starting, the
 wrapper validates each selected port and checks it with `lsof` (or `nc` when
 `lsof` is missing), refusing one that something else already listens on.
 Ports the workspace's own running stack already publishes are reused; a `--rm`
-run cannot share them. Changing OAuth mappings can cause Compose to recreate
-the container; the persisted state volumes keep authentication and settings
-intact. Run `pi` without `--oauth` afterward to reconcile the stack without
-host callback mappings.
+run cannot share them. A launch whose callback ports differ from the ones the
+persistent container publishes recreates it: `pi --oauth` publishes them on a
+stack created without them, and a later `pi` without `--oauth` recreates the
+stack without host callback mappings, so the ports are free again. The
+persisted state volumes keep authentication and settings intact.
 
 Some providers and extensions use dynamic or provider-specific callback flows.
 When no fixed port is available, use Pi's device-code or paste-redirect login
@@ -536,6 +561,21 @@ These logs are an inspectable live audit stream. The complete durable session
 records remain in the workspace-specific session Docker volume at
 `/home/node/.pi/agent/sessions/*.jsonl` inside the container.
 
+A `--rm` run forwards its session records the same way, to the disposable
+container's own Docker log stream. Follow it with `docker logs -f CONTAINER`
+or in Docker Desktop while the run is active; Docker deletes that log with the
+container when the run ends, while the records stay in the session volume. The
+container is named `<workspace-project>-pi-run-<12 hex digits>`, and
+the one-off containers of a workspace are listed by:
+
+```bash
+docker ps --filter label=com.docker.compose.project=<workspace-project> \
+  --filter label=com.docker.compose.oneoff=True
+```
+
+A running persistent container of the same workspace forwards those records
+too, because both containers mount the workspace's session volume.
+
 The forwarder runs alongside the service's main process (`sleep infinity`) in
 a restart loop, so a forwarder exit never stops the container or attached Pi
 sessions. If a session stream dies, the forwarder exits rather than resuming
@@ -566,6 +606,9 @@ docker volume ls --filter label=com.pi-agents.managed=true
 Copy `.env.example` to `.env`. The file is read by Docker Compose for image
 build arguments and container environment. Settings consumed directly by
 `bin/pi` must be exported in the shell or supplied as command-line options.
+Compose applies `.env` when it creates the container, so a change takes effect
+once the persistent container is recreated, for example by `pi update` or
+`pi --replace`; a reused or restarted container keeps its environment.
 
 | Variable | Purpose |
 | --- | --- |
@@ -632,8 +675,8 @@ docker compose --file compose.yml --file compose.oauth.yml config -q
 
 The project intentionally keeps the host wrapper in `bin/pi`: it is the
 boundary that resolves workspace identity, provisions isolated volumes, and
-decides whether Pi runs through persistent `compose exec` or disposable
-`compose run --rm`.
+decides whether Pi runs through `docker exec` in the persistent service
+container or in a disposable one-off started with `compose run --rm`.
 
 This repository mirrors its sibling, Claude-Code (`bin/claude-container`): the
 same concept gets the same function, variable, file, and test name in both;
