@@ -7,8 +7,9 @@ source "$ROOT/tests/lib/launcher.bash"
 WS=$(make_workspace "$TEST_HOME/projects/alpha")
 PROJECT=pi-agents-pi-alpha
 FILES="--project-name $PROJECT -f $ROOT/compose.yml -f $ROOT/compose.shell-rc.yml"
-# The Compose subcommands (first two words) and helper containers the last run
-# started, in order; read-only `compose config` lookups are left out.
+EXEC_ENV='--env PI_HOST_SHELL=bash --env PI_NO_RC_CONFIG=0 --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc'
+# The Compose subcommands (first two words), execs, and helper containers the
+# last run started, in order; read-only `compose config` lookups are left out.
 docker_actions() {
   local line
   while IFS= read -r line; do
@@ -18,6 +19,7 @@ docker_actions() {
         [[ $line == config* ]] || printf 'compose %s\n' "$(cut -d' ' -f1-2 <<< "$line")"
         ;;
       'docker run '*) printf 'run\n' ;;
+      'docker exec '*) printf 'exec\n' ;;
     esac
   done < "$DOCKER_LOG"
 }
@@ -53,13 +55,20 @@ assert_workspace_propagated "$WS"
 fresh_stack
 run_pi "$WS" --rebuild --version
 assert_status 0
-assert_actions $'compose build pi\nrun\nrun\ncompose up --detach\ncompose exec -T\ncompose exec pi\ncompose exec pi'
+assert_actions $'compose build pi\nrun\nrun\ncompose up --detach\nexec\nexec\nexec'
 assert_log_has "$FILES build pi"
 assert_log_lacks ' build --pull'
 assert_log_has "$FILES up --detach pi"
 assert_log_lacks ' up --build '
-assert_log_has "$FILES exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
-assert_log_has "$FILES exec pi pi-shell-launch pi-session-log --version"
+assert_log_has "docker exec -i $EXEC_ENV $PROJECT pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
+assert_log_has "docker exec -i $EXEC_ENV $PROJECT pi-shell-launch pi-session-log --version"
+
+# With a terminal as standard input and output, the exec allocates one.
+IN_TERMINAL=true
+run_pi "$WS" --version
+IN_TERMINAL=false
+assert_status 0
+assert_log_has "docker exec -i -t $EXEC_ENV $PROJECT pi-shell-launch pi-session-log --version"
 
 fresh_stack
 run_pi "$WS" --rebuild --rm --version

@@ -72,8 +72,8 @@ assert_log_has 'compose.shell-rc.yml'
 assert_log_has 'up --detach pi'
 assert_log_lacks '--build'
 assert_eq "$(container_field "$NAME" mount./tmp/pi-host-shellrc)" "$RC_SOURCE" 'rc mount source'
-assert_log_has 'exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native'
-assert_log_has 'exec pi pi-shell-launch pi-session-log --version'
+assert_log_has "docker exec -i --env PI_HOST_SHELL=zsh --env PI_NO_RC_CONFIG=0 $EXEC_ENV $NAME pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
+assert_log_has "docker exec -i --env PI_HOST_SHELL=zsh --env PI_NO_RC_CONFIG=0 $EXEC_ENV $NAME pi-shell-launch pi-session-log --version"
 
 # Explicit overrides win over SHELL and rewrite the same rc source file, so an
 # already-running container's read-only mount sees the selected shell's config.
@@ -87,13 +87,13 @@ assert_file_has "$RC_SOURCE/rc" 'export FROM_BASHRC=yes'
 assert_file_has "$RC_SOURCE/rc" 'alias ll="printf host-ll"'
 assert_file_lacks "$RC_SOURCE/rc" 'FROM_ZSHRC'
 expect_alias "$SHELL_COMMAND_PREFIX" "$RC_SOURCE/rc" host-ll
-assert_log_has "shell=bash rc-source=$RC_SOURCE rc-file="
+assert_log_has "docker exec -i --env PI_HOST_SHELL=bash --env PI_NO_RC_CONFIG=0 $EXEC_ENV $NAME pi-shell-launch pi-session-log --version"
 
 EXTRA_ENV=(SHELL=/bin/bash)
 run_pi "$WS" --zsh --version
 assert_status 0
 assert_file_has "$RC_SOURCE/rc" 'export FROM_ZSHRC=yes'
-assert_log_has 'shell=zsh rc-source='
+assert_log_has "docker exec -i --env PI_HOST_SHELL=zsh --env PI_NO_RC_CONFIG=0 $EXEC_ENV $NAME pi-shell-launch pi-session-log --version"
 
 # --rebuild builds the service image once; Compose then recreates from it.
 run_pi "$WS" --rebuild --version
@@ -123,10 +123,9 @@ EXTRA_ENV=(SHELL=/bin/zsh)
 run_pi "$WS" --no-rc-config --version
 assert_status 0
 [[ ! -e $CONFIG_DIR/shell-rc ]] || fail 'no-rc mode generated an rc file'
-assert_log_has 'shell=zsh rc-source= rc-file=/tmp/pi-host-shellrc/rc no-rc=1'
+assert_log_has "docker exec -i --env PI_HOST_SHELL=zsh --env PI_NO_RC_CONFIG=1 --env PI_HOST_RC_FILE=/dev/null $NAME pi-shell-launch pi-session-log --version"
 assert_log_lacks 'compose.shell-rc.yml'
-assert_log_has 'exec pi pi-shell-launch pi-session-log --version'
-assert_log_lacks 'exec -T pi sh -c'
+assert_log_lacks "$NAME sh -c"
 EXTRA_ENV=()
 
 # Disposable Pi and extension installation both use the shell launcher, and
@@ -191,7 +190,7 @@ existing_stack -mount./tmp/pi-host-shellrc
 run_pi "$WS" --no-rc-config shell
 assert_status 0
 assert_log_lacks ' up '
-assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI_NO_RC_CONFIG=1 $NAME pi-shell-launch"
+assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/dev/null --env PI_NO_RC_CONFIG=1 $NAME pi-shell-launch"
 run_pi "$WS" shell
 assert_status 0
 assert_log_has 'compose.shell-rc.yml'
@@ -213,7 +212,7 @@ assert_log_has "$EXEC_PREFIX --user 0 --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI
 EXTRA_ENV=(SHELL=/bin/bash)
 run_pi "$WS" --no-rc-config shell
 assert_status 0
-assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=bash $EXEC_ENV --env PI_NO_RC_CONFIG=1 $NAME pi-shell-launch"
+assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=bash --env PI_HOST_RC_FILE=/dev/null --env PI_NO_RC_CONFIG=1 $NAME pi-shell-launch"
 EXTRA_ENV=()
 
 # Invalid selection fails before any Docker command.

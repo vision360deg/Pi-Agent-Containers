@@ -65,7 +65,7 @@ expect_invalid() {
 existing_stack
 run_pi "$WS" --oauth --version
 assert_status 0
-assert_log_has "$FILES -f $ROOT/compose.shell-rc.yml exec pi pi-shell-launch pi-session-log --version"
+assert_log_has "--env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc $NAME pi-shell-launch pi-session-log --version"
 assert_no_override
 assert_override_removed
 expect_ports

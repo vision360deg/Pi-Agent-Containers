@@ -8,6 +8,9 @@ WS_A=$(make_workspace "$TEST_HOME/projects/alpha")
 WS_B=$(make_workspace "$TEST_HOME/projects/beta")
 PROJECT_A=pi-agents-pi-alpha
 COMPOSE_A="--project-name $PROJECT_A -f $ROOT/compose.yml -f $ROOT/compose.shell-rc.yml"
+# Piped standard input: every exec keeps stdin open without a terminal and
+# carries this launch's shell settings.
+EXEC_A="docker exec -i --env PI_HOST_SHELL=bash --env PI_NO_RC_CONFIG=0 --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc $PROJECT_A"
 
 assert_no_docker() {
   [[ ! -s $DOCKER_LOG ]] || fail "docker must not run"$'\n'"$(show_run)"
@@ -18,8 +21,8 @@ help_has() {
   [[ $(cat -- "$OUTPUT_LOG") == *"$1"* ]] || fail "output lacks: $1"$'\n'"$(show_run)"
 }
 
-# The Compose subcommands (first two words) and helper containers the last run
-# started, in order; read-only `compose config` lookups are left out.
+# The Compose subcommands (first two words), execs, and helper containers the
+# last run started, in order; read-only `compose config` lookups are left out.
 docker_actions() {
   local line
   while IFS= read -r line; do
@@ -29,6 +32,7 @@ docker_actions() {
         [[ $line == config* ]] || printf 'compose %s\n' "$(cut -d' ' -f1-2 <<< "$line")"
         ;;
       'docker run '*) printf 'run\n' ;;
+      'docker exec '*) printf 'exec\n' ;;
     esac
   done < "$DOCKER_LOG"
 }
@@ -45,13 +49,13 @@ assert_workspace_propagated() {
 # and Pi runs with ARGUMENTS through the logged launcher.
 expect_persistent_launch() {
   assert_status 0
-  assert_eq "$(docker_actions)" $'run\nrun\ncompose up --detach\ncompose exec -T\ncompose exec pi\ncompose exec pi' 'docker actions'
+  assert_eq "$(docker_actions)" $'run\nrun\ncompose up --detach\nexec\nexec\nexec' 'docker actions'
   assert_log_has "$COMPOSE_A up --detach pi"
   assert_log_lacks ' up --build '
-  assert_log_has "$COMPOSE_A exec -T pi sh -c"
+  assert_log_has "$EXEC_A sh -c"
   assert_log_has 'pi-agents managed host shell aliases'
-  assert_log_has "$COMPOSE_A exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
-  assert_log_has "$COMPOSE_A exec pi pi-shell-launch pi-session-log $*"
+  assert_log_has "$EXEC_A pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
+  assert_log_has "$EXEC_A pi-shell-launch pi-session-log $*"
   assert_workspace_propagated "$WS_A"
 }
 

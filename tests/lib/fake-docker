@@ -221,14 +221,6 @@ compose_containers() {
   done
 }
 
-# The service container of a project, loaded into R; fails when there is none.
-load_service_container() {
-  local file
-  file=$(compose_containers "$1" | head -n 1)
-  [[ -n $file ]] || { printf 'service "pi" is not running\n' >&2; return 1; }
-  load_record "$file"
-}
-
 # What Compose compares to decide whether an existing container is outdated.
 config_signature() {
   local key
@@ -291,18 +283,6 @@ compose_up() {
   save_record "$file"
 }
 
-compose_exec() {
-  local project=$1
-  shift
-  while [[ ${1:-} == -* ]]; do shift; done
-  shift # service
-  load_service_container "$project" || exit 1
-  case "$*" in
-    'sh -c '*) run_in_home "${R[mount./home/node/.pi/agent]}" "$3" ;;
-    *) ;;
-  esac
-}
-
 compose_run() {
   local project=$1
   shift
@@ -358,7 +338,6 @@ docker_compose() {
     down)
       while IFS= read -r file; do [[ -z $file ]] || rm -f -- "$file"; done < <(compose_containers "$project")
       ;;
-    exec) compose_exec "$project" "$@" ;;
     run) compose_run "$project" "$@" ;;
     *) printf 'fake docker: unsupported compose command: %s\n' "$action" >&2; exit 1 ;;
   esac
@@ -430,16 +409,26 @@ docker_run() {
 
 docker_exec() {
   local file
+  local -a environment=()
   while (($#)); do
     case $1 in
       -i|-t|-it|-T) shift ;;
-      --user|--env|-e|-u) shift 2 ;;
+      --env|-e) environment+=("$2"); shift 2 ;;
+      --user|-u) shift 2 ;;
       *) break ;;
     esac
   done
   file=$(find_container "$1") || no_such_object "$1"
   load_record "$file"
   [[ ${R[state]:-} == running ]] || { printf 'Error: container %s is not running\n' "$1" >&2; exit 1; }
+  shift
+  # A shell script, such as the alias setup, runs in the container's home.
+  if [[ ${1:-} == sh && ${2:-} == -c ]]; then
+    (
+      for entry in "${environment[@]}"; do export "$entry"; done
+      run_in_home "${R[mount./home/node/.pi/agent]}" "$3"
+    )
+  fi
 }
 
 command=${1:-}

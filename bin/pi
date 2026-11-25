@@ -19,6 +19,7 @@ FORCE_BASH=false
 FORCE_ZSH=false
 NO_RC_CONFIG=0
 HOST_SHELL_NAME=''
+SHELL_RC_COMPOSE_FILE=''
 TEMPORARY_DIRECTORIES=()
 
 cleanup_temporary_files() {
@@ -52,13 +53,25 @@ select_host_shell() {
 }
 
 prepare_host_shell_rc() {
+  local rc_directory
   select_host_shell || return
-  [[ $NO_RC_CONFIG -eq 0 ]] || return 0
+  export PI_HOST_SHELL=$HOST_SHELL_NAME
+  export PI_NO_RC_CONFIG=$NO_RC_CONFIG
+  if [[ $NO_RC_CONFIG -eq 1 ]]; then
+    SHELL_RC_COMPOSE_FILE=''
+    unset PI_HOST_RC_SOURCE PI_HOST_RC_FILE
+    return 0
+  fi
   # Keep the bind source for as long as the workspace container can exist.
   # The resolver replaces the file atomically inside this stable directory.
-  mkdir -p -- "$HOST_SHELL_RC_SOURCE" || return
-  chmod 0755 "$HOST_SHELL_RC_SOURCE" || return
-  "$ROOT/bin/pi-shell-rc" --shell "$HOST_SHELL_NAME" --home "$HOME" --output "$HOST_SHELL_RC_FILE" || return
+  rc_directory=$CONFIG_PATH/shell-rc/$VOLUME_NAMESPACE
+  mkdir -p -- "$rc_directory" || return
+  chmod 0755 "$rc_directory" || return
+  "$ROOT/bin/pi-shell-rc" --shell "$HOST_SHELL_NAME" --home "$HOME" --output "$rc_directory/rc" || return
+  PI_HOST_RC_SOURCE=$(cd -P -- "$rc_directory" && pwd -P)
+  PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc
+  SHELL_RC_COMPOSE_FILE=$ROOT/compose.shell-rc.yml
+  export PI_HOST_RC_SOURCE PI_HOST_RC_FILE
 }
 
 fail() {
@@ -698,7 +711,7 @@ prepare_workspace_container() {
   fi
   assert_container_name_available "$CONTAINER_NAME" "$WORKSPACE" || fail "workspace container name is occupied: $CONTAINER_NAME"
   assert_project_available "$PROJECT_NAME" "$WORKSPACE" || fail "workspace Compose project is occupied: $PROJECT_NAME"
-  build_compose
+  export_compose_environment; build_compose
 }
 
 # --rm runs a one-off container in the workspace's own project, so it shares
@@ -729,7 +742,7 @@ find_exact_workspace_stack() {
   done <<< "$rows"
   [[ $count -eq 1 ]] || return 1
   assert_project_available "$PROJECT_NAME" "$WORKSPACE" || fail 'workspace Compose project is shared with another stack'
-  build_compose
+  export_compose_environment; build_compose
 }
 
 resolve_exact_workspace_stack() {
@@ -738,7 +751,7 @@ resolve_exact_workspace_stack() {
 
 configured_service_image() {
   local images image
-  local -a command=(run_compose config --images pi)
+  local -a command=("${COMPOSE[@]}" config --images pi)
   if ! images=$("${command[@]}"); then
     fail 'could not determine the configured Pi service image'
   fi
@@ -796,6 +809,27 @@ start_persistent_service() {
   arguments+=(pi)
   run_compose "${arguments[@]}"
   warn_extra_state_volume
+}
+
+container_exec() {
+  local container=$1
+  shift
+  local -a arguments=(exec -i) command
+  if [[ -t 0 && -t 1 ]]; then arguments+=(-t); fi
+  arguments+=(--env "PI_HOST_SHELL=$HOST_SHELL_NAME" --env "PI_NO_RC_CONFIG=$NO_RC_CONFIG"
+    --env "PI_HOST_RC_FILE=${PI_HOST_RC_FILE:-/dev/null}" "$container")
+  command=(docker "${arguments[@]}" "$@")
+  "${command[@]}"
+}
+
+run_logged_pi() {
+  container_exec "$CONTAINER_NAME" pi-shell-launch pi-session-log --forward-output "$@"
+}
+
+prepare_runtime() {
+  prepare_host_shell_rc
+  export_compose_environment
+  build_compose
 }
 
 remove_workspace_volumes() {
@@ -1026,9 +1060,7 @@ attach_shell() {
     mkdir -p -- "$WORKSPACE"
     WORKSPACE=$(canonicalize_workspace "$WORKSPACE"); WORKSPACE_MISSING=false
     set_workspace_identity
-    set_host_shell_rc_paths
-    prepare_host_shell_rc
-    build_compose
+    prepare_runtime
     prepare_workspace_container
     ensure_helper_image
     prepare_state_lineage
@@ -1043,15 +1075,13 @@ attach_shell() {
     [[ $REBUILD_IMAGE != true || $SHELL_SELECTED_PATH == "$requested_workspace" ]] || fail '--rebuild can only build the current workspace image; run `pi --rebuild shell` from the selected workspace'
     WORKSPACE=$SHELL_SELECTED_PATH
     set_workspace_identity
-    set_host_shell_rc_paths
     resolve_exact_workspace_stack
     # A shell keeps whichever agent state the stack mounts; it never switches.
     mounted_agent_state=$(mounted_agent_state_volume "$CONTAINER_NAME") || fail 'could not inspect agent state mount'
     if [[ $mounted_agent_state == "$EXTRA_AGENT_STATE_VOLUME_NAME" ]]; then
       NEW_STATE=true; ACTIVE_AGENT_STATE_VOLUME_NAME=$EXTRA_AGENT_STATE_VOLUME_NAME
     fi
-    prepare_host_shell_rc
-    build_compose
+    prepare_runtime
     # A shell cannot pass launch options, so it only recreates
     # the current workspace's stack for --rebuild or a missing rc mount.
     if [[ $REBUILD_IMAGE == true ]]; then
@@ -1067,7 +1097,7 @@ attach_shell() {
   fi
   inspect_workspace_container "$SHELL_SELECTED_NAME" "$WORKSPACE" "$PROJECT_NAME" || fail 'selected shell container identity changed'
   [[ $SHELL_AS_ROOT != true ]] || arguments+=(--user 0)
-  arguments+=(--env "PI_HOST_SHELL=$HOST_SHELL_NAME" --env 'PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc'
+  arguments+=(--env "PI_HOST_SHELL=$HOST_SHELL_NAME" --env "PI_HOST_RC_FILE=${PI_HOST_RC_FILE:-/dev/null}"
     --env "PI_NO_RC_CONFIG=$NO_RC_CONFIG" "$SHELL_SELECTED_NAME" pi-shell-launch)
   command=(docker "${arguments[@]}"); "${command[@]}"
 }
@@ -1134,12 +1164,14 @@ set_workspace_identity() {
   [[ $NEW_STATE != true ]] || ACTIVE_AGENT_STATE_VOLUME_NAME=$EXTRA_AGENT_STATE_VOLUME_NAME
 }
 
-set_host_shell_rc_paths() {
-  HOST_SHELL_RC_SOURCE=''
-  HOST_SHELL_RC_FILE=''
-  [[ $NO_RC_CONFIG -eq 0 ]] || return 0
-  HOST_SHELL_RC_SOURCE=$SHELL_RC_DIRECTORY/$VOLUME_NAMESPACE
-  HOST_SHELL_RC_FILE=$HOST_SHELL_RC_SOURCE/rc
+export_compose_environment() {
+  export PI_WORKSPACE=$WORKSPACE
+  export PI_WORKSPACE_BASENAME=$WORKSPACE_BASENAME
+  export PI_PROJECT_NAME=$PROJECT_NAME
+  export PI_CONTAINER_NAME=$CONTAINER_NAME
+  export PI_AGENT_STATE_VOLUME_NAME=$ACTIVE_AGENT_STATE_VOLUME_NAME
+  export PI_SESSION_STATE_VOLUME_NAME=$SESSION_STATE_VOLUME_NAME
+  export PI_BROWSER_STATE_VOLUME_NAME=$BROWSER_STATE_VOLUME_NAME
 }
 
 build_compose() {
@@ -1148,16 +1180,10 @@ build_compose() {
     COMPOSE+=(-f "$ROOT/compose.oauth.yml")
     [[ -z $OAUTH_OVERRIDE_FILE ]] || COMPOSE+=(-f "$OAUTH_OVERRIDE_FILE")
   fi
-  [[ $NO_RC_CONFIG -ne 0 ]] || COMPOSE+=(-f "$ROOT/compose.shell-rc.yml")
+  [[ -z $SHELL_RC_COMPOSE_FILE ]] || COMPOSE+=(-f "$SHELL_RC_COMPOSE_FILE")
 }
 
-run_compose() {
-  env PI_WORKSPACE="$WORKSPACE" PI_WORKSPACE_BASENAME="$WORKSPACE_BASENAME" PI_CONTAINER_NAME="$CONTAINER_NAME" \
-    PI_PROJECT_NAME="$PROJECT_NAME" PI_AGENT_STATE_VOLUME_NAME="$ACTIVE_AGENT_STATE_VOLUME_NAME" \
-    PI_SESSION_STATE_VOLUME_NAME="$SESSION_STATE_VOLUME_NAME" PI_BROWSER_STATE_VOLUME_NAME="$BROWSER_STATE_VOLUME_NAME" \
-    PI_HOST_SHELL="$HOST_SHELL_NAME" PI_HOST_RC_SOURCE="$HOST_SHELL_RC_SOURCE" PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc \
-    PI_NO_RC_CONFIG="$NO_RC_CONFIG" "${COMPOSE[@]}" "$@"
-}
+run_compose() { "${COMPOSE[@]}" "$@"; }
 
 volume_exists() {
   local -a command=(docker volume inspect "$1")
@@ -1667,11 +1693,7 @@ PI_SHELL_ALIAS_SETUP
 
 configure_pi_shell_aliases() {
   [[ $NO_RC_CONFIG -eq 0 ]] || return 0
-  run_compose exec -T pi sh -c "$(pi_shell_alias_setup_script)"
-}
-
-run_logged_pi() {
-  run_compose exec pi pi-shell-launch pi-session-log --forward-output "$@"
+  container_exec "$CONTAINER_NAME" sh -c "$(pi_shell_alias_setup_script)"
 }
 
 PI_BROWSER_EXTENSION_SOURCE=npm:pi-agent-browser-native
@@ -1706,12 +1728,9 @@ fi
 
 CONFIG_PATH=${PI_AGENT_CONTAINERS_CONFIG_PATH:-$HOME/.config/pi-agent-containers}
 STATE_SEED_FILE=$CONFIG_PATH/seed
-SHELL_RC_DIRECTORY=$CONFIG_PATH/shell-rc
-set_host_shell_rc_paths
 FORCE_RECREATE=$REPLACE_CONTAINER
 [[ $NEW_STATE != true ]] || FORCE_RECREATE=true
 COMPOSE=()
-build_compose
 
 if [[ $COMMAND == list ]]; then
   list_stacks
@@ -1719,6 +1738,8 @@ if [[ $COMMAND == list ]]; then
 fi
 
 if [[ $COMMAND == stop || $COMMAND == remove ]]; then
+  export_compose_environment
+  build_compose
   if ! find_exact_workspace_stack; then
     [[ $COMMAND == remove && $REMOVE_VOLUMES == true ]] || fail "no stack found for workspace: $WORKSPACE"
     remove_orphaned_workspace_volumes
@@ -1743,6 +1764,9 @@ fi
 
 if [[ $COMMAND == copy ]]; then
   # copy uses no host shell configuration.
+  export_compose_environment
+  build_compose
+  ensure_helper_image
   copy_agent_state
   exit $?
 fi
@@ -1755,10 +1779,11 @@ if [[ $COMMAND == shell ]]; then
   exit $?
 fi
 
+prepare_runtime
+
 if [[ $REMOVE_AFTER_RUN == true ]]; then
   resolve_workspace_project
   validate_oauth_ports
-  prepare_host_shell_rc
   ensure_helper_image
   prepare_state_lineage
   ensure_workspace_volumes
@@ -1774,7 +1799,6 @@ if [[ $REMOVE_AFTER_RUN == true ]]; then
   exit $?
 fi
 
-prepare_host_shell_rc
 prepare_workspace_container
 validate_oauth_ports
 ensure_helper_image
@@ -1809,4 +1833,4 @@ start_persistent_service
 configure_pi_shell_aliases
 install_browser_extension
 record_state_lineage
-run_compose exec pi pi-shell-launch pi-session-log "$@"
+container_exec "$CONTAINER_NAME" pi-shell-launch pi-session-log "$@"

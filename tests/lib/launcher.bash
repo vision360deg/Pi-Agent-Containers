@@ -29,10 +29,22 @@ INPUT=''
 # Shell command whose output, as it is produced, replaces INPUT when set.
 INPUT_COMMAND=''
 STATUS=0
+# true runs the launcher with a pseudo-terminal as its standard input and
+# output, through script(1); the output then also holds the echoed input.
+IN_TERMINAL=false
 
 run_pi() {
   local cwd=$1
   shift
+  local -a launcher=("$ROOT/bin/pi" "$@")
+  if [[ $IN_TERMINAL == true ]]; then
+    # util-linux script runs a command string; BSD script runs argv.
+    if script --version >/dev/null 2>&1; then
+      launcher=(script -qec "$(printf '%q ' "${launcher[@]}")" /dev/null)
+    else
+      launcher=(script -q /dev/null "${launcher[@]}")
+    fi
+  fi
   : > "$DOCKER_LOG"
   : > "$OUTPUT_LOG"
   printf '%b' "$INPUT" > "$TMP_DIR/stdin"
@@ -41,7 +53,7 @@ run_pi() {
       env -u PI_WORKSPACE -u PI_OAUTH_CALLBACK_PORTS -u PI_CODING_AGENT_DIR -u PI_MANAGED_INSTALL_ROOT \
         HOME="$TEST_HOME" SHELL=/bin/bash TMPDIR="$TMP_DIR/tmp" PATH="$FAKE_BIN:$PATH" \
         PI_AGENT_CONTAINERS_CONFIG_PATH="$CONFIG_DIR" DOCKER_LOG="$DOCKER_LOG" FAKE_DOCKER_STATE="$FAKE_DOCKER_STATE" \
-        "${EXTRA_ENV[@]}" "$ROOT/bin/pi" "$@"
+        "${EXTRA_ENV[@]}" "${launcher[@]}"
   ) < <(if [[ -n $INPUT_COMMAND ]]; then bash -c "$INPUT_COMMAND"; else cat -- "$TMP_DIR/stdin"; fi) > "$OUTPUT_LOG" 2>&1; then
     STATUS=0
   else

@@ -207,7 +207,7 @@ assert_log_has 'up --detach pi'
 assert_log_lacks 'up --build'
 assert_log_has 'docker volume create'
 assert_log_has 'docker run'
-assert_log_has 'exec pi pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native'
+assert_log_has 'docker exec -i --env PI_HOST_SHELL=bash --env PI_NO_RC_CONFIG=0 --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc pi-agents-pi-new-project pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native'
 assert_attached '' pi-agents-pi-new-project
 # The new project's state volumes are created, initialized, and repaired
 # before the service starts.
