@@ -137,6 +137,26 @@ run_host "$WS" --host
 assert_status 0
 assert_native launcher "$WS"
 
+# Arguments that match no wrapper option or command run native Pi the same
+# way without --host, from PI_WORKSPACE or the invocation directory, and the
+# home directory is allowed.
+for arguments in '--version' 'install npm:x' '-p hi'; do
+  read -r -a words <<< "$arguments"
+  run_host "$WS" "${words[@]}"
+  assert_status 0
+  assert_native launcher "$WS" "${words[@]}"
+  assert_empty "$DOCKER_LOG"
+done
+run_host "$TEST_HOME" --version
+assert_status 0
+assert_native launcher "$(cd -P -- "$TEST_HOME" && pwd -P)" --version
+assert_empty "$DOCKER_LOG"
+HOST_ENV=(PI_WORKSPACE="$OTHER")
+run_host "$WS" install npm:x
+assert_status 0
+assert_native launcher "$OTHER" install npm:x
+assert_empty "$DOCKER_LOG"
+
 # `pi --host --help` stays local brief usage.
 run_host "$WS" --host --help
 assert_status 0
@@ -219,6 +239,16 @@ for answer in 'n\n' '' 'yes\n'; do
   assert_empty "$NATIVE_LOG"
   assert_empty "$DOCKER_LOG"
 done
+
+# Implicit host runs make the same offer; a standard input that is not a
+# terminal declines it.
+run_host "$WS" --version
+assert_status 127
+assert_output_has 'pi: native Pi was not found.'
+assert_output_has 'install it with: curl -fsSL https://pi.dev/install.sh | sh'
+assert_empty "$CURL_LOG"
+assert_empty "$NATIVE_LOG"
+assert_empty "$DOCKER_LOG"
 
 # Accepting runs the official installer from the workspace. The wrapper is
 # hidden from it, the launcher directory comes first so nothing shadows the

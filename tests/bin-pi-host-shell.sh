@@ -53,7 +53,7 @@ reset_docker
 fake_image "$NAME"
 existing_settings '{"quietStartup":true,"shellCommandPrefix":"printf custom-prefix"}'
 EXTRA_ENV=(SHELL=/usr/local/bin/zsh)
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 0
 rc_dirs=("$CONFIG_DIR"/shell-rc/*)
 [[ ${#rc_dirs[@]} -eq 1 && ${rc_dirs[0]} == "$RC_SOURCE" && -f $RC_SOURCE/rc ]] || fail "expected one rc directory: ${rc_dirs[*]}"
@@ -109,7 +109,7 @@ assert_eq "$(jq -r '.shellCommandPrefix' "$SETTINGS" | grep -Fc 'pi-agents manag
 
 # The generated rc is kept in the config directory, and dropping the rc mount
 # recreates the running stack without it.
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 0
 [[ -f $RC_SOURCE/rc ]] || fail 'generated shell rc must be kept in the config directory'
 run_pi "$WS" --no-rc-config --version
@@ -223,7 +223,7 @@ assert_no_docker
 assert_output_has '--bash and --zsh are mutually exclusive'
 
 EXTRA_ENV=(SHELL=/usr/bin/fish)
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 2
 assert_no_docker
 assert_output_has 'unsupported host shell: fish'

@@ -59,7 +59,7 @@ seed_source() {
 }
 
 seed_source
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 0
 assert_source "$SOURCE"
 volume_has_file "$TARGET" auth.json || fail 'the seed state must be copied'
@@ -91,7 +91,7 @@ assert_log_lacks 'pi-agents_pi-agent-state'
 # A labelled state volume that belongs to another workspace is refused.
 seed_source
 fake_volume "$TARGET" /elsewhere agent 2026-08-02T12:00:00Z
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 2
 assert_output_has "state volume workspace label does not match: $TARGET"
 assert_log_lacks ' up '
@@ -99,7 +99,7 @@ assert_log_lacks ' up '
 # A state volume labelled with another kind is refused.
 seed_source
 fake_volume "$TARGET" "$WS" browser 2026-08-02T12:00:00Z
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 2
 assert_output_has "state volume kind label does not match: $TARGET"
 assert_log_lacks ' up '
@@ -109,7 +109,7 @@ assert_log_lacks ' up '
 for volume in "$TARGET" "$(session_volume "$WS")" "$(browser_volume "$WS")"; do
   seed_source
   fake_volume "$volume" "$WS" agent 2026-08-02T12:00:00Z "${UNLABEL[@]}"
-  run_pi "$WS" --version
+  run_pi "$WS" - --version
   assert_status 2
   assert_output_has "state volume is not managed: $volume"
   assert_log_lacks ' up '
@@ -120,14 +120,14 @@ done
 seed_source
 fake_volume "$TARGET" "$WS" agent 2026-08-02T12:00:00Z
 fake_volume_file "$TARGET" auth.json '{"provider":{}}'
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 0
 assert_no_source_copy
 
 # An existing volume without useful state is seeded.
 seed_source
 fake_volume "$TARGET" "$WS" agent 2026-08-02T12:00:00Z
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 0
 assert_source "$SOURCE"
 
@@ -135,7 +135,7 @@ assert_source "$SOURCE"
 seed_source
 fake_volume "$TARGET" "$WS" agent 2026-08-02T12:00:00Z
 EXTRA_ENV=(FAKE_INIT_PROBE_STATUS=43)
-run_pi "$WS" --version
+run_pi "$WS" - --version
 EXTRA_ENV=()
 assert_status 2
 assert_output_has 'pi: could not inspect agent-state initialization status'
@@ -147,7 +147,7 @@ assert_log_lacks ' up '
 reset_docker
 fake_volume "$SOURCE" /elsewhere agent 2026-08-01T12:00:00Z label.com.pi-agents.managed=false
 set_seed "$SOURCE"
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 0
 assert_output_lacks 'use it as the seed for this new workspace'
 assert_no_source_copy
@@ -156,7 +156,7 @@ assert_eq "$(seed_value)" "$TARGET" 'invalid seed is replaced on launch'
 # Without a seed, a new workspace starts empty on its own volume and never
 # touches the old shared default volume.
 reset_docker
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 0
 assert_eq "$(target_volume)" "$TARGET" 'agent state volume'
 assert_no_source_copy
@@ -251,12 +251,12 @@ for letter in a b c d e f g h i; do
   declare "WS_${letter^^}=$(make_workspace "$TEST_HOME/lineage/workspace-$letter")"
 done
 
-run_pi "$WS_A" --version
+run_pi "$WS_A" - --version
 assert_status 0
 FIRST=$(target_volume)
 assert_eq "$(seed_value)" "$FIRST" 'seed after the first workspace'
 
-run_pi "$WS_B" --version
+run_pi "$WS_B" - --version
 assert_status 0
 SECOND=$(target_volume)
 assert_source "$FIRST"
@@ -314,7 +314,7 @@ assert_log_has 'state-initialization complete'
 
 # Initialized volumes are recognized by their marker alone.
 restore lineage
-run_pi "$WS_F" --version
+run_pi "$WS_F" - --version
 assert_status 0
 assert_no_source_copy
 assert_log_lacks 'state-initialization'
@@ -324,7 +324,7 @@ assert_log_lacks 'state-initialization'
 restore lineage
 rm -f -- "$FAKE_DOCKER_STATE/volume-data/$SIXTH/.container-initialized"
 fake_volume_file "$SIXTH" .container-initialization-pending "$SECOND"
-run_pi "$WS_F" --version
+run_pi "$WS_F" - --version
 assert_status 0
 assert_source "$SECOND"
 assert_log_has "state-initialization pending $SECOND"
@@ -350,7 +350,7 @@ for pending_source in pi-agents-ws-gone_pi-agent-state "$FOURTH"; do
   restore lineage
   rm -f -- "$FAKE_DOCKER_STATE/volume-data/$SIXTH/.container-initialized"
   fake_volume_file "$SIXTH" .container-initialization-pending "$pending_source"
-  run_pi "$WS_F" --version
+  run_pi "$WS_F" - --version
   assert_status 2
   assert_output_has "pi: pending agent-state initialization source is unavailable; restore it before retrying: $pending_source"
   assert_no_source_copy
@@ -364,7 +364,7 @@ fake_record "$FAKE_DOCKER_STATE/volumes/$FOURTH" created=2026-01-01T00:00:00Z
 snapshot recovery
 set_seed "$FOURTH"
 INPUT='n\n'
-run_pi "$WS_G" --version
+run_pi "$WS_G" - --version
 assert_status 2
 assert_output_has "$FIRST"
 assert_output_lacks "  $FOURTH"
@@ -389,7 +389,7 @@ for input in 'n\n' ''; do
   restore recovery
   set_seed pi-agents-ws-gone_pi-agent-state
   INPUT=$input
-  run_pi "$WS_G" --version
+  run_pi "$WS_G" - --version
   INPUT=''
   assert_status 2
   assert_output_has 'pi: warning: the seed pointer was not found.'
@@ -429,7 +429,7 @@ done
 restore recovery
 rm -f -- "$SEED_FILE"
 INPUT='y\n'
-run_pi "$WS_G" --version
+run_pi "$WS_G" - --version
 INPUT=''
 assert_status 0
 assert_source "$FIRST"
@@ -439,7 +439,7 @@ assert_eq "$(seed_value)" "$FIRST" 'seed after answering y'
 restore recovery
 rm -f -- "$SEED_FILE"
 INPUT_COMMAND="until grep -Fq '[y/N]' '$OUTPUT_LOG'; do sleep 0.05; done; rm -f -- '$FAKE_DOCKER_STATE/volumes/$FIRST'; printf 'y\\n'"
-run_pi "$WS_G" --version
+run_pi "$WS_G" - --version
 INPUT_COMMAND=''
 assert_status 2
 assert_output_has 'pi: selected seed volume is no longer valid'
@@ -453,7 +453,7 @@ for stale_pointer in '' pi-agents-ws-gone_pi-agent-state; do
   restore lineage
   rm -f -- "$SEED_FILE"
   [[ -z $stale_pointer ]] || set_seed "$stale_pointer"
-  run_pi "$WS_F" --version
+  run_pi "$WS_F" - --version
   assert_status 0
   assert_eq "$(seed_value)" "$stale_pointer" 'seed pointer after launching an initialized workspace'
   assert_output_lacks 'seed pointer was not found'
@@ -468,7 +468,7 @@ assert_eq "$(seed_value)" "$SIXTH" 'seed after --seed without a pointer'
 
 # State is created with labels, seeded and repaired before the service starts,
 # for both a persistent launch and `pi update`.
-for arguments in "$WS_H --version" "$WS_I update"; do
+for arguments in "$WS_H - --version" "$WS_I update"; do
   restore lineage
   set_seed "$FIRST"
   # shellcheck disable=SC2086

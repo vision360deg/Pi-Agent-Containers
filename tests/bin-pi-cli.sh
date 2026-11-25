@@ -72,20 +72,20 @@ DETAILED_HELP=$(cat -- "$OUTPUT_LOG")
 assert_eq "$(grep -E '^[A-Z][A-Za-z ]*:$' "$OUTPUT_LOG" | tr '\n' ' ')" \
   'Usage: Options: Commands: Examples: Restrictions: Passthrough and help: ' 'detailed help sections'
 help_has 'Containerized Pi wrapper'
-help_has $'  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]\n     [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]'
-help_has $'[--oauth [PORTS...]]\n     --rm [PI_ARGS...]'
-help_has 'pi [--workspace PATH] --host [PI_ARGS...]'
+help_has $'  pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]\n     [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [- PI_ARGS...]'
+help_has $'[--oauth [PORTS...]]\n     --rm [- PI_ARGS...]'
+help_has $'pi [--workspace PATH] --host [PI_ARGS...]\n  pi PI_ARGS...\n  pi [--workspace PATH] stop\n'
 help_has 'pi [--workspace PATH] update [--extensions] [--models]'
 help_has $'\n  pi list\n'
 help_has 'pi [--workspace PATH] shell [--root|-r]'
 help_has $'pi [--workspace PATH] copy [--from|--to] [-s|--sessions] [-a|--auth] [-e|--extensions]\n     [--all] [--override]'
-help_has 'pi [--workspace PATH] - PI_ARGS...'
+assert_output_lacks 'pi [--workspace PATH] - PI_ARGS...'
 help_has 'it overrides PI_WORKSPACE. Relative paths resolve from the'
 help_has '--workspace=PATH also works.'
 help_has $'  --rm                Run Pi in a disposable container instead of the persistent\n                      service; the workspace state volumes are still used. Its session\n                      records are forwarded to that container\'s Docker log until it is\n                      removed on exit.\n'
 help_has '${PI_CODING_AGENT_DIR:-~/.pi/agent}/bin/pi'
 help_has 'curl -fsSL https://pi.dev/install.sh | sh'
-help_has "which uses the host's ~/.pi/agent state, not workspace volumes."
+help_has $'which uses the host\'s ~/.pi/agent state, not workspace volumes.\n                      Arguments that match no wrapper option or command run native\n                      Pi the same way.\n'
 help_has 'Build the image with the Docker build cache before this launch;'
 help_has 'give this workspace a disambiguated name.'
 help_has "Run on this workspace's extra agent-state volume, created empty"
@@ -120,7 +120,10 @@ help_has 'and --override replaces them.'
 help_has 'exits with status 3.'
 help_has $'In the shell and copy pickers a choice is a single key; with ten or more\n  entries, a choice starting with 1-9 is a number confirmed with Enter. Each\n  picker ends with `X) Cancel (or Esc)`.'
 help_has 'pi --host update                 # Update the native Pi installation.'
-help_has 'pi install npm:pi-web-access'
+help_has 'pi - "Inspect this project"      # Start Pi with an initial prompt.'
+help_has "pi - install npm:pi-web-access   # Pi's install command: add a package."
+help_has "pi --version                     # Native Pi's version; no container."
+assert_output_lacks 'pi "Inspect this project"'
 help_has "pi - update                      # Pi's update command, run in the container."
 help_has '--bash and --zsh are mutually exclusive.'
 help_has '--replace and --keep-existing are mutually exclusive.'
@@ -129,10 +132,11 @@ help_has $'--rm cannot be combined with stop, update, remove, list, shell, copy,
 help_has $'--rebuild cannot be combined with stop, update, remove, list, or copy; with\n  shell it can only rebuild the current workspace\'s image.'
 help_has $'--replace, --keep-existing, --new-state, --seed, --latest-state, and --oauth\n  cannot be combined with stop, remove, list, shell, or copy.'
 help_has '--host accepts only --workspace among wrapper options;'
+help_has 'Launches, --rm, update, shell, and copy refuse the home directory as a workspace.'
 help_has 'list accepts no arguments, rejects --workspace, and does not change Docker state.'
 help_has '--from and --to are mutually exclusive.'
 help_has 'prompts for action and defaults to cancel.'
-help_has 'a leading `-` sends'
+help_has $'  Arguments that match no wrapper option or command run native Pi on the host, as\n  with --host (`pi --version`). With wrapper options, the remaining arguments go\n  to containerized Pi; a leading `-` sends everything after it to containerized\n  Pi, even a wrapper command name (`pi - update`).\n'
 help_has 'Exact `pi -h` or `pi --help` shows this help; a help flag with other arguments'
 help_has '`pi --host - --help` shows native Pi'
 run_pi "$WS_A" -h
@@ -148,10 +152,11 @@ assert_eq "$(cat -- "$OUTPUT_LOG")" "$(cat <<'BRIEF'
 Usage:
   pi [-h|--help]
   pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
-     [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]
+     [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [- PI_ARGS...]
   pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
-     --rm [PI_ARGS...]
+     --rm [- PI_ARGS...]
   pi [--workspace PATH] --host [PI_ARGS...]
+  pi PI_ARGS...
   pi [--workspace PATH] stop
   pi [--workspace PATH] update [--extensions] [--models]
   pi list
@@ -159,7 +164,6 @@ Usage:
   pi [--workspace PATH] shell [--root|-r]
   pi [--workspace PATH] copy [--from|--to] [-s|--sessions] [-a|--auth] [-e|--extensions]
      [--all] [--override]
-  pi [--workspace PATH] - PI_ARGS...
 
 Commands:
   stop              Stop the current workspace's persistent stack.
@@ -193,6 +197,9 @@ expect_brief_usage --workspace "$WS_B" --host --help
 expect_brief_usage --workspace "$WS_B" -h
 expect_brief_usage --help --rm
 expect_brief_usage --help list
+expect_brief_usage --version --help
+expect_brief_usage install npm:x -h
+expect_brief_usage --bash --version --help
 
 # Help after the passthrough marker belongs to Pi.
 fresh_stack
@@ -285,8 +292,19 @@ assert_no_docker
 
 # The invocation directory is the default workspace.
 fresh_stack
-run_pi "$WS_A" --version
+run_pi "$WS_A" - --version
 expect_persistent_launch --version
+
+# Wrapper options keep the remaining arguments for containerized Pi, and no
+# arguments launch the container.
+fresh_stack
+run_pi "$WS_A" --bash --version
+expect_persistent_launch --version
+fresh_stack
+run_pi "$WS_A"
+assert_status 0
+assert_log_has "$COMPOSE_A up --detach pi"
+assert_log_matches "pi-shell-launch pi-session-log\$"
 
 # A leading - passes wrapper command names through to Pi.
 for command in list stop update remove shell; do
@@ -316,7 +334,7 @@ assert_log_lacks 'pi-session-log - list'
 # PI_WORKSPACE overrides the invocation directory; --workspace overrides both.
 EXTRA_ENV=(PI_WORKSPACE="$WS_B")
 fresh_stack
-run_pi "$WS_A" --version
+run_pi "$WS_A" - --version
 assert_status 0
 assert_log_has "container=pi-agents-pi-beta network=pi-agents-pi-beta workspace=$WS_B agent="
 assert_log_lacks "workspace=$WS_A agent="
@@ -349,7 +367,7 @@ assert_log_lacks 'beta-link'
 # Container and project names come from a sanitized basename.
 WS_MIXED=$(make_workspace "$TEST_HOME/projects/My Project!")
 reset_docker
-run_pi "$WS_MIXED" --version
+run_pi "$WS_MIXED" - --version
 assert_status 0
 assert_log_has "compose-env project=pi-agents-pi-my-project container=pi-agents-pi-my-project network=pi-agents-pi-my-project workspace=$WS_MIXED agent="
 

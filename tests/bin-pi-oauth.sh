@@ -80,12 +80,12 @@ expect_ports
 
 # A launch without --oauth recreates a stack that still publishes callback
 # ports, so they are free again; a stack without them is reused.
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 0
 assert_log_has ' up --detach --force-recreate pi'
 assert_log_lacks 'compose.oauth.yml'
 assert_eq "$(container_field "$NAME" port)" '' 'published ports after a launch without --oauth'
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 0
 assert_log_lacks ' up '
 

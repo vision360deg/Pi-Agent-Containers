@@ -156,13 +156,13 @@ assert_log_has "docker exec -i $EXEC_ENV $PROJECT pi-shell-launch pi-session-log
 
 # With a terminal as standard input and output, the exec allocates one.
 IN_TERMINAL=true
-run_pi "$WS" --version
+run_pi "$WS" - --version
 IN_TERMINAL=false
 assert_status 0
 assert_log_has "docker exec -i -t $EXEC_ENV $PROJECT pi-shell-launch pi-session-log --version"
 
 # A running stack with matching mounts is reused as-is.
-run_pi "$WS" --continue
+run_pi "$WS" - --continue
 assert_status 0
 assert_log_lacks ' up '
 assert_log_lacks ' build '
@@ -179,7 +179,7 @@ assert_log_has "docker exec -i --env PI_HOST_SHELL=zsh --env PI_NO_RC_CONFIG=0 -
 run_pi "$WS" stop
 assert_status 0
 assert_eq "$(container_field "$PROJECT" state)" exited 'stop must stop the stack'
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 0
 assert_log_has "$FILES start pi"
 assert_log_lacks ' up '
@@ -199,7 +199,7 @@ assert_log_lacks '--force-recreate'
 run_pi "$WS" --no-rc-config --version
 assert_status 0
 assert_log_has ' up --detach --force-recreate pi'
-run_pi "$WS" --version
+run_pi "$WS" - --version
 assert_status 0
 assert_log_has "$FILES up --detach --force-recreate pi"
 

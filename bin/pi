@@ -91,10 +91,11 @@ Containerized Pi wrapper
 Usage:
   pi [-h|--help]
   pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
-     [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]
+     [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [- PI_ARGS...]
   pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
-     --rm [PI_ARGS...]
+     --rm [- PI_ARGS...]
   pi [--workspace PATH] --host [PI_ARGS...]
+  pi PI_ARGS...
   pi [--workspace PATH] stop
   pi [--workspace PATH] update [--extensions] [--models]
   pi list
@@ -102,7 +103,6 @@ Usage:
   pi [--workspace PATH] shell [--root|-r]
   pi [--workspace PATH] copy [--from|--to] [-s|--sessions] [-a|--auth] [-e|--extensions]
      [--all] [--override]
-  pi [--workspace PATH] - PI_ARGS...
 
 Options:
   -h, --help          Show this help without starting Docker.
@@ -120,6 +120,8 @@ Options:
                       curl -fsSL https://pi.dev/install.sh | sh. All remaining
                       arguments, including wrapper command names, go to native Pi,
                       which uses the host's ~/.pi/agent state, not workspace volumes.
+                      Arguments that match no wrapper option or command run native
+                      Pi the same way.
   --replace           Force-recreate the persistent workspace container.
   --rebuild           Build the image with the Docker build cache before this launch;
                       Compose recreates the service from it. Without it, existing
@@ -196,7 +198,7 @@ Commands:
 
 Examples:
   pi                               # Start or reuse this workspace's container.
-  pi "Inspect this project"        # Start Pi with an initial prompt.
+  pi - "Inspect this project"      # Start Pi with an initial prompt.
   pi --workspace ~/src/project     # Use an explicit workspace.
   pi --rm                          # Run Pi in a disposable container.
   pi --host update                 # Update the native Pi installation.
@@ -204,8 +206,9 @@ Examples:
   pi update --extensions           # Update Pi-managed extensions.
   pi shell --root                  # Open a root shell in this workspace's container.
   pi copy --auth --override        # Copy provider auth, replacing duplicates.
-  pi install npm:pi-web-access     # Pi's install command: add a package.
+  pi - install npm:pi-web-access   # Pi's install command: add a package.
   pi - update                      # Pi's update command, run in the container.
+  pi --version                     # Native Pi's version; no container.
 
 Restrictions:
   --bash and --zsh are mutually exclusive.
@@ -219,14 +222,17 @@ Restrictions:
   cannot be combined with stop, remove, list, shell, or copy.
   --host accepts only --workspace among wrapper options; container, state, shell,
   and OAuth options are rejected. Wrapper commands are not interpreted after --host.
+  Launches, --rm, update, shell, and copy refuse the home directory as a workspace.
   list accepts no arguments, rejects --workspace, and does not change Docker state.
   remove accepts only --all, update only --extensions and --models, shell only
   -r/--root, and copy only its listed options; --from and --to are mutually exclusive.
   A basename collision with another workspace prompts for action and defaults to cancel.
 
 Passthrough and help:
-  Arguments that are not wrapper options or commands go to Pi; a leading `-` sends
-  everything after it to Pi, even a wrapper command name (`pi - update`).
+  Arguments that match no wrapper option or command run native Pi on the host, as
+  with --host (`pi --version`). With wrapper options, the remaining arguments go
+  to containerized Pi; a leading `-` sends everything after it to containerized
+  Pi, even a wrapper command name (`pi - update`).
   Exact `pi -h` or `pi --help` shows this help; a help flag with other arguments
   shows the brief usage; `pi --host - --help` shows native Pi's help.
 EOF
@@ -237,10 +243,11 @@ print_brief_usage() {
 Usage:
   pi [-h|--help]
   pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
-     [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [PI_ARGS...]
+     [--replace|--keep-existing] [--new-state|[--seed] [--latest-state]] [- PI_ARGS...]
   pi [--workspace PATH] [--bash|--zsh] [--no-rc-config] [--rebuild] [--oauth [PORTS...]]
-     --rm [PI_ARGS...]
+     --rm [- PI_ARGS...]
   pi [--workspace PATH] --host [PI_ARGS...]
+  pi PI_ARGS...
   pi [--workspace PATH] stop
   pi [--workspace PATH] update [--extensions] [--models]
   pi list
@@ -248,7 +255,6 @@ Usage:
   pi [--workspace PATH] shell [--root|-r]
   pi [--workspace PATH] copy [--from|--to] [-s|--sessions] [-a|--auth] [-e|--extensions]
      [--all] [--override]
-  pi [--workspace PATH] - PI_ARGS...
 
 Commands:
   stop              Stop the current workspace's persistent stack.
@@ -285,6 +291,7 @@ SEED_STATE=false
 LATEST_STATE=false
 OAUTH_CALLBACK=false
 WORKSPACE_OPTION=false
+WRAPPER_OPTION_SEEN=false
 PASSTHROUGH_MARKER=false
 COMMAND=run
 SHELL_AS_ROOT=false
@@ -392,19 +399,19 @@ validate_oauth_ports() {
 
 while (($#)); do
   case $1 in
-    --host) RUN_ON_HOST=true; shift ;;
-    --rm) REMOVE_AFTER_RUN=true; shift ;;
-    --replace) REPLACE_CONTAINER=true; shift ;;
-    --rebuild) REBUILD_IMAGE=true; shift ;;
-    --keep-existing) KEEP_EXISTING=true; shift ;;
-    --new-state) NEW_STATE=true; shift ;;
-    --seed) SEED_STATE=true; shift ;;
-    --latest-state) LATEST_STATE=true; shift ;;
-    --bash) FORCE_BASH=true; shift ;;
-    --zsh) FORCE_ZSH=true; shift ;;
-    --no-rc-config) NO_RC_CONFIG=1; shift ;;
+    --host) RUN_ON_HOST=true; WRAPPER_OPTION_SEEN=true; shift ;;
+    --rm) REMOVE_AFTER_RUN=true; WRAPPER_OPTION_SEEN=true; shift ;;
+    --replace) REPLACE_CONTAINER=true; WRAPPER_OPTION_SEEN=true; shift ;;
+    --rebuild) REBUILD_IMAGE=true; WRAPPER_OPTION_SEEN=true; shift ;;
+    --keep-existing) KEEP_EXISTING=true; WRAPPER_OPTION_SEEN=true; shift ;;
+    --new-state) NEW_STATE=true; WRAPPER_OPTION_SEEN=true; shift ;;
+    --seed) SEED_STATE=true; WRAPPER_OPTION_SEEN=true; shift ;;
+    --latest-state) LATEST_STATE=true; WRAPPER_OPTION_SEEN=true; shift ;;
+    --bash) FORCE_BASH=true; WRAPPER_OPTION_SEEN=true; shift ;;
+    --zsh) FORCE_ZSH=true; WRAPPER_OPTION_SEEN=true; shift ;;
+    --no-rc-config) NO_RC_CONFIG=1; WRAPPER_OPTION_SEEN=true; shift ;;
     --oauth)
-      OAUTH_CALLBACK=true; shift
+      OAUTH_CALLBACK=true; WRAPPER_OPTION_SEEN=true; shift
       while (($#)); do
         case $1 in
           --*) break ;;
@@ -417,7 +424,7 @@ while (($#)); do
       done
       ;;
     --oauth=*)
-      OAUTH_CALLBACK=true
+      OAUTH_CALLBACK=true; WRAPPER_OPTION_SEEN=true
       oauth_value=${1#--oauth=}
       if [[ -n $oauth_value ]]; then
         oauth_cli_token_is_port_list "$oauth_value" || fail "invalid OAuth callback port list: $oauth_value"
@@ -430,7 +437,7 @@ while (($#)); do
         printf 'pi: --workspace requires a path\n' >&2
         fail 'usage: pi [--workspace PATH] [PI_ARGS...]'
       fi
-      WORKSPACE=$2; WORKSPACE_OPTION=true; shift 2
+      WORKSPACE=$2; WORKSPACE_OPTION=true; WRAPPER_OPTION_SEEN=true; shift 2
       ;;
     --workspace=*)
       WORKSPACE=${1#--workspace=}
@@ -438,7 +445,7 @@ while (($#)); do
         printf 'pi: --workspace requires a path\n' >&2
         fail 'usage: pi [--workspace PATH] [PI_ARGS...]'
       fi
-      WORKSPACE_OPTION=true; shift
+      WORKSPACE_OPTION=true; WRAPPER_OPTION_SEEN=true; shift
       ;;
     *) break ;;
   esac
@@ -501,6 +508,15 @@ offer_native_pi_install() {
   (( status != 0 )) || status=127
   exit "$status"
 }
+
+# Arguments that match no wrapper option, command, or the `-` marker run the
+# native host binary, as with --host.
+if [[ $RUN_ON_HOST != true && $WRAPPER_OPTION_SEEN != true ]] && (($#)); then
+  case $1 in
+    -|stop|update|list|remove|shell|copy) ;;
+    *) RUN_ON_HOST=true ;;
+  esac
+fi
 
 # Native host runs never touch Docker, so every remaining argument, including
 # wrapper command names, belongs to native Pi.
