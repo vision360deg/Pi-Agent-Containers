@@ -110,7 +110,9 @@ Options:
                       it overrides PI_WORKSPACE. Relative paths resolve from the
                       invocation directory. --workspace=PATH also works.
   --rm                Run Pi in a disposable container instead of the persistent
-                      service; the workspace state volumes are still used.
+                      service; the workspace state volumes are still used. Its session
+                      records are forwarded to that container's Docker log until it is
+                      removed on exit.
   --host              Run native Pi on the host from the workspace, without Docker.
                       Pi's installer launcher ${PI_CODING_AGENT_DIR:-~/.pi/agent}/bin/pi
                       is preferred, then the first pi on PATH that is not this
@@ -864,6 +866,39 @@ run_logged_pi() {
   container_exec "$CONTAINER_NAME" pi-shell-launch pi-session-log --forward-output "$@"
 }
 
+DISPOSABLE_CONTAINER_NAME=''
+
+# A --rm run uses one disposable container of the service running its normal
+# main command, so the session forwarder sends the run's session records to
+# that container's Docker log. Its name, in Compose's one-off pattern, is
+# chosen before Compose starts it, so it is removed on any exit, even when
+# Compose fails or is interrupted after creating it.
+start_disposable_container() {
+  local suffix status
+  suffix=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n') || fail 'could not choose a disposable container name'
+  [[ $suffix =~ ^[0-9a-f]{12}$ ]] || fail 'could not choose a disposable container name'
+  DISPOSABLE_CONTAINER_NAME=$PROJECT_NAME-pi-run-$suffix
+  trap 'remove_disposable_container; cleanup_temporary_files' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  run_compose run --detach --rm --service-ports --name "$DISPOSABLE_CONTAINER_NAME" pi >/dev/null || {
+    status=$?
+    remove_disposable_container
+    return "$status"
+  }
+}
+
+# Removing a container that was never created succeeds quietly. A failed
+# removal only warns, so it never changes the run's exit status.
+remove_disposable_container() {
+  local name=$DISPOSABLE_CONTAINER_NAME
+  local -a command=(docker rm -f "$name")
+  [[ -n $name ]] || return 0
+  DISPOSABLE_CONTAINER_NAME=''
+  "${command[@]}" >/dev/null || printf 'pi: could not remove disposable container %s\n' "$name" >&2
+}
+
 prepare_runtime() {
   prepare_host_shell_rc
   export_compose_environment
@@ -1106,7 +1141,7 @@ attach_shell() {
     initialize_agent_state
     repair_state_permissions
     start_persistent_service
-    install_browser_extension
+    install_browser_extension "$CONTAINER_NAME"
     record_state_lineage
     SHELL_SELECTED_NAME=$CONTAINER_NAME
   else
@@ -1728,17 +1763,19 @@ trap - EXIT HUP INT TERM
 PI_SHELL_ALIAS_SETUP
 }
 
+# configure_pi_shell_aliases CONTAINER
 configure_pi_shell_aliases() {
   [[ $NO_RC_CONFIG -eq 0 ]] || return 0
-  container_exec "$CONTAINER_NAME" sh -c "$(pi_shell_alias_setup_script)"
+  container_exec "$1" sh -c "$(pi_shell_alias_setup_script)"
 }
 
 PI_BROWSER_EXTENSION_SOURCE=npm:pi-agent-browser-native
 
-# The extension must be registered in the mounted Pi agent state, not only
-# installed in the image: /home/node/.pi/agent is a per-workspace volume.
+# install_browser_extension CONTAINER: the extension must be registered in the
+# mounted Pi agent state, not only installed in the image: /home/node/.pi/agent
+# is a per-workspace volume.
 install_browser_extension() {
-  run_logged_pi install "$PI_BROWSER_EXTENSION_SOURCE"
+  container_exec "$1" pi-shell-launch pi-session-log --forward-output install "$PI_BROWSER_EXTENSION_SOURCE"
 }
 
 create_oauth_override
@@ -1824,16 +1861,16 @@ if [[ $REMOVE_AFTER_RUN == true ]]; then
   ensure_helper_image
   prepare_state_lineage
   ensure_workspace_volumes
-  warn_extra_state_volume
   initialize_agent_state
   repair_state_permissions
-  shell_alias_setup_script=''
-  [[ $NO_RC_CONFIG -ne 0 ]] || shell_alias_setup_script=$(pi_shell_alias_setup_script)
-  run_compose run --rm --entrypoint /bin/sh pi -c \
-    'if [ -n "$1" ]; then sh -c "$1"; fi; exec pi-shell-launch pi install "$2"' \
-    pi "$shell_alias_setup_script" "$PI_BROWSER_EXTENSION_SOURCE"
-  run_compose run --rm --service-ports pi pi-shell-launch pi "$@"
-  exit $?
+  warn_extra_state_volume
+  start_disposable_container || exit
+  configure_pi_shell_aliases "$DISPOSABLE_CONTAINER_NAME"
+  install_browser_extension "$DISPOSABLE_CONTAINER_NAME"
+  run_status=0
+  container_exec "$DISPOSABLE_CONTAINER_NAME" pi-shell-launch pi-session-log "$@" || run_status=$?
+  remove_disposable_container
+  exit "$run_status"
 fi
 
 prepare_workspace_container
@@ -1849,14 +1886,14 @@ if [[ $COMMAND == update ]]; then
     FORCE_RECREATE=true
     repair_state_permissions
     start_persistent_service
-    install_browser_extension
+    install_browser_extension "$CONTAINER_NAME"
     record_state_lineage
   else
     ensure_workspace_volumes
     initialize_agent_state
     repair_state_permissions
     start_persistent_service
-    install_browser_extension
+    install_browser_extension "$CONTAINER_NAME"
     record_state_lineage
     run_logged_pi update "${UPDATE_ARGS[@]}"
   fi
@@ -1867,7 +1904,7 @@ ensure_workspace_volumes
 initialize_agent_state
 repair_state_permissions
 start_persistent_service
-configure_pi_shell_aliases
-install_browser_extension
+configure_pi_shell_aliases "$CONTAINER_NAME"
+install_browser_extension "$CONTAINER_NAME"
 record_state_lineage
 container_exec "$CONTAINER_NAME" pi-shell-launch pi-session-log "$@"

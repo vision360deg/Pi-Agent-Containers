@@ -82,7 +82,7 @@ help_has $'pi [--workspace PATH] copy [--from|--to] [-s|--sessions] [-a|--auth] 
 help_has 'pi [--workspace PATH] - PI_ARGS...'
 help_has 'it overrides PI_WORKSPACE. Relative paths resolve from the'
 help_has '--workspace=PATH also works.'
-help_has 'the workspace state volumes are still used.'
+help_has $'  --rm                Run Pi in a disposable container instead of the persistent\n                      service; the workspace state volumes are still used. Its session\n                      records are forwarded to that container\'s Docker log until it is\n                      removed on exit.\n'
 help_has '${PI_CODING_AGENT_DIR:-~/.pi/agent}/bin/pi'
 help_has 'curl -fsSL https://pi.dev/install.sh | sh'
 help_has "which uses the host's ~/.pi/agent state, not workspace volumes."
@@ -200,7 +200,8 @@ expect_persistent_launch --help
 fresh_stack
 run_pi "$WS_A" --rm - --help
 assert_status 0
-assert_log_has "$COMPOSE_A run --rm --service-ports pi pi-shell-launch pi --help"
+assert_log_has "$COMPOSE_A run --detach --rm --service-ports --name $PROJECT_A-pi-run-"
+assert_log_matches "^docker exec -i .* $PROJECT_A-pi-run-[0-9a-f]{12} pi-shell-launch pi-session-log --help\$"
 
 # Conflicting or unsupported options fail with status 2 before any Docker call.
 # The message is the complete output; each line carries the wrapper prefix.
@@ -308,8 +309,8 @@ assert_log_lacks "$COMPOSE_A stop"
 fresh_stack
 run_pi "$WS_A" --rm - list
 assert_status 0
-assert_log_has "$COMPOSE_A run --rm --service-ports pi pi-shell-launch pi list"
-assert_log_lacks 'run --rm --service-ports pi pi-shell-launch pi - list'
+assert_log_matches "^docker exec -i .* $PROJECT_A-pi-run-[0-9a-f]{12} pi-shell-launch pi-session-log list\$"
+assert_log_lacks 'pi-session-log - list'
 
 # PI_WORKSPACE overrides the invocation directory; --workspace overrides both.
 EXTRA_ENV=(PI_WORKSPACE="$WS_B")

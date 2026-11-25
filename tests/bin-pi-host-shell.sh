@@ -129,7 +129,7 @@ assert_log_lacks "$NAME sh -c"
 EXTRA_ENV=()
 
 # Disposable Pi and extension installation both use the shell launcher, and
-# the one-off configures host aliases in the agent state.
+# the one-off configures host aliases in the agent state, all in one one-off.
 RM_HOME=$TMP_DIR/rm-home
 mkdir -p "$RM_HOME"
 printf 'alias ll="printf rm-host-ll"\n' > "$RM_HOME/.profile"
@@ -140,11 +140,12 @@ existing_settings '{"shellCommandPrefix":"printf rm-custom-prefix"}'
 EXTRA_ENV=(HOME="$RM_HOME")
 run_pi "$WS" --rm --version
 assert_status 0
-assert_log_has 'run --rm --entrypoint /bin/sh pi -c'
+assert_log_matches "^docker exec -i --env PI_HOST_SHELL=bash --env PI_NO_RC_CONFIG=0 $EXEC_ENV $NAME-pi-run-[0-9a-f]{12} sh -c"
 assert_log_has 'pi-agents managed host shell aliases'
-assert_log_has 'run --rm --service-ports pi pi-shell-launch pi --version'
+assert_log_matches "$NAME-pi-run-[0-9a-f]{12} pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native\$"
+assert_log_matches "$NAME-pi-run-[0-9a-f]{12} pi-shell-launch pi-session-log --version\$"
 assert_log_lacks 'run --build'
-assert_eq "$(grep -Ec '^docker compose .* run --' "$DOCKER_LOG" || true)" 2 'compose run count'
+assert_eq "$(grep -Ec '^docker compose .* run --' "$DOCKER_LOG" || true)" 1 'compose run count'
 RM_PREFIX=$(jq -r '.shellCommandPrefix' "$SETTINGS")
 [[ $RM_PREFIX == *'rm-custom-prefix'* ]] || fail 'custom shellCommandPrefix was lost by the one-off'
 expect_alias "$RM_PREFIX" "$RC_SOURCE/rc" rm-host-ll
@@ -152,10 +153,10 @@ expect_alias "$RM_PREFIX" "$RC_SOURCE/rc" rm-host-ll
 run_pi "$WS" --rebuild --rm --version
 assert_status 0
 assert_file_count "$DOCKER_LOG" ' build pi' 1
-assert_log_has 'run --rm --service-ports pi pi-shell-launch pi --version'
+assert_log_matches "$NAME-pi-run-[0-9a-f]{12} pi-shell-launch pi-session-log --version\$"
 assert_log_lacks 'run --build'
 assert_log_lacks '--no-cache'
-assert_eq "$(grep -Ec '^docker compose .* run --' "$DOCKER_LOG" || true)" 2 'compose run count'
+assert_eq "$(grep -Ec '^docker compose .* run --' "$DOCKER_LOG" || true)" 1 'compose run count'
 EXTRA_ENV=()
 
 # Existing-container shell attachment uses the launcher and keeps the selected

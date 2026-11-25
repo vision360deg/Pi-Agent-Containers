@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This process belongs to the persistent Compose service, not to the
-# interactive `docker compose exec` process. Keeping the watcher here means
+# This process belongs to the Compose service's main command, not to the
+# interactive `docker exec` process. Keeping the watcher here means
 # Pi retains foreground ownership of its PTY while Docker receives session
 # records through the service's normal stdout stream.
 SESSION_DIR="${PI_CODING_AGENT_SESSION_DIR:-/home/node/.pi/agent/sessions}"

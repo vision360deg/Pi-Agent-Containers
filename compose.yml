@@ -16,10 +16,11 @@ services:
     tty: false
     working_dir: /workspace
     # sleep is the main process so the container, and any Pi sessions attached
-    # through compose exec (bin/pi), outlive the session log forwarder. The
+    # through docker exec (bin/pi), outlive the session log forwarder. The
     # forwarder streams session JSONL to Docker stdout; it exits when a stream
     # dies, and the loop restarts it, following existing sessions from their
-    # end so nothing is replayed.
+    # end so nothing is replayed. `--rm` one-offs run this same command, so
+    # their session records reach their own Docker log.
     command: ["bash", "-c", "while :; do pi-session-forwarder; sleep 1; done & exec sleep infinity"]
     environment:
       # Add whichever provider credentials you use to .env.

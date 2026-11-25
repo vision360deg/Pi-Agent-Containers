@@ -8,6 +8,21 @@ WS=$(make_workspace "$TEST_HOME/projects/alpha")
 PROJECT=pi-agents-pi-alpha
 FILES="--project-name $PROJECT -f $ROOT/compose.yml -f $ROOT/compose.shell-rc.yml"
 EXEC_ENV='--env PI_HOST_SHELL=bash --env PI_NO_RC_CONFIG=0 --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc'
+RM_RUN=' run --detach --rm --service-ports --name '
+
+# disposable_name PROJECT: the name the --rm run gave its one-off, which is
+# PROJECT-pi-run- and 12 random hex digits, like Compose's own.
+disposable_name() {
+  local name
+  name=$(grep -oE -- "--name $1-pi-run-[0-9a-f]{12} pi\$" "$DOCKER_LOG" | head -n 1 | cut -d' ' -f2)
+  [[ -n $name ]] || fail "no --rm one-off named for project $1"$'\n'"$(show_run)"
+  printf '%s' "$name"
+}
+
+assert_no_disposable_left() {
+  ! compgen -G "$FAKE_DOCKER_STATE/containers/*-pi-run-*" >/dev/null || fail "$1"$'\n'"$(show_run)"
+}
+
 # The Compose subcommands (first two words), execs, and helper containers the
 # last run started, in order; read-only `compose config` lookups are left out.
 docker_actions() {
@@ -40,16 +55,92 @@ fresh_stack() {
   fake_image "$PROJECT"
 }
 
-# --rm initializes and repairs state, then runs Pi in two one-off containers:
-# the setup entrypoint and Pi itself.
+# --rm initializes and repairs state, then starts one detached one-off of the
+# service with its own command, which runs the session forwarder. The alias
+# setup, the extension install, and Pi itself are exec'd into it with the
+# persistent exec's environment, and the one-off is removed once Pi exits.
 fresh_stack
 run_pi "$WS" --rm --version
 assert_status 0
-assert_actions $'run\nrun\ncompose run --rm\ncompose run --rm'
-assert_log_has "$FILES run --rm --entrypoint /bin/sh pi -c"
-assert_log_has "$FILES run --rm --service-ports pi pi-shell-launch pi --version"
+assert_actions $'run\nrun\ncompose run --detach\nexec\nexec\nexec'
+assert_eq "$(grep -c '^docker compose .* run ' "$DOCKER_LOG")" 1 'one compose run'
+name=$(disposable_name "$PROJECT")
+assert_log_has "$FILES$RM_RUN$name pi"
+assert_log_has "docker exec -i $EXEC_ENV $name sh -c"
+assert_log_has 'pi-agents managed host shell aliases'
+assert_log_has "docker exec -i $EXEC_ENV $name pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native"
+assert_log_has "docker exec -i $EXEC_ENV $name pi-shell-launch pi-session-log --version"
+assert_log_lacks 'docker exec -i -t'
+assert_log_has "docker rm -f $name"
+(( $(grep -n 'docker exec ' "$DOCKER_LOG" | tail -n 1 | cut -d: -f1) < $(grep -n 'docker rm -f' "$DOCKER_LOG" | cut -d: -f1) )) ||
+  fail 'the one-off must be removed after Pi exits'$'\n'"$(show_run)"
+assert_no_disposable_left '--rm must remove its one-off container'
 assert_log_lacks ' run --build '
 assert_workspace_propagated "$WS"
+# Each run picks a new name.
+run_pi "$WS" --rm
+first_name=$(disposable_name "$PROJECT")
+run_pi "$WS" --rm
+name=$(disposable_name "$PROJECT")
+[[ $name != "$first_name" ]] || fail 'each --rm run must pick a new one-off name'
+
+# With a terminal as standard input and output, the exec allocates one.
+IN_TERMINAL=true
+run_pi "$WS" --rm
+IN_TERMINAL=false
+assert_status 0
+name=$(disposable_name "$PROJECT")
+assert_log_has "docker exec -i -t $EXEC_ENV $name pi-shell-launch pi-session-log"
+
+# Pi's exit status propagates, and the one-off is still removed.
+EXTRA_ENV=(FAKE_EXEC_STATUS=7)
+run_pi "$WS" --rm
+EXTRA_ENV=()
+assert_status 7
+name=$(disposable_name "$PROJECT")
+assert_log_has "docker rm -f $name"
+assert_no_disposable_left 'a failed run must remove its one-off container'
+
+# An interrupted wrapper removes the one-off too.
+for signal in HUP:129 INT:130 TERM:143; do
+  EXTRA_ENV=("FAKE_EXEC_SIGNAL=${signal%%:*}")
+  run_pi "$WS" --rm
+  EXTRA_ENV=()
+  assert_status "${signal#*:}"
+  name=$(disposable_name "$PROJECT")
+  assert_log_has "docker rm -f $name"
+  assert_no_disposable_left "SIG${signal%%:*} must remove the one-off container"
+done
+
+# A failed removal is reported without changing Pi's exit status.
+EXTRA_ENV=(FAKE_EXEC_STATUS=3 FAKE_RM_STATUS=1)
+run_pi "$WS" --rm
+EXTRA_ENV=()
+assert_status 3
+name=$(disposable_name "$PROJECT")
+assert_output_has "pi: could not remove disposable container $name"
+
+# A compose run that fails after creating the one-off still has it removed by
+# name, and the wrapper fails with Compose's status.
+fresh_stack
+EXTRA_ENV=(FAKE_COMPOSE_RUN_CREATED_STATUS=6)
+run_pi "$WS" --rm
+EXTRA_ENV=()
+assert_status 6
+assert_log_lacks 'docker exec'
+name=$(disposable_name "$PROJECT")
+assert_log_has "docker rm -f $name"
+assert_no_disposable_left 'a failed compose run must not leave its one-off container'
+
+# A compose run that fails before creating anything fails with its status;
+# removing the unused name is a quiet no-op.
+fresh_stack
+EXTRA_ENV=(FAKE_COMPOSE_RUN_STATUS=5)
+run_pi "$WS" --rm
+EXTRA_ENV=()
+assert_status 5
+assert_log_lacks 'docker exec'
+assert_output_lacks 'could not remove'
 
 # --rebuild builds the service image once before Compose recreates from it.
 fresh_stack
@@ -116,8 +207,9 @@ fresh_stack
 run_pi "$WS" --rebuild --rm --version
 assert_status 0
 assert_log_has "$FILES build pi"
-assert_log_has "$FILES run --rm --entrypoint /bin/sh pi -c"
-assert_log_has "$FILES run --rm --service-ports pi pi-shell-launch pi --version"
+assert_log_has "$RM_RUN"
+name=$(disposable_name "$PROJECT")
+assert_log_has "docker exec -i $EXEC_ENV $name pi-shell-launch pi-session-log --version"
 assert_log_lacks ' run --build '
 
 
@@ -275,7 +367,7 @@ assert_log_has "$BASE pi-shell-launch pi-session-log"
 assert_output_lacks 'occupied'
 run_pi "$PATH_1" --rm
 assert_status 0
-assert_log_has 'run --rm --service-ports pi'
+assert_log_has "$RM_RUN"
 assert_output_lacks 'occupied'
 reset_docker
 oneoff_of "$PATH_1"
@@ -296,7 +388,7 @@ for arguments in '' --rm; do
   [[ $STATUS -ne 0 ]] || fail "foreign one-off container did not block pi $arguments"
   assert_output_has "workspace Compose project is occupied: $BASE"
   assert_log_lacks ' up '
-  assert_log_lacks 'run --rm --service-ports'
+  assert_log_lacks "$RM_RUN"
 done
 
 # A container without the managed label is not this workspace's stack, and
@@ -360,7 +452,8 @@ run_pi "$PATH_1" --rm --version
 assert_status 0
 assert_workspace_propagated "$PATH_1"
 assert_log_has "compose-env project=$BASE container=$BASE network=$BASE workspace=$PATH_1 "
-assert_log_has "run --rm --service-ports pi pi-shell-launch pi --version"
+name=$(disposable_name "$BASE")
+assert_log_has "docker exec -i $EXEC_ENV $name pi-shell-launch pi-session-log --version"
 assert_log_lacks "project=$BASE-"
 assert_log_lacks ' up '
 assert_eq "$(container_field "$BASE" state)" running 'the persistent stack must keep running'
@@ -374,7 +467,7 @@ reset_docker
 run_pi "$PATH_1" --rm
 assert_status 0
 assert_log_has "compose-env project=$BASE container=$BASE network=$BASE workspace=$PATH_1 "
-assert_log_has 'run --rm --service-ports pi'
+assert_log_has "$RM_RUN"
 volume_exists "$(agent_volume "$PATH_1")" || fail '--rm must keep persistent state volumes'
 ! container_exists "$BASE" || fail '--rm must not leave a persistent container'
 
@@ -385,15 +478,17 @@ run_pi "$PATH_2" --rm
 assert_status 0
 assert_log_has "compose-env project=$TARGET_2 container=$TARGET_2 network=$TARGET_2 workspace=$PATH_2 "
 assert_log_has "compose --project-name $TARGET_2"
-assert_log_has 'run --rm --service-ports pi'
+assert_log_has "$RM_RUN"
+name=$(disposable_name "$TARGET_2")
+assert_log_has "docker exec -i $EXEC_ENV $name pi-shell-launch"
 assert_log_lacks "compose --project-name $BASE "
 assert_log_lacks ' up '
 assert_log_lacks 'rename'
 assert_output_lacks 'collision'
 assert_eq "$(container_field "$BASE" state)" running 'colliding stack must be untouched'
 
-# The one-off run's exit status is propagated.
-EXTRA_ENV=(FAKE_COMPOSE_RUN_STATUS=7)
+# Pi's exit status is propagated.
+EXTRA_ENV=(FAKE_EXEC_STATUS=7)
 run_pi "$PATH_2" --rm
 assert_status 7
 EXTRA_ENV=()
@@ -403,6 +498,6 @@ fake_container squatter "$TEST_HOME/elsewhere/other" running "label.com.docker.c
 run_pi "$PATH_2" --rm
 assert_status 2
 assert_output_has "pi: disambiguated Compose project is occupied: $TARGET_2"
-assert_log_lacks 'run --rm --service-ports'
+assert_log_lacks "$RM_RUN"
 
 pass

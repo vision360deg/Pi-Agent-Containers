@@ -168,7 +168,7 @@ EXTRA_ENV=(FAKE_BUSY_PORTS='1455 53692 51121')
 run_pi "$WS" --rm --oauth
 assert_status 2
 assert_output_has 'pi: OAuth callback port is already in use: 1455'
-assert_log_lacks 'run --rm --service-ports'
+assert_log_lacks ' run --detach'
 EXTRA_ENV=()
 
 # A port this stack publishes on only one loopback address is still its own
@@ -191,7 +191,14 @@ run_pi "$WS" --rm --oauth 7000
 EXTRA_ENV=()
 assert_status 2
 assert_output_has 'pi: OAuth callback port is already in use: 7000'
-assert_log_lacks 'run --rm'
+assert_log_lacks ' run --detach'
 assert_override_removed
+
+# A disposable --rm run publishes the callback ports on its one-off.
+existing_stack
+run_pi "$WS" --rm --oauth --version
+assert_status 0
+assert_log_has "$FILES -f $ROOT/compose.shell-rc.yml run --detach --rm --service-ports --name $NAME-pi-run-"
+assert_log_matches "$NAME-pi-run-[0-9a-f]{12} pi-shell-launch pi-session-log --version\$"
 
 pass

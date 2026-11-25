@@ -230,32 +230,22 @@ config_signature() {
   printf 'port=%s\n' "${PORTS[@]}"
 }
 
-compose_up() {
-  local project=$1 force=false name file argument compose_file line existing='' image=$IMAGES/$1-pi
+# service_record NAME PROJECT ONEOFF: a running container of the service in R,
+# publishing the ports of the OAuth Compose files it was given.
+service_record() {
+  local name=$1 project=$2 oneoff=$3 compose_file line host_ip
   # Compose reports "[::1]:P:P" with the bracket-free HostIp "::1".
-  local port_pattern='"(127\.0\.0\.1|\[::1\]):([0-9]+):([0-9]+)"' host_ip
-  shift
-  for argument in "$@"; do [[ $argument != --force-recreate ]] || force=true; done
-  name=${PI_CONTAINER_NAME:?}
-  file=$CONTAINERS/$name
-  # Compose builds a missing service image before creating the container.
-  [[ -e $image ]] || printf 'built-%s\n' "$(next_timestamp)" > "$image"
-  if [[ -e $file ]]; then
-    load_record "$file"
-    [[ ${R[label.com.docker.compose.project]:-} == "$project" ]] || {
-      printf 'Error: container name "/%s" is already in use\n' "$name" >&2; exit 1;
-    }
-    existing=$(config_signature)
-  fi
+  local port_pattern='"(127\.0\.0\.1|\[::1\]):([0-9]+):([0-9]+)"'
   R=(); PORTS=()
   R[id]=id-$name; R[name]=$name; R[state]=running; R[status]='Up 1 second'
-  R[image]=$project-pi; R[image-id]=$(<"$image")
+  R[created]=$(next_timestamp); R[started]=${R[created]}
+  R[image]=$project-pi; R[image-id]=$(<"$IMAGES/$project-pi")
   R[label.com.pi-agents.managed]=true
   R[label.com.pi-agents.workspace]=${PI_WORKSPACE:-}
   R[label.com.pi-agents.workspace-basename]=${PI_WORKSPACE_BASENAME:-}
   R[label.com.docker.compose.project]=$project
   R[label.com.docker.compose.service]=pi
-  R[label.com.docker.compose.oneoff]=False
+  R[label.com.docker.compose.oneoff]=$oneoff
   R[mount./home/node/.pi/agent]=${PI_AGENT_STATE_VOLUME_NAME:-}
   R[mount./home/node/.pi/agent/sessions]=${PI_SESSION_STATE_VOLUME_NAME:-}
   R[mount./home/node/.agent-browser]=${PI_BROWSER_STATE_VOLUME_NAME:-}
@@ -272,26 +262,62 @@ compose_up() {
         ;;
     esac
   done
+}
+
+# Compose builds a missing service image before creating a container.
+ensure_service_image() {
+  [[ -e $IMAGES/$1-pi ]] || printf 'built-%s\n' "$(next_timestamp)" > "$IMAGES/$1-pi"
+}
+
+compose_up() {
+  local project=$1 force=false name file argument existing=''
+  shift
+  for argument in "$@"; do [[ $argument != --force-recreate ]] || force=true; done
+  name=${PI_CONTAINER_NAME:?}
+  file=$CONTAINERS/$name
+  ensure_service_image "$project"
+  if [[ -e $file ]]; then
+    load_record "$file"
+    [[ ${R[label.com.docker.compose.project]:-} == "$project" ]] || {
+      printf 'Error: container name "/%s" is already in use\n' "$name" >&2; exit 1;
+    }
+    existing=$(config_signature)
+  fi
+  service_record "$name" "$project" False
   # An up-to-date container is only started; a changed one is recreated.
   if [[ $force == false && -n $existing && $existing == "$(config_signature)" ]]; then
     load_record "$file"
     R[state]=running; R[status]='Up 1 second'
-    save_record "$file"
-    return 0
   fi
-  R[created]=$(next_timestamp); R[started]=${R[created]}
   save_record "$file"
 }
 
+# Only `compose run --detach --name NAME` is supported: it starts a one-off
+# container of the service named NAME, prints progress on stderr and the
+# container ID on stdout. FAKE_COMPOSE_RUN_STATUS makes it fail before
+# creating anything; FAKE_COMPOSE_RUN_CREATED_STATUS makes it fail after
+# creating the container. Without --service-ports nothing is published.
 compose_run() {
-  local project=$1
+  local project=$1 detach=false name='' service_ports=false
   shift
-  if [[ $* == '--rm --entrypoint /bin/sh pi -c '* ]]; then
-    # The entrypoint script runs the alias setup.
-    [[ -z ${8:-} ]] || run_in_home "${PI_AGENT_STATE_VOLUME_NAME:?}" "$8"
-    return 0
-  fi
-  exit "${FAKE_COMPOSE_RUN_STATUS:-0}"
+  while (($#)); do
+    case $1 in
+      --detach) detach=true; shift ;;
+      --name) name=$2; shift 2 ;;
+      --service-ports) service_ports=true; shift ;;
+      *) shift ;;
+    esac
+  done
+  [[ $detach == true && -n $name ]] || { printf 'fake docker: compose run requires --detach and --name\n' >&2; exit 1; }
+  [[ ${FAKE_COMPOSE_RUN_STATUS:-0} -eq 0 ]] || exit "$FAKE_COMPOSE_RUN_STATUS"
+  [[ ! -e $CONTAINERS/$name ]] || { printf 'Error: container name "/%s" is already in use\n' "$name" >&2; exit 1; }
+  ensure_service_image "$project"
+  service_record "$name" "$project" True
+  [[ $service_ports == true ]] || PORTS=()
+  save_record "$CONTAINERS/$name"
+  [[ ${FAKE_COMPOSE_RUN_CREATED_STATUS:-0} -eq 0 ]] || exit "$FAKE_COMPOSE_RUN_CREATED_STATUS"
+  printf ' Container %s Started\n' "$name" >&2
+  printf '%s\n' "${R[id]}"
 }
 
 docker_compose() {
@@ -407,28 +433,50 @@ docker_run() {
   esac
 }
 
+# docker exec [OPTIONS] CONTAINER COMMAND...: the container must exist and run.
+# A `sh -c SCRIPT` command, such as the alias setup, runs SCRIPT in the
+# container's home with the --env settings. FAKE_EXEC_STATUS is Pi's exit
+# status; FAKE_EXEC_SIGNAL is sent to the calling process first, as an
+# interrupt during Pi would be. Neither affects the wrapper's setup execs
+# (the alias setup and the browser extension install).
 docker_exec() {
-  local file
+  local file entry
   local -a environment=()
   while (($#)); do
     case $1 in
       -i|-t|-it|-T) shift ;;
-      --env|-e) environment+=("$2"); shift 2 ;;
-      --user|-u) shift 2 ;;
+      --env) environment+=("$2"); shift 2 ;;
+      --user) shift 2 ;;
       *) break ;;
     esac
   done
-  file=$(find_container "$1") || no_such_object "$1"
+  file=$(find_container "$1") || { printf 'Error response from daemon: No such container: %s\n' "$1" >&2; exit 1; }
   load_record "$file"
   [[ ${R[state]:-} == running ]] || { printf 'Error: container %s is not running\n' "$1" >&2; exit 1; }
   shift
-  # A shell script, such as the alias setup, runs in the container's home.
   if [[ ${1:-} == sh && ${2:-} == -c ]]; then
     (
       for entry in "${environment[@]}"; do export "$entry"; done
       run_in_home "${R[mount./home/node/.pi/agent]}" "$3"
     )
+    return
   fi
+  [[ $* != *' install npm:pi-agent-browser-native' ]] || return 0
+  [[ -z ${FAKE_EXEC_SIGNAL:-} ]] || kill -s "$FAKE_EXEC_SIGNAL" "$PPID"
+  exit "${FAKE_EXEC_STATUS:-0}"
+}
+
+# docker rm -f CONTAINER...; like Docker, a missing container is not an error.
+# FAKE_RM_STATUS makes it fail.
+docker_rm() {
+  local name file
+  [[ ${1:-} == -f ]] || { printf 'fake docker: rm requires -f\n' >&2; exit 1; }
+  shift
+  [[ ${FAKE_RM_STATUS:-0} -eq 0 ]] || { printf 'Error response from daemon: removal failed\n' >&2; exit "$FAKE_RM_STATUS"; }
+  for name in "$@"; do
+    if file=$(find_container "$name"); then rm -f -- "$file"; fi
+    printf '%s\n' "$name"
+  done
 }
 
 command=${1:-}
@@ -465,5 +513,6 @@ case $command in
   compose) docker_compose "$@" ;;
   run) docker_run "$@" ;;
   exec) docker_exec "$@" ;;
+  rm) docker_rm "$@" ;;
   *) printf 'fake docker: unexpected command: %s\n' "$invocation" >&2; exit 1 ;;
 esac
