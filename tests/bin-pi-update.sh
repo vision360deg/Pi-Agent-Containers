@@ -6,7 +6,7 @@ source "$ROOT/tests/lib/launcher.bash"
 
 WS=$(make_workspace "$TEST_HOME/projects/alpha")
 PROJECT=pi-agents-pi-alpha
-COMPOSE_FILES="--project-name $PROJECT --project-directory $ROOT --file $ROOT/compose.yml --file $ROOT/compose.shell-rc.yml"
+COMPOSE_FILES="--project-name $PROJECT -f $ROOT/compose.yml -f $ROOT/compose.shell-rc.yml"
 LOGGED_PI='exec pi pi-shell-launch pi-session-log --forward-output'
 
 # The Compose subcommands (first two words) and helper containers the last run
@@ -16,7 +16,7 @@ docker_actions() {
   while IFS= read -r line; do
     case $line in
       'docker compose '*)
-        line=$(sed -E 's/^docker compose (--(project-name|project-directory|file) [^ ]+ )+//' <<< "$line")
+        line=$(sed -E 's/^docker compose (--project-name [^ ]+ |-f [^ ]+ )+//' <<< "$line")
         [[ $line == config* ]] || printf 'compose %s\n' "$(cut -d' ' -f1-2 <<< "$line")"
         ;;
       'docker run '*) printf 'run\n' ;;

@@ -118,7 +118,7 @@ reset_docker
 workspace_state "$OTHER"
 copy_with 1 --auth --all
 assert_status 0
-assert_log_has "docker volume create --label com.pi-agents.managed=true --label com.pi-agents.state-kind=agent --label com.pi-agents.workspace=$WS"
+assert_log_has "docker volume create --label com.pi-agents.managed=true --label com.pi-agents.workspace=$WS --label com.pi-agents.project=pi-agents-pi-$(workspace_slug "$WS") --label com.pi-agents.state-kind=agent"
 volume_exists "$(agent_volume "$WS")" || fail 'the current agent volume must be created'
 volume_exists "$(session_volume "$WS")" || fail 'the current session volume must be created'
 assert_log_has "$(agent_volume "$WS"):/state-target"

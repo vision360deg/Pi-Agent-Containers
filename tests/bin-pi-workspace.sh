@@ -6,7 +6,7 @@ source "$ROOT/tests/lib/launcher.bash"
 
 WS=$(make_workspace "$TEST_HOME/projects/alpha")
 PROJECT=pi-agents-pi-alpha
-FILES="--project-name $PROJECT --project-directory $ROOT --file $ROOT/compose.yml --file $ROOT/compose.shell-rc.yml"
+FILES="--project-name $PROJECT -f $ROOT/compose.yml -f $ROOT/compose.shell-rc.yml"
 # The Compose subcommands (first two words) and helper containers the last run
 # started, in order; read-only `compose config` lookups are left out.
 docker_actions() {
@@ -14,7 +14,7 @@ docker_actions() {
   while IFS= read -r line; do
     case $line in
       'docker compose '*)
-        line=$(sed -E 's/^docker compose (--(project-name|project-directory|file) [^ ]+ )+//' <<< "$line")
+        line=$(sed -E 's/^docker compose (--project-name [^ ]+ |-f [^ ]+ )+//' <<< "$line")
         [[ $line == config* ]] || printf 'compose %s\n' "$(cut -d' ' -f1-2 <<< "$line")"
         ;;
       'docker run '*) printf 'run\n' ;;
@@ -94,7 +94,7 @@ reset_docker
 run_pi "$PATH_1"
 assert_status 0
 for volume_kind in "$(agent_volume "$PATH_1"):agent" "$(session_volume "$PATH_1"):sessions" "$(browser_volume "$PATH_1"):browser"; do
-  assert_log_has "volume create --label com.pi-agents.managed=true --label com.pi-agents.state-kind=${volume_kind##*:} --label com.pi-agents.workspace=$PATH_1 --label com.pi-agents.project=$BASE ${volume_kind%:*}"
+  assert_log_has "volume create --label com.pi-agents.managed=true --label com.pi-agents.workspace=$PATH_1 --label com.pi-agents.project=$BASE --label com.pi-agents.state-kind=${volume_kind##*:} ${volume_kind%:*}"
 done
 volume_has_file "$(agent_volume "$PATH_1")" .container-initialized || fail 'fresh state must be marked initialized'
 assert_eq "$(seed_value)" "$(agent_volume "$PATH_1")" 'first workspace must become the seed'

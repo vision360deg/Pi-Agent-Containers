@@ -6,7 +6,7 @@ source "$ROOT/tests/lib/launcher.bash"
 
 WS=$(make_workspace "$TEST_HOME/projects/alpha")
 NAME=pi-agents-pi-alpha
-FILES="--project-name $NAME --project-directory $ROOT --file $ROOT/compose.yml --file $ROOT/compose.shell-rc.yml"
+FILES="--project-name $NAME -f $ROOT/compose.yml -f $ROOT/compose.shell-rc.yml"
 
 existing_stack() {
   reset_docker

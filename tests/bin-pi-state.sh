@@ -183,7 +183,7 @@ run_pi "$WS" --new-state
 assert_status 0
 assert_eq "$(target_volume)" "$EXTRA" 'agent state volume'
 assert_log_has 'com.pi-agents.state-kind=agent-extra'
-assert_log_has "com.pi-agents.workspace=$WS --label com.pi-agents.project=pi-agents-pi-workspace $EXTRA"
+assert_log_has "com.pi-agents.workspace=$WS --label com.pi-agents.project=pi-agents-pi-workspace --label com.pi-agents.state-kind=agent-extra $EXTRA"
 assert_log_lacks "$NORMAL"
 assert_log_has "sessions=$(session_volume "$WS")"
 assert_log_has 'up --detach --force-recreate pi'
@@ -284,7 +284,7 @@ assert_status 0
 FOURTH=$(target_volume)
 [[ $FOURTH == pi-agents-new-ws-*_pi-agent-state ]] || fail "--new-state target: $FOURTH"
 assert_no_source_copy
-assert_log_has "--label com.pi-agents.state-kind=agent-extra --label com.pi-agents.workspace=$WS_D"
+assert_log_has "--label com.pi-agents.workspace=$WS_D --label com.pi-agents.project=pi-agents-pi-$(workspace_slug "$WS_D") --label com.pi-agents.state-kind=agent-extra"
 assert_log_has 'state-initialization complete'
 assert_eq "$(seed_value)" "$FIRST" 'seed after --new-state'
 

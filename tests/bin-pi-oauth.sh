@@ -6,7 +6,7 @@ source "$ROOT/tests/lib/launcher.bash"
 
 WS=$(make_workspace "$TEST_HOME/projects/alpha")
 NAME=pi-agents-pi-alpha
-FILES="--project-directory $ROOT --file $ROOT/compose.yml --file $ROOT/compose.oauth.yml"
+FILES="-f $ROOT/compose.yml -f $ROOT/compose.oauth.yml"
 KNOWN_BINDINGS=$'127.0.0.1:1455:1455/tcp\n::1:1455:1455/tcp\n127.0.0.1:53692:53692/tcp\n::1:53692:53692/tcp\n127.0.0.1:51121:51121/tcp\n::1:51121:51121/tcp'
 
 # existing_stack [BINDING...]: this workspace's initialized running stack,
@@ -65,7 +65,7 @@ expect_invalid() {
 existing_stack
 run_pi "$WS" --oauth --version
 assert_status 0
-assert_log_has "$FILES --file $ROOT/compose.shell-rc.yml exec pi pi-shell-launch pi-session-log --version"
+assert_log_has "$FILES -f $ROOT/compose.shell-rc.yml exec pi pi-shell-launch pi-session-log --version"
 assert_no_override
 assert_override_removed
 expect_ports

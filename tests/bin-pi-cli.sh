@@ -7,7 +7,7 @@ source "$ROOT/tests/lib/launcher.bash"
 WS_A=$(make_workspace "$TEST_HOME/projects/alpha")
 WS_B=$(make_workspace "$TEST_HOME/projects/beta")
 PROJECT_A=pi-agents-pi-alpha
-COMPOSE_A="--project-name $PROJECT_A --project-directory $ROOT --file $ROOT/compose.yml --file $ROOT/compose.shell-rc.yml"
+COMPOSE_A="--project-name $PROJECT_A -f $ROOT/compose.yml -f $ROOT/compose.shell-rc.yml"
 
 assert_no_docker() {
   [[ ! -s $DOCKER_LOG ]] || fail "docker must not run"$'\n'"$(show_run)"
@@ -25,7 +25,7 @@ docker_actions() {
   while IFS= read -r line; do
     case $line in
       'docker compose '*)
-        line=$(sed -E 's/^docker compose (--(project-name|project-directory|file) [^ ]+ )+//' <<< "$line")
+        line=$(sed -E 's/^docker compose (--project-name [^ ]+ |-f [^ ]+ )+//' <<< "$line")
         [[ $line == config* ]] || printf 'compose %s\n' "$(cut -d' ' -f1-2 <<< "$line")"
         ;;
       'docker run '*) printf 'run\n' ;;

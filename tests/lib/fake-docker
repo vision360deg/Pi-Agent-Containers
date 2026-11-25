@@ -334,7 +334,9 @@ docker_compose() {
     "$project" "${PI_CONTAINER_NAME:-}" "${PI_PROJECT_NAME:-}" "${PI_WORKSPACE:-}" \
     "${PI_AGENT_STATE_VOLUME_NAME:-}" "${PI_SESSION_STATE_VOLUME_NAME:-}" "${PI_BROWSER_STATE_VOLUME_NAME:-}" \
     "${PI_HOST_SHELL:-}" "${PI_HOST_RC_SOURCE:-}" "${PI_HOST_RC_FILE:-}" "${PI_NO_RC_CONFIG:-}" >> "$DOCKER_LOG"
-  # Generated override files live outside the project; record what Compose read.
+  # Generated override files live outside the project directory, which defaults
+  # to the first file's directory; record what Compose read.
+  [[ -n $directory || ${#COMPOSE_FILES[@]} -eq 0 ]] || directory=${COMPOSE_FILES[0]%/*}
   for file in "${COMPOSE_FILES[@]}"; do
     [[ -n $directory && $file != "$directory"/* ]] || continue
     printf 'compose-override %s\n' "$file" >> "$DOCKER_LOG"
