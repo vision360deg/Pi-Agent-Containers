@@ -70,6 +70,48 @@ IN_TERMINAL=false
 assert_status 0
 assert_log_has "docker exec -i -t $EXEC_ENV $PROJECT pi-shell-launch pi-session-log --version"
 
+# A running stack with matching mounts is reused as-is.
+run_pi "$WS" --continue
+assert_status 0
+assert_log_lacks ' up '
+assert_log_lacks ' build '
+assert_log_lacks ' start '
+assert_log_has "docker exec -i $EXEC_ENV $PROJECT pi-shell-launch pi-session-log --continue"
+
+# Another shell needs no new container; the exec carries it.
+run_pi "$WS" --zsh --version
+assert_status 0
+assert_log_lacks ' up '
+assert_log_has "docker exec -i --env PI_HOST_SHELL=zsh --env PI_NO_RC_CONFIG=0 --env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc $PROJECT pi-shell-launch pi-session-log --version"
+
+# A stopped stack is started rather than recreated.
+run_pi "$WS" stop
+assert_status 0
+assert_eq "$(container_field "$PROJECT" state)" exited 'stop must stop the stack'
+run_pi "$WS" --version
+assert_status 0
+assert_log_has "$FILES start pi"
+assert_log_lacks ' up '
+assert_eq "$(container_field "$PROJECT" state)" running 'a stopped stack must be started'
+
+# --replace force-recreates; --rebuild builds with cache and goes through up.
+run_pi "$WS" --replace --version
+assert_status 0
+assert_log_has "$FILES up --detach --force-recreate pi"
+run_pi "$WS" --rebuild --version
+assert_status 0
+assert_file_count "$DOCKER_LOG" ' build pi' 1
+assert_log_has "$FILES up --detach pi"
+assert_log_lacks '--force-recreate'
+
+# A changed shell-rc mount source forces recreation, in both directions.
+run_pi "$WS" --no-rc-config --version
+assert_status 0
+assert_log_has ' up --detach --force-recreate pi'
+run_pi "$WS" --version
+assert_status 0
+assert_log_has "$FILES up --detach --force-recreate pi"
+
 fresh_stack
 run_pi "$WS" --rebuild --rm --version
 assert_status 0
@@ -228,7 +270,8 @@ stack_1
 oneoff_of "$PATH_1"
 run_pi "$PATH_1"
 assert_status 0
-assert_log_has 'up --detach pi'
+assert_log_lacks ' up '
+assert_log_has "$BASE pi-shell-launch pi-session-log"
 assert_output_lacks 'occupied'
 run_pi "$PATH_1" --rm
 assert_status 0

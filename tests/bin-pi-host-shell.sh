@@ -194,7 +194,7 @@ assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh --env PI_HOST_RC_FILE=/dev/
 run_pi "$WS" shell
 assert_status 0
 assert_log_has 'compose.shell-rc.yml'
-assert_log_has 'up --detach pi'
+assert_log_has 'up --detach --force-recreate pi'
 assert_eq "$(container_field "$NAME" mount./tmp/pi-host-shellrc)" "$RC_SOURCE" 'reconciled rc mount source'
 assert_log_has "$EXEC_PREFIX --env PI_HOST_SHELL=zsh $EXEC_ENV --env PI_NO_RC_CONFIG=0 $NAME pi-shell-launch"
 

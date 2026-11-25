@@ -794,21 +794,59 @@ warn_extra_state_volume() {
   fi
 }
 
+persistent_container_state() {
+  local state
+  local -a command=(docker container inspect "$CONTAINER_NAME")
+  "${command[@]}" >/dev/null 2>&1 || return 1
+  inspect_workspace_container "$CONTAINER_NAME" "$WORKSPACE" "$PROJECT_NAME" || return 2
+  command=(docker inspect --format '{{.State.Status}}' "$CONTAINER_NAME")
+  state=$("${command[@]}") || return 2
+  printf '%s' "$state"
+}
+
+# A container keeps the ports it was created with, so its published OAuth
+# callback ports must be exactly the ones this launch needs: the --oauth set,
+# or none, which frees ports an earlier --oauth launch published.
+published_oauth_ports_match() {
+  local published expected='' port
+  local -a command=(docker inspect --format '{{range $port, $bindings := .HostConfig.PortBindings}}{{range $bindings}}{{printf "%s:%s:%s\n" .HostIp .HostPort $port}}{{end}}{{end}}' "$CONTAINER_NAME")
+  published=$("${command[@]}") || fail 'could not inspect the published OAuth callback ports'
+  if [[ $OAUTH_CALLBACK == true ]]; then
+    for port in "${OAUTH_CALLBACK_PORTS[@]}"; do expected+="127.0.0.1:$port:$port/tcp"$'\n'"::1:$port:$port/tcp"$'\n'; done
+  fi
+  [[ $(awk NF <<< "$published" | LC_ALL=C sort -u) == "$(awk NF <<< "$expected" | LC_ALL=C sort -u)" ]]
+}
+
 start_persistent_service() {
-  local mount_source=''
+  local state='' mount_source probe_status
   local -a arguments=(up --detach) command
   ensure_workspace_volumes
   ensure_helper_image
-  command=(docker container inspect "$CONTAINER_NAME")
-  if "${command[@]}" >/dev/null 2>&1; then
+  if state=$(persistent_container_state); then :; else
+    probe_status=$?; [[ $probe_status -eq 1 ]] || fail 'could not verify persistent container identity'
+  fi
+  if [[ -n $state ]]; then
+    command=(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/tmp/pi-host-shellrc"}}{{.Source}}{{end}}{{end}}' "$CONTAINER_NAME")
+    mount_source=$("${command[@]}") || fail 'could not inspect shell configuration mount'
+    [[ $mount_source == "${PI_HOST_RC_SOURCE:-}" ]] || FORCE_RECREATE=true
     # Switching between the normal and the extra agent state needs a new container.
     mount_source=$(mounted_agent_state_volume "$CONTAINER_NAME") || fail 'could not inspect agent state mount'
     [[ $mount_source == "$ACTIVE_AGENT_STATE_VOLUME_NAME" ]] || FORCE_RECREATE=true
+    published_oauth_ports_match || FORCE_RECREATE=true
+  fi
+  if [[ $FORCE_RECREATE != true && $REBUILD_IMAGE != true && $state == running ]]; then
+    warn_extra_state_volume
+    return 0
+  fi
+  warn_extra_state_volume
+  if [[ $FORCE_RECREATE != true && $REBUILD_IMAGE != true ]]; then
+    case $state in
+      created|exited) run_compose start pi; return ;;
+    esac
   fi
   [[ $FORCE_RECREATE != true ]] || arguments+=(--force-recreate)
   arguments+=(pi)
   run_compose "${arguments[@]}"
-  warn_extra_state_volume
 }
 
 container_exec() {

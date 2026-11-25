@@ -61,14 +61,33 @@ expect_invalid() {
 }
 
 # The known callbacks need no override and are published through the static
-# compose.oauth.yml, for the persistent service and Pi's own command.
+# compose.oauth.yml, for the persistent service and Pi's own command. A stack
+# without them is recreated to publish them.
 existing_stack
 run_pi "$WS" --oauth --version
 assert_status 0
+assert_log_has "-f $ROOT/compose.oauth.yml -f $ROOT/compose.shell-rc.yml up --detach --force-recreate pi"
 assert_log_has "--env PI_HOST_RC_FILE=/tmp/pi-host-shellrc/rc $NAME pi-shell-launch pi-session-log --version"
 assert_no_override
 assert_override_removed
 expect_ports
+
+# A stack that publishes exactly this launch's callbacks is reused as-is.
+run_pi "$WS" --oauth --version
+assert_status 0
+assert_log_lacks ' up '
+expect_ports
+
+# A launch without --oauth recreates a stack that still publishes callback
+# ports, so they are free again; a stack without them is reused.
+run_pi "$WS" --version
+assert_status 0
+assert_log_has ' up --detach --force-recreate pi'
+assert_log_lacks 'compose.oauth.yml'
+assert_eq "$(container_field "$NAME" port)" '' 'published ports after a launch without --oauth'
+run_pi "$WS" --version
+assert_status 0
+assert_log_lacks ' up '
 
 # Custom ports get an override that publishes each on IPv4 and IPv6 loopback,
 # removed after the wrapper exits.
@@ -123,7 +142,8 @@ expect_invalid 'PI_OAUTH_CALLBACK_PORTS' --oauth
 existing_stack
 run_pi "$WS"
 assert_status 0
-assert_log_has 'up --detach pi'
+assert_log_lacks 'compose.oauth.yml'
+assert_log_lacks ' up '
 EXTRA_ENV=()
 
 # Ports this workspace's running stack already publishes are reused although
@@ -133,7 +153,7 @@ existing_stack "${known_bindings[@]}"
 EXTRA_ENV=(FAKE_BUSY_PORTS='1455 53692 51121')
 run_pi "$WS" --oauth
 assert_status 0
-assert_log_has 'up --detach pi'
+assert_log_lacks ' up '
 assert_output_lacks 'already in use'
 
 # A port that anything else listens on is refused before anything starts.
@@ -160,7 +180,7 @@ for binding in '127.0.0.1:7000:7000/tcp' '::1:7000:7000/tcp'; do
   EXTRA_ENV=()
   assert_status 0
   assert_output_lacks 'already in use'
-  assert_log_has 'up --detach pi'
+  assert_log_has 'up --detach --force-recreate pi'
   assert_override_ports 7000
 done
 

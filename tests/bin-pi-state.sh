@@ -215,7 +215,7 @@ volume_exists "$EXTRA" || fail 'switching back must keep the extra state volume'
 # A container already on the normal volume is reused, still with the warning.
 run_pi "$WS"
 assert_status 0
-assert_log_has 'up --detach pi'
+assert_log_lacks ' up '
 assert_log_lacks 'force-recreate'
 assert_output_has "pi: warning: an extra state volume $EXTRA exists and is not in use"
 
