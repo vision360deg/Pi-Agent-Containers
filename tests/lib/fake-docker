@@ -396,9 +396,9 @@ docker_run() {
       exit 42
       ;;
     *pi-state-copy*)
-      copy_entries "${mounts[/state-source]}" "${mounts[/state-target]}" sessions
-      if [[ -n ${mounts[/state-source/sessions]:-} ]]; then
-        copy_entries "${mounts[/state-source/sessions]}" "${mounts[/state-target/sessions]}"
+      copy_entries "${mounts[/source]}" "${mounts[/target]}" sessions
+      if [[ -n ${mounts[/source/sessions]:-} ]]; then
+        copy_entries "${mounts[/source/sessions]}" "${mounts[/target/sessions]}"
       fi
       exit "${FAKE_STATE_COPY_STATUS:-0}"
       ;;

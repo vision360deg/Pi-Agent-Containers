@@ -1474,20 +1474,19 @@ run_state_copy() {
   assert_managed_state_volume "$target_agent" "$target_workspace" agent
   ensure_helper_image
   image=$(configured_service_image)
-  # The helper's item and duplicate pickers need a terminal when there is one.
+  # Without a terminal the helper's single-key duplicate prompt would only
+  # receive keys after Enter.
   [[ ! -t 0 ]] || tty_arguments+=(-t)
   command=(docker run --rm "${tty_arguments[@]}" --user 0:0
-    -v "$ROOT/bin/pi-state-copy:/usr/local/bin/pi-state-copy:ro"
-    -v "$source_agent:/state-source:ro" -v "$target_agent:/state-target"
-    "$image" bash /usr/local/bin/pi-state-copy --source /state-source --target /state-target)
+    -v "$source_agent:/source:ro" -v "$target_agent:/target"
+    "$image" pi-state-copy --source /source --target /target)
   if [[ -n $source_sessions && -n $target_sessions ]]; then
     assert_managed_state_volume "$source_sessions" "$source_workspace" sessions
     assert_managed_state_volume "$target_sessions" "$target_workspace" sessions
     command=(docker run --rm "${tty_arguments[@]}" --user 0:0
-      -v "$ROOT/bin/pi-state-copy:/usr/local/bin/pi-state-copy:ro"
-      -v "$source_agent:/state-source:ro" -v "$source_sessions:/state-source/sessions:ro"
-      -v "$target_agent:/state-target" -v "$target_sessions:/state-target/sessions"
-      "$image" bash /usr/local/bin/pi-state-copy --source /state-source --target /state-target)
+      -v "$source_agent:/source:ro" -v "$source_sessions:/source/sessions:ro"
+      -v "$target_agent:/target" -v "$target_sessions:/target/sessions"
+      "$image" pi-state-copy --source /source --target /target)
   fi
   command+=("$@")
   "${command[@]}"
