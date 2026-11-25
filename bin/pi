@@ -1396,9 +1396,6 @@ confirm_missing_seed_pointer() {
   return 2
 }
 
-STATE_VOLUME_ALREADY_INITIALIZED=false
-STATE_INITIAL_SOURCE=''
-
 state_initialization_status() {
   local image status
   image=$(configured_service_image) || return 2
@@ -1427,7 +1424,6 @@ mark_state_initialization() {
   "${command[@]}"
 }
 
-STATE_INITIALIZATION_PENDING=false
 prepare_state_lineage() {
   local seed candidate initialization_status probe_status image
   local -a command
@@ -1808,6 +1804,9 @@ STATE_SEED_FILE=$CONFIG_PATH/seed
 FORCE_RECREATE=$REPLACE_CONTAINER
 [[ $NEW_STATE != true ]] || FORCE_RECREATE=true
 COMPOSE=()
+STATE_VOLUME_ALREADY_INITIALIZED=false
+STATE_INITIAL_SOURCE=''
+STATE_INITIALIZATION_PENDING=false
 
 if [[ $COMMAND == list ]]; then
   list_stacks
