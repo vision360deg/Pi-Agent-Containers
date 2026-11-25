@@ -104,6 +104,8 @@ reset_docker() {
 workspace_hash() {
   if command -v shasum >/dev/null 2>&1; then
     printf '%s' "$1" | shasum -a 256 | awk '{print substr($1, 1, 12)}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | awk '{print substr($1, 1, 12)}'
   else
     printf '%s' "$1" | cksum | awk '{print $1}'
   fi
