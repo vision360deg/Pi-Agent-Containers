@@ -231,8 +231,8 @@ oneoff_of() {
   fake_container "$BASE-pi-run-0123abcd" "$1" running "label.com.docker.compose.project=$BASE" label.com.docker.compose.oneoff=True
 }
 
-# A fresh workspace creates labeled state volumes, marks its agent state
-# initialized, and becomes the seed.
+# A fresh workspace creates labeled state volumes, builds the missing image,
+# starts the service, marks its agent state initialized, and becomes the seed.
 reset_docker
 run_pi "$PATH_1"
 assert_status 0
@@ -246,6 +246,9 @@ assert_log_has "--project-name $BASE "
 assert_log_lacks '--project-name pi-agents-ws-'
 assert_log_has "compose-env project=$BASE container=$BASE network=$BASE workspace=$PATH_1 "
 assert_log_matches ' agent=pi-agents-ws-[a-z0-9]+_pi-agent-state sessions=pi-agents-ws-[a-z0-9]+_pi-sessions browser=pi-agents-ws-[a-z0-9]+_agent-browser-state '
+assert_log_has "--project-name $BASE -f $ROOT/compose.yml -f $ROOT/compose.shell-rc.yml build pi"
+assert_log_has ' up --detach pi'
+assert_log_lacks '--force-recreate'
 
 # Compose project names cannot contain dots, so a dotted basename is mapped
 # to hyphens and the launch proceeds.
@@ -500,26 +503,58 @@ assert_status 2
 assert_output_has "pi-container: disambiguated Compose project is occupied: $TARGET_2"
 assert_log_lacks "$RM_RUN"
 
+# Initialized state volumes must still carry this workspace's managed labels.
+for label in label.com.pi-agents.workspace=/somewhere/else label.com.pi-agents.managed=false label.com.pi-agents.state-kind=browser; do
+  reset_docker
+  fake_volume "$(agent_volume "$WS")" "$WS" agent 2026-01-01T00:00:00Z "$label"
+  fake_volume_file "$(agent_volume "$WS")" .container-initialized complete
+  run_pi "$WS"
+  assert_status 2
+  case $label in
+    *workspace=*) assert_output_has "state volume workspace label does not match: $(agent_volume "$WS")" ;;
+    *managed=*) assert_output_has "state volume is not managed: $(agent_volume "$WS")" ;;
+    *) assert_output_has "state volume kind label does not match: $(agent_volume "$WS")" ;;
+  esac
+  assert_log_lacks ' up '
+done
+
+# Hosts without shasum, such as Linux without Perl, hash with sha256sum and get
+# the same volume names; PATH here mirrors this one without shasum.
+NO_SHASUM_BIN=$TMP_DIR/no-shasum-bin
+mkdir -p "$NO_SHASUM_BIN"
+IFS=: read -r -a path_directories <<< "$PATH"
+for directory in "${path_directories[@]}"; do
+  for tool in "$directory"/*; do
+    tool_name=${tool##*/}
+    [[ $tool_name != shasum && -f $tool && -x $tool && ! -e $NO_SHASUM_BIN/$tool_name ]] || continue
+    ln -s -- "$tool" "$NO_SHASUM_BIN/$tool_name"
+  done
+done
+if [[ -e $NO_SHASUM_BIN/sha256sum ]]; then
+  reset_docker
+  PATH=$NO_SHASUM_BIN run_pi "$WS"
+  assert_status 0
+  assert_log_has "volume create --label com.pi-agents.managed=true --label com.pi-agents.workspace=$WS --label com.pi-agents.project=$PROJECT --label com.pi-agents.state-kind=agent $(agent_volume "$WS")"
+fi
+
 # The home directory is never made a workspace: launches, --rm, update, shell,
 # and copy refuse it before any Docker call, however it was selected.
 HOME_REAL=$(cd -P -- "$TEST_HOME" && pwd -P)
 HOME_REFUSAL="pi-container: refusing to use the home directory as a workspace: $HOME_REAL; run pi from a project directory or pass --workspace PATH"
 for arguments in '' '--rm' 'update' 'update --extensions' 'shell' 'copy' '--bash - --version'; do
-  reset_docker
-  # shellcheck disable=SC2086
-  run_pi "$TEST_HOME" $arguments
-  assert_status 2
-  assert_eq "$(cat -- "$OUTPUT_LOG")" "$HOME_REFUSAL" "pi $arguments from the home directory"
-  [[ ! -s $DOCKER_LOG ]] || fail "pi $arguments from the home directory reached Docker"$'\n'"$(show_run)"
+  for source in cwd option env; do
+    reset_docker
+    # shellcheck disable=SC2086
+    case $source in
+      cwd) run_pi "$TEST_HOME" $arguments ;;
+      option) run_pi "$WS" --workspace "$TEST_HOME" $arguments ;;
+      env) EXTRA_ENV=(PI_WORKSPACE="$TEST_HOME"); run_pi "$WS" $arguments; EXTRA_ENV=() ;;
+    esac
+    assert_status 2
+    assert_eq "$(cat -- "$OUTPUT_LOG")" "$HOME_REFUSAL" "pi $arguments with the home directory from $source"
+    [[ ! -s $DOCKER_LOG ]] || fail "pi $arguments with the home directory from $source reached Docker"$'\n'"$(show_run)"
+  done
 done
-run_pi "$WS" --workspace "$TEST_HOME"
-assert_status 2
-assert_eq "$(cat -- "$OUTPUT_LOG")" "$HOME_REFUSAL" 'pi --workspace HOME'
-EXTRA_ENV=(PI_WORKSPACE="$TEST_HOME")
-run_pi "$WS" --rm
-EXTRA_ENV=()
-assert_status 2
-assert_eq "$(cat -- "$OUTPUT_LOG")" "$HOME_REFUSAL" 'pi --rm with PI_WORKSPACE=HOME'
 
 # list, stop, and remove from the home directory behave as anywhere else.
 reset_docker
