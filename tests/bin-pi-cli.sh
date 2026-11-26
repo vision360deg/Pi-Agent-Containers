@@ -205,11 +205,13 @@ expect_brief_usage --bash --version --help
 fresh_stack
 run_pi "$WS_A" - --help
 expect_persistent_launch --help
+assert_output_lacks 'Usage:'
 fresh_stack
 run_pi "$WS_A" --rm - --help
 assert_status 0
 assert_log_has "$COMPOSE_A run --detach --rm --service-ports --name $PROJECT_A-pi-run-"
 assert_log_matches "^docker exec -i .* $PROJECT_A-pi-run-[0-9a-f]{12} pi-shell-launch pi-session-log --help\$"
+assert_output_lacks 'Usage:'
 
 # Conflicting or unsupported options fail with status 2 before any Docker call.
 # The message is the complete output; each line carries the wrapper prefix.
