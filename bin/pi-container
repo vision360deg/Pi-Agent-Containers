@@ -198,7 +198,8 @@ Commands:
 
 Examples:
   pi                               # Start or reuse this workspace's container.
-  pi - "Inspect this project"      # Start Pi with an initial prompt.
+  pi - "Inspect this project"      # Start containerized Pi with an initial prompt.
+  pi --version                     # Native Pi's version; no container.
   pi --workspace ~/src/project     # Use an explicit workspace.
   pi --rm                          # Run Pi in a disposable container.
   pi --host update                 # Update the native Pi installation.
@@ -208,7 +209,6 @@ Examples:
   pi copy --auth --override        # Copy provider auth, replacing duplicates.
   pi - install npm:pi-web-access   # Pi's install command: add a package.
   pi - update                      # Pi's update command, run in the container.
-  pi --version                     # Native Pi's version; no container.
 
 Restrictions:
   --bash and --zsh are mutually exclusive.

@@ -120,9 +120,8 @@ help_has 'and --override replaces them.'
 help_has 'exits with status 3.'
 help_has $'In the shell and copy pickers a choice is a single key; with ten or more\n  entries, a choice starting with 1-9 is a number confirmed with Enter. Each\n  picker ends with `X) Cancel (or Esc)`.'
 help_has 'pi --host update                 # Update the native Pi installation.'
-help_has 'pi - "Inspect this project"      # Start Pi with an initial prompt.'
+help_has $'  pi - "Inspect this project"      # Start containerized Pi with an initial prompt.\n  pi --version                     # Native Pi\'s version; no container.'
 help_has "pi - install npm:pi-web-access   # Pi's install command: add a package."
-help_has "pi --version                     # Native Pi's version; no container."
 assert_output_lacks 'pi "Inspect this project"'
 help_has "pi - update                      # Pi's update command, run in the container."
 help_has '--bash and --zsh are mutually exclusive.'
