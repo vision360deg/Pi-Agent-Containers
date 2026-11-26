@@ -159,6 +159,20 @@ assert_status 0
 assert_native launcher "$OTHER" install npm:x
 assert_empty "$DOCKER_LOG"
 
+# With native Pi installed, a leading `-`, a wrapper option, or no arguments
+# still launch the container and never start native Pi.
+for arguments in '- --version' '--bash --version' ''; do
+  read -r -a words <<< "$arguments"
+  run_host "$WS" "${words[@]}"
+  assert_status 0
+  assert_empty "$NATIVE_LOG"
+  if [[ $arguments == *--version ]]; then
+    assert_log_matches 'pi-shell-launch pi-session-log --version$'
+  else
+    assert_log_matches 'pi-shell-launch pi-session-log$'
+  fi
+done
+
 # `pi --host --help` stays local brief usage.
 run_host "$WS" --host --help
 assert_status 0
