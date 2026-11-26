@@ -132,6 +132,8 @@ assert_status 0
 assert_log_has "docker volume create --label com.pi-agents.managed=true --label com.pi-agents.workspace=$WS --label com.pi-agents.project=pi-agents-pi-$(workspace_slug "$WS") --label com.pi-agents.state-kind=agent"
 volume_exists "$(agent_volume "$WS")" || fail 'the current agent volume must be created'
 volume_exists "$(session_volume "$WS")" || fail 'the current session volume must be created'
+assert_eq "$(volume_field "$(session_volume "$WS")" label.com.pi-agents.workspace)" "$WS" 'created session volume workspace label'
+assert_eq "$(volume_field "$(session_volume "$WS")" label.com.pi-agents.state-kind)" sessions 'created session volume kind'
 assert_log_has "$(agent_volume "$WS"):/target"
 
 # Only managed agent-state volumes are offered: extra, session, and unlabelled
@@ -210,6 +212,22 @@ assert_output_lacks 'pi-agents-pi-other;'
 two_states
 fake_container pi-agents-pi-current "$WS" exited
 copy_with 1 --auth --all
+assert_status 0
+assert_output_lacks 'warning'
+
+# With --to, the warning names the running container of the picked
+# destination, after the copy; the source's running container is not named.
+two_states
+fake_container pi-agents-pi-current "$WS" running
+fake_container pi-agents-pi-other "$OTHER" running
+copy_with 1 --to --auth --all
+assert_status 0
+assert_output_has "pi-container: warning: $(agent_volume "$OTHER") is mounted by running container pi-agents-pi-other; restart it to pick up copied auth or extensions"
+assert_output_lacks 'pi-agents-pi-current;'
+[[ $(tail -n 1 "$OUTPUT_LOG") == *'warning:'* ]] || fail 'the warning must follow the copy'$'\n'"$(show_run)"
+two_states
+fake_container pi-agents-pi-other "$OTHER" exited
+copy_with 1 --to --auth --all
 assert_status 0
 assert_output_lacks 'warning'
 
