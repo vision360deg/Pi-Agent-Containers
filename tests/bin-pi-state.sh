@@ -130,6 +130,8 @@ fake_volume "$TARGET" "$WS" agent 2026-08-02T12:00:00Z
 run_pi "$WS" - --version
 assert_status 0
 assert_source "$SOURCE"
+# The auth probe runs as root so it can read any volume contents.
+assert_log_matches "^docker run --rm --user 0:0 -v $TARGET:/state:ro pi-agents-pi-workspace-pi sh -c \\[ -d /state \\] \\|\\| exit 43; auth="
 
 # Initialization probe failures stop the launch.
 seed_source
@@ -201,6 +203,14 @@ assert_log_lacks 'com.pi-agents.state-kind=agent-extra'
 assert_log_lacks 'state-initialization'
 assert_no_source_copy
 assert_log_has 'up --detach --force-recreate pi'
+
+# An extra state volume labelled with any other kind is refused.
+fake_record "$FAKE_DOCKER_STATE/volumes/$EXTRA" label.com.pi-agents.state-kind=agent
+run_pi "$WS" --new-state
+assert_status 2
+assert_output_has "pi-container: state volume kind label does not match: $EXTRA"
+assert_log_lacks ' up '
+fake_record "$FAKE_DOCKER_STATE/volumes/$EXTRA" label.com.pi-agents.state-kind=agent-extra
 
 # Omitting --new-state moves a container mounted on the extra volume back to
 # the normal state and warns that the extra volume is unused.
