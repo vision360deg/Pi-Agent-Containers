@@ -192,6 +192,13 @@ assert_status 0
 assert_eq "$(seed_value)" "$NORMAL_2" 'unrelated seed must be unchanged'
 ! volume_exists "$(extra_volume "$PATH_3")" || fail 'remove --all must remove the extra state volume'
 
+# Removing the last managed agent volume with its stack deletes the seed pointer.
+fake_container "$TARGET_2" "$PATH_2" exited
+run_pi "$PATH_2" remove --all
+assert_status 0
+! volume_exists "$NORMAL_2" || fail 'remove --all must remove the last agent volume'
+[[ ! -e $SEED_FILE ]] || fail "seed pointer must be deleted when no agent volume remains: $(seed_value)"
+
 # Missing volumes are skipped. A failed removal still moves a seed whose
 # volume is gone, and keeps a seed whose volume survived.
 stack_1
@@ -433,6 +440,13 @@ printf '%s\n' "$(agent_volume "$L_ALPHA")" > "$SEED_FILE"
 run_pi "$WS" list
 assert_status 0
 assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list seed - - latest)" 'list output'
+assert_read_only_docker_calls
+
+# list does not require the invocation directory to be a workspace, so the
+# home directory works too.
+run_pi "$TEST_HOME" list
+assert_status 0
+assert_eq "$(cat -- "$OUTPUT_LOG")" "$(expected_list seed - - latest)" 'list output from the home directory'
 assert_read_only_docker_calls
 
 # Stacks are listed by container name whatever order Docker returns them in.
