@@ -54,6 +54,13 @@ expect_copy_error '--source is required' --target "$TARGET"
 expect_copy_error '--target is required' --source "$SOURCE"
 expect_copy_error "source is not a directory: $TMP_DIR/missing" --source "$TMP_DIR/missing" --target "$TARGET"
 expect_copy_error "target is not a directory: $TMP_DIR/missing" --source "$SOURCE" --target "$TMP_DIR/missing"
+# Symlinked source or target directories are refused before anything is copied.
+ln -s "$SOURCE" "$TMP_DIR/source-link"
+ln -s "$TARGET" "$TMP_DIR/target-link"
+snapshot_arguments_target=$(cd "$TARGET" && find . -print | LC_ALL=C sort)
+expect_copy_error "source is not a directory: $TMP_DIR/source-link" --source "$TMP_DIR/source-link" --target "$TARGET" --all
+expect_copy_error "target is not a directory: $TMP_DIR/target-link" --source "$SOURCE" --target "$TMP_DIR/target-link" --all
+assert_eq "$(cd "$TARGET" && find . -print | LC_ALL=C sort)" "$snapshot_arguments_target" 'refused symlinked directories must leave the target unchanged'
 
 # Additive session copy: skip the duplicate, copy the new file.
 printf 's' | run_copy --sessions --all
@@ -116,9 +123,12 @@ assert_file_has "$TMP_DIR/pick.err" $'Available sessions:\n  1) one.jsonl\n  2) 
 assert_eq "$(picked)" './sessions/one.jsonl ./sessions/two.jsonl ' 'items 1 and 3'
 pick '1,2\n' --sessions
 assert_eq "$(picked)" './sessions/one.jsonl ./sessions/three.jsonl ' 'comma-separated items'
-pick 'all\n' --sessions
-assert_eq "$(picked)" './sessions/one.jsonl ./sessions/three.jsonl ./sessions/two.jsonl ' 'all items'
-for input in '\n' '' 'q\n' 'Q\n' 'x\n' 'X\n' '\033\n'; do
+for input in 'all\n' 'a\n'; do
+  pick "$input" --sessions
+  assert_eq "$PICK_STATUS" 0 "picker status for input '$input'"
+  assert_eq "$(picked)" './sessions/one.jsonl ./sessions/three.jsonl ./sessions/two.jsonl ' "all items for input '$input'"
+done
+for input in '\n' '  \n' '' 'q\n' 'Q\n' 'x\n' 'X\n' '\033\n'; do
   pick "$input" --sessions
   assert_eq "$PICK_STATUS" 3 "picker cancel status for input '$input'"
   assert_file_has "$TMP_DIR/pick.err" 'pi-state-copy: copy cancelled'
@@ -135,6 +145,7 @@ done <<'EOF'
 one\n|invalid sessions selection: one
 1 x\n|invalid sessions selection: x
 1 1\n|duplicate sessions selection: 1
+2,02\n|duplicate sessions selection: 02
 EOF
 
 # A category without items is noted and the other categories still copy.
@@ -143,6 +154,12 @@ pick '1\n1\n' --sessions --extensions --auth
 assert_eq "$PICK_STATUS" 0 'empty-category status'
 assert_file_has "$TMP_DIR/pick.err" 'pi-state-copy: the source state has no extensions to select'
 jq -e '.pick.token == "t"' "$PICK_TARGET/auth.json" >/dev/null || fail 'the other categories must still copy'
+# An invalid selection in a later category copies nothing, even after a valid
+# earlier one.
+pick '1\n4\n' --sessions --auth
+assert_eq "$PICK_STATUS" 2 'invalid later selection status'
+assert_file_has "$TMP_DIR/pick.err" 'pi-state-copy: invalid providers selection: 4'
+assert_eq "$(ls -A "$PICK_TARGET")" '' 'an invalid later selection must leave the destination unchanged'
 rm -f "$PICK_SOURCE/auth.json"
 
 # The duplicate prompt asks again after an invalid key; s then skips.
@@ -275,11 +292,75 @@ fi
 grep -Fq 'refusing symlinked state path' "$TMP_DIR/symlink.err"
 
 # Source and target must not overlap.
-if bash "$ROOT/bin/pi-state-copy" --source "$TARGET" --target "$TARGET/sessions" --all 2>"$TMP_DIR/overlap.err"; then
-  fail 'overlapping source and target unexpectedly succeeded'
-fi
-grep -Fq 'non-overlapping' "$TMP_DIR/overlap.err"
+for pair in "$TARGET:$TARGET" "$TARGET:$TARGET/sessions" "$TARGET/sessions:$TARGET"; do
+  if bash "$ROOT/bin/pi-state-copy" --source "${pair%%:*}" --target "${pair#*:}" --all 2>"$TMP_DIR/overlap.err"; then
+    fail "overlapping source and target unexpectedly succeeded: $pair"
+  fi
+  assert_file_has "$TMP_DIR/overlap.err" 'source and target must be separate, non-overlapping directories'
+done
 assert_no_copy_leftovers
+
+# roll_dirs: a fresh source with two sessions and auth, and a target holding
+# its own auth and one of the sessions.
+ROLL_SOURCE=$TMP_DIR/roll-source
+ROLL_TARGET=$TMP_DIR/roll-target
+roll_dirs() {
+  chmod -R u+rwX "$ROLL_SOURCE" 2>/dev/null || true
+  rm -rf -- "$ROLL_SOURCE" "$ROLL_TARGET"
+  mkdir -p "$ROLL_SOURCE/sessions" "$ROLL_TARGET/sessions"
+  printf '{"session":"a"}\n' > "$ROLL_SOURCE/sessions/a.jsonl"
+  printf '{"session":"b"}\n' > "$ROLL_SOURCE/sessions/b.jsonl"
+  printf '{"openai":{"token":"source-token"}}\n' > "$ROLL_SOURCE/auth.json"
+  printf '{"session":"a","value":"target"}\n' > "$ROLL_TARGET/sessions/a.jsonl"
+  printf '{"openai":{"token":"target-token"}}\n' > "$ROLL_TARGET/auth.json"
+}
+roll_copy() {
+  ROLL_STATUS=0
+  PATH="${ROLL_PATH:-$PATH}" bash "$ROOT/bin/pi-state-copy" --source "$ROLL_SOURCE" --target "$ROLL_TARGET" "$@" \
+    </dev/null >/dev/null 2>"$TMP_DIR/roll.err" || ROLL_STATUS=$?
+}
+roll_snapshot() { (cd "$ROLL_TARGET" && find . -print | LC_ALL=C sort && find . -type f -exec cat {} +); }
+roll_leftovers() { find "$ROLL_TARGET" -name '.pi-state-copy*' -print; }
+
+# Nothing changes when staging a selected source record fails.
+if [[ $(id -u) -ne 0 ]]; then
+  roll_dirs
+  before=$(roll_snapshot)
+  chmod 000 "$ROLL_SOURCE/sessions/b.jsonl"
+  roll_copy --sessions --all --override
+  chmod 644 "$ROLL_SOURCE/sessions/b.jsonl"
+  assert_eq "$ROLL_STATUS" 2 'staging failure status'
+  assert_eq "$(roll_snapshot)" "$before" 'a staging failure must leave the destination unchanged'
+  assert_eq "$(roll_leftovers)" '' 'a staging failure must not leave copy files behind'
+fi
+
+# A failed publication restores the original destination record; when the
+# rollback itself fails, the original is kept in a backup and named.
+mkdir -p "$TMP_DIR/fake-mv"
+cat > "$TMP_DIR/fake-mv/mv" <<'FAKE_MV'
+#!/usr/bin/env bash
+source_path=${*: -2:1}
+case $source_path in
+  */.pi-state-copy-publish.*) [[ -z ${FAKE_MV_FAIL_PUBLISH:-} ]] || exit 1 ;;
+  */.pi-state-copy-backup.*) [[ -z ${FAKE_MV_FAIL_RESTORE:-} ]] || exit 1 ;;
+esac
+exec /bin/mv "$@"
+FAKE_MV
+chmod +x "$TMP_DIR/fake-mv/mv"
+roll_dirs
+before=$(roll_snapshot)
+FAKE_MV_FAIL_PUBLISH=1 ROLL_PATH="$TMP_DIR/fake-mv:$PATH" roll_copy --auth --all --override
+assert_eq "$ROLL_STATUS" 2 'publication failure status'
+assert_file_has "$TMP_DIR/roll.err" 'pi-state-copy: publishing failed; restoring the previous destination items'
+assert_eq "$(roll_snapshot)" "$before" 'a failed publication must restore the destination'
+assert_eq "$(roll_leftovers)" '' 'a restored publication must not leave copy files behind'
+roll_dirs
+FAKE_MV_FAIL_PUBLISH=1 FAKE_MV_FAIL_RESTORE=1 ROLL_PATH="$TMP_DIR/fake-mv:$PATH" roll_copy --auth --all --override
+assert_eq "$ROLL_STATUS" 2 'rollback failure status'
+assert_file_has "$TMP_DIR/roll.err" 'pi-state-copy: rollback failed; original retained at'
+backup=$(sed -n 's/^pi-state-copy: rollback failed; original retained at //p' "$TMP_DIR/roll.err")
+[[ $backup == "$ROLL_TARGET"/.pi-state-copy-backup.*/auth.json ]] || fail "unexpected backup path: $backup"
+assert_eq "$(cat -- "$backup")" '{"openai":{"token":"target-token"}}' 'the backup must retain the original'
 
 # Malformed source auth must fail without changing destination auth.
 cp "$TARGET/auth.json" "$TMP_DIR/auth-before.json"

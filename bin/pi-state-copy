@@ -225,7 +225,7 @@ stage_from_source() {
   staged="$STAGING_ROOT/items/$target_relative"
   mkdir -p -- "$(dirname -- "$staged")"
   rm -rf -- "$staged"
-  cp -a -- "$SOURCE/$source_relative" "$staged"
+  cp -a -- "$SOURCE/$source_relative" "$staged" || exit 2
   queue_publish "$target_relative"
 }
 
