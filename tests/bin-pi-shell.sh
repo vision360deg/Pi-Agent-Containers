@@ -245,6 +245,20 @@ assert_status 0
 assert_attached '' pi-agents-pi-other
 [[ ! -e $TEST_HOME/projects/absent ]] || fail 'choosing an existing stack must not create the workspace'
 
+# A missing nested --workspace path is created, parents included, when 0
+# starts a new project.
+NESTED=$TEST_HOME/projects/fresh/nested
+reset_docker
+fake_container pi-agents-pi-other "$OTHER" running
+INPUT='0\n'
+run_pi "$WS" --workspace "$NESTED" shell
+INPUT=''
+assert_status 0
+assert_output_has '0) Start a new project'
+[[ -d $NESTED ]] || fail 'the nested new project workspace must be created'
+assert_log_has "workspace=$NESTED "
+assert_attached '' pi-agents-pi-nested
+
 # With ten or more containers the picker waits for Enter after a leading 1-9,
 # so a slowly typed 10 selects item 10 rather than item 1; 0 and Escape stay
 # single keys.
