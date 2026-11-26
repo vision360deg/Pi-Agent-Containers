@@ -51,8 +51,9 @@ run_pi() {
   if (
     cd "$cwd" &&
       env -u PI_WORKSPACE -u PI_OAUTH_CALLBACK_PORTS -u PI_CODING_AGENT_DIR -u PI_MANAGED_INSTALL_ROOT \
+        -u FORCE_BASH -u FORCE_ZSH -u NO_RC_CONFIG \
         HOME="$TEST_HOME" SHELL=/bin/bash TMPDIR="$TMP_DIR/tmp" PATH="$FAKE_BIN:$PATH" \
-        PI_AGENT_CONTAINERS_CONFIG_PATH="$CONFIG_DIR" DOCKER_LOG="$DOCKER_LOG" FAKE_DOCKER_STATE="$FAKE_DOCKER_STATE" \
+        "$CONFIG_PATH_VARIABLE=$CONFIG_DIR" DOCKER_LOG="$DOCKER_LOG" FAKE_DOCKER_STATE="$FAKE_DOCKER_STATE" \
         "${EXTRA_ENV[@]}" "${launcher[@]}"
   ) < <(if [[ -n $INPUT_COMMAND ]]; then bash -c "$INPUT_COMMAND"; else cat -- "$TMP_DIR/stdin"; fi) > "$OUTPUT_LOG" 2>&1; then
     STATUS=0
@@ -111,6 +112,11 @@ workspace_hash() {
   fi
 }
 
+# The names only this tool uses: the launcher's config-path variable, the agent
+# state's session directory, a workspace's generated shell rc, and its volumes.
+CONFIG_PATH_VARIABLE=PI_AGENT_CONTAINERS_CONFIG_PATH
+CONTAINER_SESSION_DIR=/home/node/.pi/agent/sessions
+shell_rc_directory() { printf '%s/shell-rc/pi-agents-ws-%s' "$CONFIG_DIR" "$(workspace_hash "$1")"; }
 agent_volume() { printf 'pi-agents-ws-%s_pi-agent-state' "$(workspace_hash "$1")"; }
 session_volume() { printf 'pi-agents-ws-%s_pi-sessions' "$(workspace_hash "$1")"; }
 browser_volume() { printf 'pi-agents-ws-%s_agent-browser-state' "$(workspace_hash "$1")"; }
@@ -157,9 +163,9 @@ fake_container() {
     "label.com.pi-agents.workspace-basename=$(workspace_slug "$workspace")" "label.com.docker.compose.project=$name" \
     label.com.docker.compose.service=pi label.com.docker.compose.oneoff=False \
     "mount./home/node/.pi/agent=$(agent_volume "$workspace")" \
-    "mount./home/node/.pi/agent/sessions=$(session_volume "$workspace")" \
+    "mount.$CONTAINER_SESSION_DIR=$(session_volume "$workspace")" \
     "mount./home/node/.agent-browser=$(browser_volume "$workspace")" \
-    "mount./tmp/pi-host-shellrc=$CONFIG_DIR/shell-rc/pi-agents-ws-$(workspace_hash "$workspace")" "$@"
+    "mount./tmp/pi-host-shellrc=$(shell_rc_directory "$workspace")" "$@"
 }
 
 # fake_volume NAME WORKSPACE KIND CREATED [KEY=VALUE...]

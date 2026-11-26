@@ -12,6 +12,11 @@ set -euo pipefail
 shopt -s nullglob
 shopt -u patsub_replacement 2>/dev/null || true
 
+# The container's home, its agent state, and the state's session subdirectory.
+HOME_DIR=/home/node
+STATE_DIR=/home/node/.pi/agent
+SESSION_DIR=$STATE_DIR/sessions
+
 : "${FAKE_DOCKER_STATE:?}" "${DOCKER_LOG:?}"
 CONTAINERS=$FAKE_DOCKER_STATE/containers
 VOLUMES=$FAKE_DOCKER_STATE/volumes
@@ -115,13 +120,17 @@ no_such_object() {
 # run_in_home VOLUME SCRIPT: run SCRIPT as a container whose agent state is VOLUME.
 run_in_home() {
   local home=$HOMES/$1
-  mkdir -p -- "$DATA/$1" "$home/.pi"
-  [[ -L $home/.pi/agent ]] || ln -s -- "$DATA/$1" "$home/.pi/agent"
+  local state=$home/${STATE_DIR#"$HOME_DIR"/}
+  mkdir -p -- "$DATA/$1" "${state%/*}"
+  [[ -L $state ]] || ln -s -- "$DATA/$1" "$state"
   HOME=$home sh -c "$2"
 }
 
+# FAKE_PS_REVERSE=1 lists containers in reverse name order, like Docker's
+# newest-first order can, so callers that need a stable order must sort.
 docker_ps() {
   local all=false format='' file
+  local -a files=("$CONTAINERS"/*)
   while (($#)); do
     case $1 in
       -a) all=true; shift ;;
@@ -130,12 +139,9 @@ docker_ps() {
       *) shift ;;
     esac
   done
-  local -a files=("$CONTAINERS"/*)
-  # FAKE_PS_REVERSE lists containers in reverse name order, as Docker may.
-  if [[ -n ${FAKE_PS_REVERSE:-} ]]; then
-    local index
+  if [[ ${FAKE_PS_REVERSE:-} == 1 ]]; then
     local -a reversed=()
-    for index in "${!files[@]}"; do reversed[$index]=${files[$((${#files[@]} - 1 - index))]}; done
+    for file in "${files[@]}"; do reversed=("$file" "${reversed[@]}"); done
     files=("${reversed[@]}")
   fi
   for file in "${files[@]}"; do
@@ -246,9 +252,9 @@ service_record() {
   R[label.com.docker.compose.project]=$project
   R[label.com.docker.compose.service]=pi
   R[label.com.docker.compose.oneoff]=$oneoff
-  R[mount./home/node/.pi/agent]=${PI_AGENT_STATE_VOLUME_NAME:-}
-  R[mount./home/node/.pi/agent/sessions]=${PI_SESSION_STATE_VOLUME_NAME:-}
-  R[mount./home/node/.agent-browser]=${PI_BROWSER_STATE_VOLUME_NAME:-}
+  R[mount.$STATE_DIR]=${PI_AGENT_STATE_VOLUME_NAME:-}
+  R[mount.$SESSION_DIR]=${PI_SESSION_STATE_VOLUME_NAME:-}
+  R[mount.$HOME_DIR/.agent-browser]=${PI_BROWSER_STATE_VOLUME_NAME:-}
   for compose_file in "${COMPOSE_FILES[@]}"; do
     case $compose_file in
       *shell-rc.yml) R[mount./tmp/pi-host-shellrc]=${PI_HOST_RC_SOURCE:-} ;;
@@ -384,7 +390,7 @@ copy_entries() {
 }
 
 docker_run() {
-  local spec destination script state file auth
+  local spec destination script state sessions
   local -A mounts=()
   while (($#)); do
     case $1 in
@@ -397,6 +403,7 @@ docker_run() {
   shift # image
   script="$*"
   state=${mounts[/state]:-}
+  sessions=${SESSION_DIR##*/}
   case $script in
     *'exit 11'*)
       [[ -z ${FAKE_INIT_PROBE_STATUS:-} ]] || exit "$FAKE_INIT_PROBE_STATUS"
@@ -416,29 +423,30 @@ docker_run() {
     'cat /state/.container-initialization-pending') cat -- "$DATA/$state/.container-initialization-pending" ;;
     *'exit 42'*)
       [[ -z ${FAKE_AUTH_PROBE_STATUS:-} ]] || exit "$FAKE_AUTH_PROBE_STATUS"
-      auth=$(tr -d '[:space:]' < "$DATA/$state/auth.json" 2>/dev/null || true)
-      [[ -z $auth || $auth == '{}' ]] || exit 0
-      ! grep -Eq '"(defaultProvider|defaultModel)"' "$DATA/$state/settings.json" 2>/dev/null || exit 0
-      exit 42
+      # The wrapper's own probe script runs on the volume's files.
+      mkdir -p -- "$DATA/$state"
+      script=${*: -1}
+      exec sh -c "${script//\/state/$DATA/$state}"
       ;;
     *pi-state-copy*)
-      copy_entries "${mounts[/source]}" "${mounts[/target]}" sessions
-      if [[ -n ${mounts[/source/sessions]:-} ]]; then
-        copy_entries "${mounts[/source/sessions]}" "${mounts[/target/sessions]}"
+      copy_entries "${mounts[/source]}" "${mounts[/target]}" "$sessions"
+      if [[ -n ${mounts[/source/$sessions]:-} ]]; then
+        copy_entries "${mounts[/source/$sessions]}" "${mounts[/target/$sessions]}"
       fi
       exit "${FAKE_STATE_COPY_STATUS:-0}"
       ;;
-    *'find /state-source'*) copy_entries "${mounts[/state-source]}" "${mounts[/state-target]}" sessions ;;
+    *'find /state-source'*) copy_entries "${mounts[/state-source]}" "${mounts[/state-target]}" "$sessions" ;;
     *) ;;
   esac
 }
 
 # docker exec [OPTIONS] CONTAINER COMMAND...: the container must exist and run.
 # A `sh -c SCRIPT` command, such as the alias setup, runs SCRIPT in the
-# container's home with the --env settings. FAKE_EXEC_STATUS is Pi's exit
-# status; FAKE_EXEC_SIGNAL is sent to the calling process first, as an
-# interrupt during Pi would be. Neither affects the wrapper's setup execs
-# (the alias setup and the browser extension install).
+# container's home with the --env settings. FAKE_MARKETPLACES and FAKE_PLUGINS
+# are the plugin listings. FAKE_EXEC_STATUS is the command's exit status;
+# FAKE_EXEC_SIGNAL is sent to the calling process first, as an interrupt
+# during the command would be. Neither affects `sh -c` setup or the browser
+# extension install.
 docker_exec() {
   local file entry
   local -a environment=()
@@ -457,11 +465,15 @@ docker_exec() {
   if [[ ${1:-} == sh && ${2:-} == -c ]]; then
     (
       for entry in "${environment[@]}"; do export "$entry"; done
-      run_in_home "${R[mount./home/node/.pi/agent]}" "$3"
+      run_in_home "${R[mount.$STATE_DIR]}" "$3"
     )
     return
   fi
-  [[ $* != *' install npm:pi-agent-browser-native' ]] || return 0
+  [[ $* != *' install npm:'*-agent-browser-native ]] || return 0
+  case "$*" in
+    *plugins/marketplaces*) [[ -z ${FAKE_MARKETPLACES:-} ]] || printf '%s\n' $FAKE_MARKETPLACES ;;
+    *installed_plugins.json*) [[ -z ${FAKE_PLUGINS:-} ]] || printf '%s\n' $FAKE_PLUGINS ;;
+  esac
   [[ -z ${FAKE_EXEC_SIGNAL:-} ]] || kill -s "$FAKE_EXEC_SIGNAL" "$PPID"
   exit "${FAKE_EXEC_STATUS:-0}"
 }

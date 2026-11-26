@@ -1,4 +1,4 @@
-# Shared helpers for Pi-Agents tests. Source this file from tests/*.sh.
+# Shared helpers for the tests. Source this file from tests/*.sh.
 # shellcheck shell=bash
 
 # The launcher and helpers require Bash 4. They run through `env bash`, so the
