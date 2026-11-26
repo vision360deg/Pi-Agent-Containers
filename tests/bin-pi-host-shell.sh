@@ -115,6 +115,7 @@ assert_status 0
 run_pi "$WS" --no-rc-config --version
 assert_status 0
 assert_eq "$(container_field "$NAME" mount./tmp/pi-host-shellrc)" '' 'rc mount after --no-rc-config'
+assert_log_has ' up --detach --force-recreate pi'
 
 # No-rc mode selects the shell without generating or mounting an rc file.
 reset_docker
@@ -140,6 +141,8 @@ existing_settings '{"shellCommandPrefix":"printf rm-custom-prefix"}'
 EXTRA_ENV=(HOME="$RM_HOME")
 run_pi "$WS" --rm --version
 assert_status 0
+[[ -f $RC_SOURCE/rc ]] || fail '--rm must generate the shell rc'
+assert_log_matches "compose\.shell-rc\.yml run --detach --rm --service-ports --name $NAME-pi-run-[0-9a-f]{12} pi\$"
 assert_log_matches "^docker exec -i --env PI_HOST_SHELL=bash --env PI_NO_RC_CONFIG=0 $EXEC_ENV $NAME-pi-run-[0-9a-f]{12} sh -c"
 assert_log_has 'pi-agents managed host shell aliases'
 assert_log_matches "$NAME-pi-run-[0-9a-f]{12} pi-shell-launch pi-session-log --forward-output install npm:pi-agent-browser-native\$"
@@ -243,5 +246,20 @@ run_pi "$WS" list
 assert_status 0
 [[ ! -e $CONFIG_DIR/shell-rc ]] || fail 'list generated an rc file'
 EXTRA_ENV=()
+
+# Exported FORCE_BASH, FORCE_ZSH, or NO_RC_CONFIG in the caller's environment
+# do not change the wrapper; only its options do.
+reset_docker
+EXTRA_ENV=(SHELL=/bin/zsh FORCE_BASH=true NO_RC_CONFIG=1)
+run_pi "$WS" - --version
+EXTRA_ENV=()
+assert_status 0
+assert_log_has "docker exec -i --env PI_HOST_SHELL=zsh --env PI_NO_RC_CONFIG=0 $EXEC_ENV $NAME pi-shell-launch pi-session-log --version"
+assert_log_has 'compose.shell-rc.yml'
+EXTRA_ENV=(SHELL=/bin/bash FORCE_ZSH=true)
+run_pi "$WS" - --version
+EXTRA_ENV=()
+assert_status 0
+assert_log_has "docker exec -i --env PI_HOST_SHELL=bash --env PI_NO_RC_CONFIG=0 $EXEC_ENV $NAME pi-shell-launch pi-session-log --version"
 
 pass
