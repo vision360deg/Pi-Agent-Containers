@@ -30,6 +30,8 @@ run_launcher() {
   : > "$TMP_DIR/log"
   PI_TEST_LOG="$TMP_DIR/log" TMPDIR="$TMP_DIR/tmpdir" PATH="$TMP_DIR/bin:$PATH" /bin/bash "$LAUNCHER" "$@"
 }
+# args: the shell's arguments from the last run, in order, joined by |.
+args() { sed -n 's/^arg=//p' "$TMP_DIR/log" | paste -sd '|' -; }
 
 PI_HOST_SHELL=zsh PI_HOST_RC_FILE="$TMP_DIR/rc" PI_NO_RC_CONFIG=0 run_launcher command one
 assert_contains "$TMP_DIR/log" 'shell=zsh'
@@ -39,6 +41,7 @@ assert_contains "$TMP_DIR/log" 'arg=exec "$@"'
 assert_contains "$TMP_DIR/log" 'arg=pi-shell-launch'
 assert_contains "$TMP_DIR/log" 'arg=command'
 assert_contains "$TMP_DIR/log" 'arg=one'
+assert_eq "$(args)" '-i|-c|exec "$@"|pi-shell-launch|command|one' 'zsh command arguments'
 grep -Eq "^zdotdir=$TMP_DIR/tmpdir/pi-shell-launch\." "$TMP_DIR/log" || fail 'zsh must receive a private ZDOTDIR under TMPDIR'
 assert_contains "$TMP_DIR/log" "zshrc=$TMP_DIR/rc"
 zdotdir="$(sed -n 's/^zdotdir=//p' "$TMP_DIR/log")"
@@ -55,6 +58,7 @@ set -e
 PI_HOST_SHELL=zsh PI_HOST_RC_FILE="$TMP_DIR/rc" PI_NO_RC_CONFIG=0 run_launcher
 assert_contains "$TMP_DIR/log" 'shell=zsh'
 assert_contains "$TMP_DIR/log" 'arg=-i'
+assert_eq "$(args)" '-i' 'interactive zsh arguments'
 if grep -Fq 'arg=-c' "$TMP_DIR/log"; then fail 'interactive zsh must not receive -c'; fi
 
 PI_HOST_SHELL=bash PI_HOST_RC_FILE="$TMP_DIR/rc" PI_NO_RC_CONFIG=0 run_launcher command two
@@ -65,18 +69,21 @@ assert_contains "$TMP_DIR/log" "arg=$TMP_DIR/rc"
 assert_contains "$TMP_DIR/log" 'arg=-c'
 assert_contains "$TMP_DIR/log" 'arg=command'
 assert_contains "$TMP_DIR/log" 'arg=two'
+assert_eq "$(args)" "--rcfile|$TMP_DIR/rc|-i|-c|exec \"\$@\"|pi-shell-launch|command|two" 'bash command arguments'
 
 PI_HOST_SHELL=bash PI_HOST_RC_FILE="$TMP_DIR/rc" PI_NO_RC_CONFIG=0 run_launcher
 assert_contains "$TMP_DIR/log" 'shell=bash'
 assert_contains "$TMP_DIR/log" 'arg=-i'
 assert_contains "$TMP_DIR/log" 'arg=--rcfile'
 assert_contains "$TMP_DIR/log" "arg=$TMP_DIR/rc"
+assert_eq "$(args)" "--rcfile|$TMP_DIR/rc|-i" 'interactive bash arguments'
 if grep -Fq 'arg=-c' "$TMP_DIR/log"; then fail 'interactive bash must not receive -c'; fi
 
 PI_HOST_SHELL=zsh PI_HOST_RC_FILE="$TMP_DIR/rc" PI_NO_RC_CONFIG=1 run_launcher command
 assert_contains "$TMP_DIR/log" 'shell=zsh'
 assert_contains "$TMP_DIR/log" 'arg=-f'
 assert_contains "$TMP_DIR/log" 'arg=-i'
+assert_eq "$(args)" '-f|-i|-c|exec "$@"|pi-shell-launch|command' 'zsh no-rc arguments'
 assert_contains "$TMP_DIR/log" 'zdotdir='
 if grep -Fq 'zshrc=' "$TMP_DIR/log"; then fail 'zsh no-rc mode must not get a private rc'; fi
 if grep -Fq "arg=$TMP_DIR/rc" "$TMP_DIR/log"; then fail 'zsh no-rc mode must not use the rc file'; fi
@@ -86,6 +93,7 @@ assert_contains "$TMP_DIR/log" 'shell=bash'
 assert_contains "$TMP_DIR/log" 'arg=--noprofile'
 assert_contains "$TMP_DIR/log" 'arg=--norc'
 assert_contains "$TMP_DIR/log" 'arg=-i'
+assert_eq "$(args)" '--noprofile|--norc|-i|-c|exec "$@"|pi-shell-launch|command' 'bash no-rc arguments'
 if grep -Fq "arg=$TMP_DIR/rc" "$TMP_DIR/log"; then fail 'bash no-rc mode must not use the rc file'; fi
 PI_HOST_SHELL=bash PI_NO_RC_CONFIG=1 run_launcher
 assert_eq "$(sed -n 's/^arg=//p' "$TMP_DIR/log" | paste -sd '|' -)" '--noprofile|--norc|-i' 'interactive bash no-rc arguments'

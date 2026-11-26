@@ -17,11 +17,13 @@ if [[ "$$" -ne "${PI_SESSION_LOG_PID:-0}" ]]; then
 fi
 
 command_string=''
+options=''
 transcript_file=''
 log_out_file=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --quiet|--flush|--return)
+      options+="$1 "
       shift
       ;;
     --command)
@@ -53,6 +55,7 @@ fi
 
 # util-linux script runs the command through /bin/sh, which is dash in the
 # image; parse it the same way.
+printf '%s\n' "$options" > "$PI_SESSION_LOG_SCRIPT_FLAGS"
 "$PI_SESSION_LOG_TEST_SH" -c "$command_string"
 FAKE_SCRIPT
 chmod +x "$FAKE_BIN/script"
@@ -68,6 +71,7 @@ exit "${FAKE_PI_STATUS:-0}"
 FAKE_PI
 chmod +x "$FAKE_BIN/pi"
 SCRIPT_OPTIONS_LOG="$TMP_DIR/script-options.log"
+SCRIPT_FLAGS_LOG="$TMP_DIR/script-flags.log"
 if command -v dash >/dev/null 2>&1; then
   TEST_SH="$(command -v dash)"
 else
@@ -78,6 +82,7 @@ fi
 STATUS=0
 run_log() {
   if PI_SESSION_LOG_SCRIPT_LOG="$SCRIPT_OPTIONS_LOG" \
+    PI_SESSION_LOG_SCRIPT_FLAGS="$SCRIPT_FLAGS_LOG" \
     PI_SESSION_LOG_TEST_INVOCATION="$INVOCATION_LOG" \
     PI_SESSION_LOG_TEST_SH="$TEST_SH" \
     PATH="$FAKE_BIN:$PATH" \
@@ -88,6 +93,8 @@ run_log prompt
 [[ $STATUS == 0 ]] || fail "session-log status $STATUS"
 [[ "$(cat "$INVOCATION_LOG")" == 'arg=prompt' ]] || fail "pi arguments: $(cat "$INVOCATION_LOG")"
 [[ -z "$(cat "$SCRIPT_OPTIONS_LOG")" ]] || fail 'transcript must not be forwarded by default'
+# script runs quietly, flushes the transcript, and returns the child's status.
+assert_eq "$(cat -- "$SCRIPT_FLAGS_LOG")" '--quiet --flush --return ' 'script options'
 
 run_log --forward-output prompt
 [[ "$(cat "$INVOCATION_LOG")" == 'arg=prompt' ]] || fail "forwarded pi arguments: $(cat "$INVOCATION_LOG")"

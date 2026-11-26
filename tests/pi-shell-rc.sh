@@ -28,11 +28,16 @@ cat > "$HOME_ROOT/.aliases" <<'EOF'
 alias ll='ls -la'
 EOF
 OUTPUT=$TMP_DIR/bash.rc
-bash "$RESOLVER" --shell bash --home "$HOME_ROOT" --output "$OUTPUT"
+# A stale output is replaced; a complete chain warns about nothing.
+printf 'stale\n' > "$OUTPUT"
+bash "$RESOLVER" --shell bash --home "$HOME_ROOT" --output "$OUTPUT" 2>"$TMP_DIR/bash.err"
 assert_order "$OUTPUT" FROM_PROFILE FROM_BASHRC "alias ll='ls -la'"
 assert_file_count "$OUTPUT" 'export FROM_BASHRC=1' 1
 assert_file_count "$OUTPUT" "alias ll='ls -la'" 1
 [[ $(stat -f '%Lp' "$OUTPUT") == 644 ]] || fail "generated rc must be mode 0644"
+assert_file_lacks "$OUTPUT" 'stale'
+[[ -z $(find "$TMP_DIR" -maxdepth 1 -name 'bash.rc.*') ]] || fail 'temporary rc files must not remain'
+[[ ! -s $TMP_DIR/bash.err ]] || fail "complete chain must not warn: $(cat "$TMP_DIR/bash.err")"
 
 ROOT_CONDITIONAL_HOME=$TMP_DIR/root-conditional-home
 ROOT_CONTAINER_HOME=$TMP_DIR/root-container-home
@@ -249,7 +254,7 @@ MISSING_HOME=$TMP_DIR/missing-home
 mkdir -p "$MISSING_HOME"
 bash "$RESOLVER" --shell bash --home "$MISSING_HOME" --output "$MISSING_OUTPUT" 2>"$TMP_DIR/missing.err"
 [[ ! -s "$MISSING_OUTPUT" ]] || fail "missing roots should produce an empty rc"
-assert_file_has "$TMP_DIR/missing.err" "missing startup rc"
+assert_file_count "$TMP_DIR/missing.err" "missing startup rc" 2
 
 CYCLE_HOME=$TMP_DIR/cycle-home
 mkdir -p "$CYCLE_HOME"
@@ -538,7 +543,52 @@ for form in one-line multi-line; do
   assert_file_has "$TMP_DIR/true-$form.rc" "export OMZ_LOADED=$form"
   if grep -Fq 'source "$ZSH/init.sh"' "$TMP_DIR/true-$form.rc"; then fail "static true guard ($form) left source unresolved"; fi
   bash -n "$TMP_DIR/true-$form.rc" || fail "static true guard ($form) output must be valid bash"
+  assert_file_count "$TMP_DIR/true-$form.err" 'unresolved source' 0
 done
+
+# Symlinks inside the host home are followed; escapes and loops are not, and a
+# startup root that links to itself counts as missing.
+LINKS_HOME=$TMP_DIR/links-home
+mkdir -p "$LINKS_HOME/dotfiles"
+printf 'export DOTFILES_RC=1\nsource ~/.escape\nsource ~/.loop-a\n' > "$LINKS_HOME/dotfiles/bashrc"
+ln -s dotfiles/bashrc "$LINKS_HOME/.bashrc"
+printf 'ESCAPED=1\n' > "$TMP_DIR/links-outside"
+ln -s "$TMP_DIR/links-outside" "$LINKS_HOME/.escape"
+ln -s .loop-b "$LINKS_HOME/.loop-a"
+ln -s .loop-a "$LINKS_HOME/.loop-b"
+ln -s .bash_profile "$LINKS_HOME/.bash_profile"
+LINKS_STATUS=0
+"${timeout_command[@]}" bash "$RESOLVER" --shell bash --home "$LINKS_HOME" --output "$TMP_DIR/links.rc" 2>"$TMP_DIR/links.err" || LINKS_STATUS=$?
+[[ $LINKS_STATUS -ne 124 ]] || fail "symlink loops must not hang the resolver"
+assert_eq "$LINKS_STATUS" 0 'symlink resolution status'
+assert_file_has "$TMP_DIR/links.rc" 'export DOTFILES_RC=1'
+assert_file_has "$TMP_DIR/links.rc" 'source ~/.escape'
+assert_file_has "$TMP_DIR/links.rc" 'source ~/.loop-a'
+assert_file_lacks "$TMP_DIR/links.rc" 'ESCAPED=1'
+assert_file_count "$TMP_DIR/links.err" 'unresolved source' 2
+assert_file_has "$TMP_DIR/links.err" "missing startup rc: $LINKS_HOME/.bash_profile"
+
+# A genuinely conditional source of a later startup root is wrapped, and the
+# root is then still read on its own.
+COND_ROOT_HOME=$TMP_DIR/conditional-root-home
+mkdir -p "$COND_ROOT_HOME"
+printf 'if false; then source ~/.bashrc; fi\n' > "$COND_ROOT_HOME/.bash_profile"
+printf 'COND_ROOT_MARK=1\n' > "$COND_ROOT_HOME/.bashrc"
+bash "$RESOLVER" --shell bash --home "$COND_ROOT_HOME" --output "$TMP_DIR/conditional-root.rc" 2>"$TMP_DIR/conditional-root.err"
+assert_file_has "$TMP_DIR/conditional-root.rc" 'if false; then {'
+assert_file_count "$TMP_DIR/conditional-root.rc" 'COND_ROOT_MARK=1' 2
+assert_file_count "$TMP_DIR/conditional-root.err" 'unresolved source' 0
+bash -n "$TMP_DIR/conditional-root.rc" || fail 'conditional root output must be valid bash'
+
+# A guarded source of an empty file still yields valid shell.
+ZERO_GUARD_HOME=$TMP_DIR/zero-guard-home
+mkdir -p "$ZERO_GUARD_HOME"
+: > "$ZERO_GUARD_HOME/.empty"
+printf '%s\n' '[ -s "$HOME/.empty" ] && source "$HOME/.empty"' 'export ZERO_GUARD_AFTER=1' > "$ZERO_GUARD_HOME/.bashrc"
+bash "$RESOLVER" --shell bash --home "$ZERO_GUARD_HOME" --output "$TMP_DIR/zero-guard.rc" 2>"$TMP_DIR/zero-guard.err"
+bash -n "$TMP_DIR/zero-guard.rc" || fail 'guarded source of an empty file must produce valid bash'
+assert_file_count "$TMP_DIR/zero-guard.rc" 'export ZERO_GUARD_AFTER=1' 1
+assert_file_count "$TMP_DIR/zero-guard.err" 'unresolved source' 0
 
 bash "$RESOLVER" --help > "$TMP_DIR/help" || fail "--help must succeed"
 assert_file_has "$TMP_DIR/help" 'usage: pi-shell-rc --shell bash|zsh'
